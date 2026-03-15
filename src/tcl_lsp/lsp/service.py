@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import unquote, urlparse
 
 from tcl_lsp.analysis import AnalysisResult, FactExtractor, Resolver, WorkspaceIndex
 from tcl_lsp.analysis.builtins import builtin_definition_targets
 from tcl_lsp.analysis.model import DefinitionTarget, DocumentFacts
 from tcl_lsp.common import Diagnostic, DocumentSymbol, HoverInfo, Location
 from tcl_lsp.parser import Parser, ParseResult
+from tcl_lsp.workspace import candidate_package_roots, read_source_file, source_id_to_path
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,11 +39,11 @@ class LanguageService:
         self._failed_background_documents: set[str] = set()
 
     def open_document(self, uri: str, text: str, version: int) -> tuple[Diagnostic, ...]:
-        self._upsert_document(uri=uri, text=text, version=version)
+        self.load_documents(((uri, text, version),))
         return self.diagnostics(uri)
 
     def change_document(self, uri: str, text: str, version: int) -> tuple[Diagnostic, ...]:
-        self._upsert_document(uri=uri, text=text, version=version)
+        self.load_documents(((uri, text, version),))
         return self.diagnostics(uri)
 
     def close_document(self, uri: str) -> tuple[Diagnostic, ...]:
@@ -119,9 +120,14 @@ class LanguageService:
     def get_document(self, uri: str) -> ManagedDocument | None:
         return self._documents.get(uri)
 
-    def _upsert_document(self, uri: str, text: str, version: int) -> None:
-        self._index_document(uri=uri, text=text, version=version)
-        self._discover_package_roots(uri)
+    def load_documents(self, documents: Iterable[tuple[str, str, int]]) -> None:
+        loaded_any = False
+        for uri, text, version in documents:
+            self._index_document(uri=uri, text=text, version=version)
+            self._discover_package_roots(uri)
+            loaded_any = True
+        if not loaded_any:
+            return
         self._ensure_package_documents_loaded()
         self._recompute_workspace_analyses()
 
@@ -139,11 +145,11 @@ class LanguageService:
         self._workspace_index.update(uri, facts)
 
     def _discover_package_roots(self, uri: str) -> None:
-        path = _source_id_to_path(uri)
+        path = source_id_to_path(uri)
         if path is None:
             return
 
-        for package_root in _candidate_package_roots(path):
+        for package_root in candidate_package_roots(path):
             resolved_root = package_root.resolve(strict=False)
             if resolved_root in self._scanned_package_roots:
                 continue
@@ -153,7 +159,7 @@ class LanguageService:
     def _scan_package_root(self, package_root: Path) -> None:
         for pkg_index_path in sorted(package_root.rglob('pkgIndex.tcl')):
             try:
-                text = _read_source_file(pkg_index_path)
+                text = read_source_file(pkg_index_path)
             except OSError:
                 continue
             pkg_index_uri = pkg_index_path.resolve(strict=False).as_uri()
@@ -185,13 +191,13 @@ class LanguageService:
                 return
 
     def _load_background_document(self, uri: str) -> bool:
-        path = _source_id_to_path(uri)
+        path = source_id_to_path(uri)
         if path is None:
             self._failed_background_documents.add(uri)
             return False
 
         try:
-            text = _read_source_file(path)
+            text = read_source_file(path)
         except OSError:
             self._failed_background_documents.add(uri)
             return False
@@ -269,47 +275,3 @@ def _empty_analysis(uri: str, document_symbols: tuple[DocumentSymbol, ...]) -> A
         document_symbols=document_symbols,
         hovers=(),
     )
-
-
-def _candidate_package_roots(path: Path) -> tuple[Path, ...]:
-    start_directory = path if path.is_dir() else path.parent
-    direct_package_root: Path | None = None
-
-    for directory in (start_directory, *start_directory.parents):
-        if _has_pkgindex_children(directory):
-            return (directory,)
-        if direct_package_root is None and (directory / 'pkgIndex.tcl').is_file():
-            direct_package_root = directory
-
-    if direct_package_root is None:
-        return ()
-    return (direct_package_root,)
-
-
-def _has_pkgindex_children(directory: Path) -> bool:
-    try:
-        for child in directory.iterdir():
-            if child.is_dir() and (child / 'pkgIndex.tcl').is_file():
-                return True
-    except OSError:
-        return False
-    return False
-
-
-def _source_id_to_path(source_id: str) -> Path | None:
-    parsed = urlparse(source_id)
-    if parsed.scheme == 'file':
-        return Path(unquote(parsed.path))
-    if parsed.scheme:
-        return None
-    return Path(source_id)
-
-
-def _read_source_file(path: Path) -> str:
-    last_error: UnicodeDecodeError | None = None
-    for encoding in ('utf-8', 'iso-8859-1'):
-        try:
-            return path.read_text(encoding=encoding)
-        except UnicodeDecodeError as exc:
-            last_error = exc
-    raise AssertionError(f'Could not decode {path}: {last_error}')

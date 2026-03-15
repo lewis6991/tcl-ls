@@ -1,0 +1,842 @@
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+import time
+from collections import Counter
+from collections.abc import Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal, TextIO
+
+from tcl_lsp.analysis import (
+    DocumentFacts,
+    FactExtractor,
+    PackageIndexEntry,
+    Resolver,
+    WorkspaceIndex,
+)
+from tcl_lsp.common import Diagnostic
+from tcl_lsp.parser import Parser
+from tcl_lsp.workspace import (
+    candidate_package_roots,
+    discover_tcl_sources,
+    read_source_file,
+    source_id_to_path,
+)
+
+type ColorMode = Literal['auto', 'always', 'never']
+
+_TAB_SIZE = 4
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectDiagnostic:
+    path: Path
+    diagnostic: Diagnostic
+
+
+@dataclass(frozen=True, slots=True)
+class CheckReport:
+    root: Path
+    source_count: int
+    background_source_count: int
+    diagnostics: tuple[ProjectDiagnostic, ...]
+    source_text_by_path: dict[Path, str]
+    elapsed_seconds: float
+
+    @property
+    def files_with_diagnostics(self) -> int:
+        return len({item.path for item in self.diagnostics})
+
+    @property
+    def diagnostic_counts(self) -> Counter[str]:
+        return Counter(item.diagnostic.code for item in self.diagnostics)
+
+
+@dataclass(frozen=True, slots=True)
+class _ProjectDocument:
+    path: Path
+    uri: str
+    text: str
+    facts: DocumentFacts
+
+
+@dataclass(frozen=True, slots=True)
+class _AnalysisUnit:
+    root: Path
+    source_paths: tuple[Path, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedUnit:
+    unit: _AnalysisUnit
+    source_documents: tuple[_ProjectDocument, ...]
+    background_source_paths: tuple[Path, ...]
+    workspace_index: WorkspaceIndex
+
+
+class _DocumentCache:
+    def __init__(self, *, parser: Parser, extractor: FactExtractor) -> None:
+        self._parser = parser
+        self._extractor = extractor
+        self._documents: dict[Path, _ProjectDocument] = {}
+
+    def get(self, path: Path) -> _ProjectDocument:
+        resolved_path = path.resolve(strict=False)
+        document = self._documents.get(resolved_path)
+        if document is not None:
+            return document
+
+        document = _index_document(
+            resolved_path,
+            parser=self._parser,
+            extractor=self._extractor,
+        )
+        self._documents[resolved_path] = document
+        return document
+
+
+class _Palette:
+    def __init__(self, enabled: bool) -> None:
+        self.enabled = enabled
+
+    def bold(self, text: str) -> str:
+        return self._style(text, '1')
+
+    def dim(self, text: str) -> str:
+        return self._style(text, '2')
+
+    def heading(self, text: str) -> str:
+        return self._style(text, '1', '36')
+
+    def file(self, text: str) -> str:
+        return self._style(text, '1', '34')
+
+    def code(self, text: str) -> str:
+        return self._style(text, '35')
+
+    def count(self, text: str) -> str:
+        return self._style(text, '1')
+
+    def caret(self, text: str, severity: str) -> str:
+        return self._style(text, _severity_color(severity))
+
+    def severity(self, text: str, severity: str) -> str:
+        return self._style(text, '1', _severity_color(severity))
+
+    def _style(self, text: str, *codes: str) -> str:
+        if not self.enabled or not codes:
+            return text
+        return f"\x1b[{';'.join(codes)}m{text}\x1b[0m"
+
+
+class _StreamReporter:
+    def __init__(
+        self,
+        *,
+        root: Path,
+        out: TextIO,
+        err: TextIO,
+        palette: _Palette,
+        context_lines: int,
+    ) -> None:
+        self._root = root
+        self._out = out
+        self._err = err
+        self._palette = palette
+        self._context_lines = context_lines
+        self._progress_enabled = err.isatty()
+        self._last_status_update = 0.0
+        self._status_visible = False
+        self._rendered_files = 0
+        self._background_sources = 0
+        self._diagnostics_seen = 0
+
+    def start_indexing(self, source_count: int) -> None:
+        self._update_status(
+            f'Preparing 0/{source_count} workspaces',
+            force=True,
+        )
+
+    def source_indexed(self, current: int, total: int) -> None:
+        background_suffix = (
+            f', loaded {self._background_sources} package sources'
+            if self._background_sources
+            else ''
+        )
+        self._update_status(
+            f'Prepared {current}/{total} workspaces{background_suffix}',
+            force=current == total,
+        )
+
+    def background_source_loaded(self, path: Path) -> None:
+        self._background_sources += 1
+        self._update_status(
+            'Loaded package source '
+            f'{_display_path(path, self._root)} ({self._background_sources} total)',
+        )
+
+    def workspace_started(self, current: int, total: int, root: Path, source_count: int) -> None:
+        source_label = 'file' if source_count == 1 else 'files'
+        self._update_status(
+            f'Preparing workspace {current}/{total}: '
+            f'{_display_path(root, self._root)} ({source_count} {source_label})',
+            force=True,
+        )
+
+    def start_analysis(self, source_count: int) -> None:
+        self._diagnostics_seen = 0
+        self._update_status(
+            f'Analyzing 0/{source_count} source files, 0 diagnostics',
+            force=True,
+        )
+
+    def source_analyzed(
+        self,
+        *,
+        current: int,
+        total: int,
+        path: Path,
+        text: str,
+        diagnostics: tuple[Diagnostic, ...],
+    ) -> None:
+        if diagnostics:
+            self._clear_status()
+            if self._rendered_files:
+                print(file=self._out)
+            print(
+                format_file_diagnostics(
+                    path=path,
+                    text=text,
+                    diagnostics=diagnostics,
+                    root=self._root,
+                    palette=self._palette,
+                    context_lines=self._context_lines,
+                ),
+                file=self._out,
+                flush=True,
+            )
+            self._rendered_files += 1
+
+        self._diagnostics_seen += len(diagnostics)
+        self._update_status(
+            f'Analyzing {current}/{total} source files, {self._diagnostics_seen} diagnostics',
+            force=current == total,
+        )
+
+    def finish(self, report: CheckReport) -> None:
+        self._clear_status()
+        if self._rendered_files:
+            print(file=self._out)
+        print(format_summary(report, palette=self._palette), file=self._out)
+
+    def abort(self) -> None:
+        self._clear_status()
+
+    def _update_status(self, message: str, *, force: bool = False) -> None:
+        if not self._progress_enabled:
+            return
+
+        now = time.monotonic()
+        if not force and now - self._last_status_update < 0.1:
+            return
+
+        self._last_status_update = now
+        print(f'\r\x1b[2K{self._palette.dim(message)}', end='', file=self._err, flush=True)
+        self._status_visible = True
+
+    def _clear_status(self) -> None:
+        if not self._progress_enabled or not self._status_visible:
+            return
+        print('\r\x1b[2K', end='', file=self._err, flush=True)
+        self._status_visible = False
+
+
+def check_project(path: Path) -> CheckReport:
+    return _run_check(path)
+
+
+def format_report(
+    report: CheckReport,
+    *,
+    color: bool = False,
+    context_lines: int = 0,
+) -> str:
+    palette = _Palette(color)
+    sections: list[str] = []
+    diagnostics_output = format_diagnostics(
+        report,
+        palette=palette,
+        context_lines=context_lines,
+    )
+    if diagnostics_output:
+        sections.append(diagnostics_output)
+    sections.append(format_summary(report, palette=palette))
+    return '\n\n'.join(sections)
+
+
+def format_diagnostics(
+    report: CheckReport,
+    *,
+    palette: _Palette,
+    context_lines: int,
+) -> str:
+    lines: list[str] = []
+    groups = _group_diagnostics(report.diagnostics)
+    for index, (path, diagnostics) in enumerate(groups):
+        if index:
+            lines.append('')
+        text = report.source_text_by_path.get(path)
+        if text is None:
+            continue
+        lines.append(
+            format_file_diagnostics(
+                path=path,
+                text=text,
+                diagnostics=tuple(diagnostic.diagnostic for diagnostic in diagnostics),
+                root=report.root,
+                palette=palette,
+                context_lines=context_lines,
+            )
+        )
+    return '\n'.join(lines)
+
+
+def format_file_diagnostics(
+    *,
+    path: Path,
+    text: str,
+    diagnostics: tuple[Diagnostic, ...],
+    root: Path,
+    palette: _Palette,
+    context_lines: int,
+) -> str:
+    count_label = 'diagnostic' if len(diagnostics) == 1 else 'diagnostics'
+    display_path = _display_path(path, root)
+    header = f'{palette.file(str(display_path))}{palette.dim(f" ({len(diagnostics)} {count_label})")}'
+
+    location_width = max(
+        len(f'{diagnostic.span.start.line + 1}:{diagnostic.span.start.character + 1}')
+        for diagnostic in diagnostics
+    )
+    severity_width = max(len(diagnostic.severity) for diagnostic in diagnostics)
+    code_width = max(len(diagnostic.code) for diagnostic in diagnostics)
+
+    lines = [header]
+    source_lines = text.splitlines()
+    line_number_width = _line_number_width(source_lines, diagnostics, context_lines)
+    for diagnostic in diagnostics:
+        start = diagnostic.span.start
+        location = f'{start.line + 1}:{start.character + 1}'.rjust(location_width)
+        severity = palette.severity(
+            diagnostic.severity.ljust(severity_width),
+            diagnostic.severity,
+        )
+        code = palette.code(diagnostic.code.ljust(code_width))
+        lines.append(f'  {palette.dim(location)}  {severity}  {code}  {diagnostic.message}')
+        lines.extend(
+            _format_context_lines(
+                source_lines,
+                diagnostic,
+                line_number_width=line_number_width,
+                palette=palette,
+                context_lines=context_lines,
+            )
+        )
+
+    return '\n'.join(lines)
+
+
+def format_summary(report: CheckReport, *, palette: _Palette) -> str:
+    file_label = 'file' if report.source_count == 1 else 'files'
+    lines = [palette.heading('Summary')]
+    lines.append(
+        f'Scanned {report.source_count} Tcl {file_label} under {report.root} '
+        f'in {_format_duration(report.elapsed_seconds)}.'
+    )
+
+    if report.background_source_count:
+        background_label = 'file' if report.background_source_count == 1 else 'files'
+        lines.append(
+            f'Loaded {report.background_source_count} package source {background_label} '
+            'from package ifneeded entries.'
+        )
+
+    if not report.diagnostics:
+        lines.append('No diagnostics found.')
+        return '\n'.join(lines)
+
+    diagnostic_label = 'diagnostic' if len(report.diagnostics) == 1 else 'diagnostics'
+    affected_file_label = 'file' if report.files_with_diagnostics == 1 else 'files'
+    lines.append(
+        f'Found {len(report.diagnostics)} {diagnostic_label} in '
+        f'{report.files_with_diagnostics} {affected_file_label}.'
+    )
+
+    counts = report.diagnostic_counts
+    code_width = max(len(code) for code in counts)
+    count_width = len(str(max(counts.values())))
+    for code in sorted(counts):
+        lines.append(
+            f'  {palette.code(code.ljust(code_width))} {palette.count(str(counts[code]).rjust(count_width))}'
+        )
+
+    return '\n'.join(lines)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _parse_args(argv)
+    target = Path(args.path)
+    palette = _Palette(_color_enabled(args.color, sys.stdout))
+    reporter = _StreamReporter(
+        root=target.expanduser().resolve(strict=False),
+        out=sys.stdout,
+        err=sys.stderr,
+        palette=palette,
+        context_lines=args.context_lines,
+    )
+
+    try:
+        report = _run_check(target, reporter=reporter)
+    except KeyboardInterrupt:
+        reporter.abort()
+        print('Interrupted.', file=sys.stderr)
+        return 130
+    except (OSError, ValueError, AssertionError) as exc:
+        reporter.abort()
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    if args.fail_on_diagnostics and report.diagnostics:
+        return 1
+    return 0
+
+
+def _run_check(path: Path, reporter: _StreamReporter | None = None) -> CheckReport:
+    started = time.monotonic()
+    target = path.expanduser().resolve(strict=False)
+    units = _discover_analysis_units(target)
+    if not units:
+        raise ValueError(f'No Tcl sources found under {path.expanduser()}')
+
+    parser = Parser()
+    extractor = FactExtractor(parser)
+    resolver = Resolver()
+    document_cache = _DocumentCache(parser=parser, extractor=extractor)
+    package_index_catalog = _build_package_index_catalog(
+        target,
+        parser=parser,
+        extractor=extractor,
+    )
+
+    source_count = sum(len(unit.source_paths) for unit in units)
+    source_text_by_path: dict[Path, str] = {}
+    diagnostics: list[ProjectDiagnostic] = []
+    background_source_paths: set[Path] = set()
+    analyzed_sources = 0
+    analysis_started = False
+
+    if reporter is not None:
+        reporter.start_indexing(len(units))
+
+    for unit_index, unit in enumerate(units, start=1):
+        if reporter is not None:
+            reporter.workspace_started(
+                unit_index,
+                len(units),
+                unit.root,
+                len(unit.source_paths),
+            )
+
+        prepared_unit = _prepare_unit(
+            unit,
+            document_cache=document_cache,
+            package_index_catalog=package_index_catalog,
+            reporter=reporter,
+        )
+        background_source_paths.update(prepared_unit.background_source_paths)
+
+        if reporter is not None:
+            reporter.source_indexed(unit_index, len(units))
+            if not analysis_started:
+                reporter.start_analysis(source_count)
+                analysis_started = True
+
+        for document in prepared_unit.source_documents:
+            source_text_by_path[document.path] = document.text
+            document_diagnostics = tuple(
+                sorted(
+                    resolver.analyze(
+                        uri=document.uri,
+                        facts=document.facts,
+                        workspace_index=prepared_unit.workspace_index,
+                    ).diagnostics,
+                    key=_diagnostic_key,
+                )
+            )
+            diagnostics.extend(
+                ProjectDiagnostic(path=document.path, diagnostic=diagnostic)
+                for diagnostic in document_diagnostics
+            )
+            analyzed_sources += 1
+            if reporter is not None:
+                reporter.source_analyzed(
+                    current=analyzed_sources,
+                    total=source_count,
+                    path=document.path,
+                    text=document.text,
+                    diagnostics=document_diagnostics,
+                )
+
+    report = CheckReport(
+        root=target,
+        source_count=source_count,
+        background_source_count=len(background_source_paths),
+        diagnostics=tuple(diagnostics),
+        source_text_by_path=source_text_by_path,
+        elapsed_seconds=time.monotonic() - started,
+    )
+    if reporter is not None:
+        reporter.finish(report)
+    return report
+
+
+def _prepare_unit(
+    unit: _AnalysisUnit,
+    *,
+    document_cache: _DocumentCache,
+    package_index_catalog: tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...],
+    reporter: _StreamReporter | None = None,
+) -> _PreparedUnit:
+    workspace_index = WorkspaceIndex()
+    _apply_package_index_catalog(workspace_index, package_index_catalog)
+    documents_by_uri: dict[str, _ProjectDocument] = {}
+    source_documents: list[_ProjectDocument] = []
+    for source_path in unit.source_paths:
+        document = document_cache.get(source_path)
+        documents_by_uri[document.uri] = document
+        source_documents.append(document)
+        workspace_index.update(document.uri, document.facts)
+    background_source_paths = _load_background_documents(
+        documents_by_uri,
+        document_cache=document_cache,
+        workspace_index=workspace_index,
+        reporter=reporter,
+    )
+    return _PreparedUnit(
+        unit=unit,
+        source_documents=tuple(source_documents),
+        background_source_paths=background_source_paths,
+        workspace_index=workspace_index,
+    )
+
+
+def _load_background_documents(
+    documents_by_uri: dict[str, _ProjectDocument],
+    *,
+    document_cache: _DocumentCache,
+    workspace_index: WorkspaceIndex,
+    reporter: _StreamReporter | None,
+) -> tuple[Path, ...]:
+    failed_uris: set[str] = set()
+    loaded_paths: set[Path] = set()
+
+    while True:
+        loaded_document = False
+        for document in tuple(documents_by_uri.values()):
+            for package_require in document.facts.package_requires:
+                for source_uri in workspace_index.package_source_uris(package_require.name):
+                    if source_uri in documents_by_uri or source_uri in failed_uris:
+                        continue
+
+                    source_path = source_id_to_path(source_uri)
+                    if source_path is None:
+                        failed_uris.add(source_uri)
+                        continue
+
+                    try:
+                        background_document = document_cache.get(source_path)
+                    except OSError:
+                        failed_uris.add(source_uri)
+                        continue
+
+                    documents_by_uri[background_document.uri] = background_document
+                    workspace_index.update(background_document.uri, background_document.facts)
+                    loaded_paths.add(background_document.path)
+                    if reporter is not None:
+                        reporter.background_source_loaded(background_document.path)
+                    loaded_document = True
+                    break
+                if loaded_document:
+                    break
+            if loaded_document:
+                break
+        if not loaded_document:
+            return tuple(sorted(loaded_paths))
+
+
+def _build_package_index_catalog(
+    target: Path,
+    *,
+    parser: Parser,
+    extractor: FactExtractor,
+) -> tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...]:
+    catalog_entries: list[tuple[str, tuple[PackageIndexEntry, ...]]] = []
+    seen_paths: set[Path] = set()
+    for root in _package_index_scan_roots(target):
+        for pkg_index_path in sorted(root.rglob('pkgIndex.tcl')):
+            resolved_path = pkg_index_path.resolve(strict=False)
+            if resolved_path in seen_paths:
+                continue
+            seen_paths.add(resolved_path)
+            try:
+                text = read_source_file(resolved_path)
+            except OSError:
+                continue
+            pkg_index_uri = resolved_path.as_uri()
+            parse_result = parser.parse_document(path=pkg_index_uri, text=text)
+            facts = extractor.extract(parse_result)
+            catalog_entries.append((pkg_index_uri, facts.package_index_entries))
+    return tuple(catalog_entries)
+
+
+def _apply_package_index_catalog(
+    workspace_index: WorkspaceIndex,
+    package_index_catalog: tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...],
+) -> None:
+    for pkg_index_uri, package_index_entries in package_index_catalog:
+        workspace_index.update_package_index(pkg_index_uri, package_index_entries)
+
+
+def _package_index_scan_roots(target: Path) -> tuple[Path, ...]:
+    roots = tuple(
+        dict.fromkeys(package_root.resolve(strict=False) for package_root in candidate_package_roots(target))
+    )
+    if roots:
+        return roots
+    if target.is_dir():
+        return (target,)
+    return ()
+
+
+def _discover_analysis_units(target: Path) -> tuple[_AnalysisUnit, ...]:
+    if target.is_file():
+        resolved_target = target.resolve(strict=False)
+        package_root = _nearest_package_workspace_root(resolved_target)
+        if package_root is not None:
+            source_paths = tuple(
+                path.resolve(strict=False) for path in discover_tcl_sources(package_root)
+            )
+            unit_root = package_root
+        else:
+            source_paths = (resolved_target,)
+            unit_root = resolved_target
+        return (_AnalysisUnit(root=unit_root, source_paths=source_paths),)
+
+    source_paths = tuple(path.resolve(strict=False) for path in discover_tcl_sources(target))
+    units_by_root: dict[Path, list[Path]] = {}
+    for source_path in source_paths:
+        unit_root = _analysis_unit_root(source_path, target)
+        units_by_root.setdefault(unit_root, []).append(source_path)
+
+    return tuple(
+        _AnalysisUnit(
+            root=root,
+            source_paths=tuple(sorted(paths)),
+        )
+        for root, paths in sorted(units_by_root.items(), key=lambda item: str(item[0]))
+    )
+
+
+def _analysis_unit_root(source_path: Path, target_root: Path) -> Path:
+    package_root = _nearest_package_workspace_root(source_path)
+    if package_root is not None:
+        return package_root
+
+    if source_path.parent == target_root:
+        return target_root
+    return source_path.parent
+
+
+def _nearest_package_workspace_root(source_path: Path) -> Path | None:
+    for directory in (source_path.parent, *source_path.parent.parents):
+        if (directory / 'pkgIndex.tcl').is_file():
+            return directory
+    return None
+
+
+def _index_document(path: Path, *, parser: Parser, extractor: FactExtractor) -> _ProjectDocument:
+    text = read_source_file(path)
+    uri = path.as_uri()
+    parse_result = parser.parse_document(path=uri, text=text)
+    return _ProjectDocument(
+        path=path,
+        uri=uri,
+        text=text,
+        facts=extractor.extract(parse_result),
+    )
+
+
+def _group_diagnostics(
+    diagnostics: tuple[ProjectDiagnostic, ...],
+) -> tuple[tuple[Path, tuple[ProjectDiagnostic, ...]], ...]:
+    groups: dict[Path, list[ProjectDiagnostic]] = {}
+    for diagnostic in diagnostics:
+        groups.setdefault(diagnostic.path, []).append(diagnostic)
+    return tuple((path, tuple(group)) for path, group in groups.items())
+
+
+def _format_context_lines(
+    source_lines: list[str],
+    diagnostic: Diagnostic,
+    *,
+    line_number_width: int,
+    palette: _Palette,
+    context_lines: int,
+) -> list[str]:
+    target_line = diagnostic.span.start.line
+    if target_line < 0 or target_line >= len(source_lines):
+        return []
+
+    start_line = max(0, target_line - context_lines)
+    end_line = min(len(source_lines) - 1, target_line + context_lines)
+
+    rendered: list[str] = []
+    for line_number in range(start_line, end_line + 1):
+        line_text = source_lines[line_number].expandtabs(_TAB_SIZE)
+        gutter = palette.dim(f'    {str(line_number + 1).rjust(line_number_width)} | ')
+        rendered.append(f'{gutter}{line_text}')
+        if line_number == target_line:
+            rendered.append(
+                _format_caret_line(
+                    source_lines[line_number],
+                    diagnostic,
+                    line_number_width=line_number_width,
+                    palette=palette,
+                )
+            )
+    return rendered
+
+
+def _format_caret_line(
+    source_line: str,
+    diagnostic: Diagnostic,
+    *,
+    line_number_width: int,
+    palette: _Palette,
+) -> str:
+    start_character = min(max(diagnostic.span.start.character, 0), len(source_line))
+    if diagnostic.span.end.line == diagnostic.span.start.line:
+        end_character = min(max(diagnostic.span.end.character, start_character), len(source_line))
+    else:
+        end_character = len(source_line)
+
+    start_column = _visual_column(source_line, start_character)
+    end_column = _visual_column(source_line, end_character)
+    if end_column <= start_column:
+        end_column = start_column + 1
+
+    marker = ' ' * start_column + palette.caret(
+        '^' * max(1, end_column - start_column),
+        diagnostic.severity,
+    )
+    gutter = palette.dim(f'    {" " * line_number_width} | ')
+    return f'{gutter}{marker}'
+
+
+def _line_number_width(
+    source_lines: list[str],
+    diagnostics: tuple[Diagnostic, ...],
+    context_lines: int,
+) -> int:
+    highest_line_number = max(
+        min(len(source_lines), diagnostic.span.start.line + context_lines + 1)
+        for diagnostic in diagnostics
+    )
+    return len(str(max(1, highest_line_number)))
+
+
+def _visual_column(text: str, character: int) -> int:
+    column = 0
+    for char in text[:character]:
+        if char == '\t':
+            column += _TAB_SIZE - (column % _TAB_SIZE)
+        else:
+            column += 1
+    return column
+
+
+def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog='tcl-check',
+        description='Analyze Tcl sources under a file or directory and print diagnostics.',
+    )
+    parser.add_argument('path', help='Tcl source file or project directory to analyze')
+    parser.add_argument(
+        '--color',
+        choices=('auto', 'always', 'never'),
+        default='auto',
+        help='Colorize output. Defaults to `auto`.',
+    )
+    parser.add_argument(
+        '--context-lines',
+        type=_non_negative_int,
+        default=0,
+        help='Show this many lines of surrounding source context for each diagnostic.',
+    )
+    parser.add_argument(
+        '--fail-on-diagnostics',
+        action='store_true',
+        help='Exit with status 1 when diagnostics are reported.',
+    )
+    return parser.parse_args(argv)
+
+
+def _display_path(path: Path, root: Path) -> Path:
+    if root.is_file():
+        return Path(path.name) if path.name else path
+    try:
+        return path.relative_to(root)
+    except ValueError:
+        return path
+
+
+def _diagnostic_key(diagnostic: Diagnostic) -> tuple[int, int, str, str]:
+    start = diagnostic.span.start
+    return (start.line, start.character, diagnostic.code, diagnostic.message)
+
+
+def _color_enabled(mode: ColorMode, stream: TextIO) -> bool:
+    if mode == 'always':
+        return True
+    if mode == 'never':
+        return False
+    return stream.isatty() and 'NO_COLOR' not in os.environ
+
+
+def _format_duration(seconds: float) -> str:
+    if seconds >= 60:
+        minutes = int(seconds // 60)
+        remaining_seconds = seconds - (minutes * 60)
+        return f'{minutes}m {remaining_seconds:04.1f}s'
+    if seconds >= 1:
+        return f'{seconds:.1f}s'
+    return f'{int(seconds * 1000)}ms'
+
+
+def _non_negative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError('value must be >= 0')
+    return parsed
+
+
+def _severity_color(severity: str) -> str:
+    return {
+        'error': '31',
+        'warning': '33',
+        'information': '36',
+        'hint': '35',
+    }.get(severity, '37')
