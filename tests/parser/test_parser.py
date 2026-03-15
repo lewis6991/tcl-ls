@@ -97,6 +97,20 @@ def test_parser_treats_invalid_variable_starters_as_literal_text(parser: Parser)
     assert [word_static_text(word) for word in result.script.commands[2].words] == ['puts', '$']
 
 
+def test_parser_stops_bare_variable_names_before_trailing_colons(parser: Parser) -> None:
+    result = parser.parse_document('punctuated-vars.tcl', 'puts $argv0:\nputs "$pname:"\n')
+
+    assert result.diagnostics == ()
+
+    first_variable = result.script.commands[0].words[1].parts[0]
+    assert isinstance(first_variable, VariableSubstitution)
+    assert first_variable.name == 'argv0'
+
+    second_variable = result.script.commands[1].words[1].parts[0]
+    assert isinstance(second_variable, VariableSubstitution)
+    assert second_variable.name == 'pname'
+
+
 def test_parser_handles_line_continuations_in_comments_and_commands(parser: Parser) -> None:
     result = parser.parse_document(
         'continued.tcl',

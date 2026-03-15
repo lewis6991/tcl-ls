@@ -370,6 +370,42 @@ class Resolver:
                 ),
             )
         if not matches:
+            implicit_test_builtins = self._resolve_implicit_test_builtins(command_call)
+            if len(implicit_test_builtins) == 1:
+                builtin = implicit_test_builtins[0]
+                return (
+                    ResolutionResult(
+                        reference=reference,
+                        uncertainty=AnalysisUncertainty(
+                            state='resolved',
+                            reason='Resolved via implicit tcltest imports for a `.test` file.',
+                        ),
+                        target_symbol_ids=tuple(
+                            overload.symbol_id for overload in builtin.overloads
+                        ),
+                    ),
+                    HoverInfo(
+                        span=command_call.name_span,
+                        contents=_builtin_hover(builtin),
+                    ),
+                )
+            if len(implicit_test_builtins) > 1:
+                return (
+                    ResolutionResult(
+                        reference=reference,
+                        uncertainty=AnalysisUncertainty(
+                            state='ambiguous',
+                            reason='Multiple implicit tcltest builtin commands match this name.',
+                        ),
+                        target_symbol_ids=tuple(
+                            overload.symbol_id
+                            for builtin in implicit_test_builtins
+                            for overload in builtin.overloads
+                        ),
+                    ),
+                    None,
+                )
+
             package_name = _matching_required_package(command_call.name, required_packages)
             if package_name is not None:
                 return (
@@ -504,6 +540,17 @@ class Resolver:
             for builtin in builtin_commands_any(normalized_target_name):
                 matches.setdefault(f'{builtin.package}:{builtin.name}', builtin)
         return tuple(matches.values())
+
+    def _resolve_implicit_test_builtins(
+        self,
+        command_call: CommandCall,
+    ) -> tuple[BuiltinCommand, ...]:
+        if not command_call.uri.endswith('.test'):
+            return ()
+        if command_call.name is None or '::' in command_call.name:
+            return ()
+
+        return builtin_commands_any(f'tcltest::{_normalize_command_name(command_call.name)}')
 
 
 def _proc_detail(proc: ProcDecl) -> str:

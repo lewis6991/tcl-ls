@@ -144,6 +144,7 @@ class _FactCollector:
         self._command_handlers: dict[str, Callable[[Command, _ExtractionContext], None]] = {
             'append': self._collect_append,
             'array': self._collect_array,
+            'binary': self._collect_binary,
             'package': self._collect_package,
             'namespace': self._collect_namespace,
             'set': self._collect_set,
@@ -548,6 +549,14 @@ class _FactCollector:
         for variable_word in command.words[3:]:
             self._record_simple_binding_word(variable_word, context, kind='scan')
 
+    def _collect_binary(self, command: Command, context: _ExtractionContext) -> None:
+        if len(command.words) < 5:
+            return
+        if word_static_text(command.words[1]) != 'scan':
+            return
+        for variable_word in command.words[4:]:
+            self._record_simple_binding_word(variable_word, context, kind='scan')
+
     def _collect_lowered_foreach(
         self,
         command: LoweredForeachCommand,
@@ -803,6 +812,7 @@ class _FactCollector:
         span: Span,
         context: _ExtractionContext,
     ) -> None:
+        name = _normalize_variable_name(name)
         if self._linked_variable(context.scope_id, name) is not None:
             self._record_custom_variable_reference(
                 name=name,
@@ -846,6 +856,7 @@ class _FactCollector:
         context: _ExtractionContext,
         kind: BindingKind,
     ) -> None:
+        name = _normalize_variable_name(name)
         linked_target = self._linked_variable(context.scope_id, name)
         if linked_target is not None:
             self._record_custom_variable_binding(
@@ -949,7 +960,10 @@ class _FactCollector:
 
     def _simple_variable_name(self, word: Word) -> str | None:
         variable_name = word_static_text(word)
-        if variable_name is None or not is_simple_name(variable_name):
+        if variable_name is None:
+            return None
+        variable_name = _normalize_variable_name(variable_name)
+        if not is_simple_name(variable_name):
             return None
         return variable_name
 
@@ -1209,3 +1223,17 @@ class _FactCollector:
                 )
             )
         return symbols
+
+
+def _normalize_variable_name(name: str) -> str:
+    while name.endswith(':') and not name.endswith('::'):
+        name = name[:-1]
+
+    open_paren = name.find('(')
+    if open_paren <= 0 or not name.endswith(')'):
+        return name
+
+    base_name = name[:open_paren]
+    if not is_simple_name(base_name):
+        return name
+    return base_name

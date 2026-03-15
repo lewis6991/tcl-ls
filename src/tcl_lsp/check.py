@@ -584,6 +584,24 @@ def _prepare_unit(
     )
 
 
+def _prepare_source_workspace(
+    document: _ProjectDocument,
+    *,
+    package_index_catalog: tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...],
+    document_cache: _DocumentCache,
+) -> tuple[WorkspaceIndex, tuple[Path, ...]]:
+    workspace_index = WorkspaceIndex()
+    _apply_package_index_catalog(workspace_index, package_index_catalog)
+    documents_by_uri = {document.uri: document}
+    workspace_index.update(document.uri, document.facts)
+    background_source_paths = _load_background_documents(
+        documents_by_uri,
+        document_cache=document_cache,
+        workspace_index=workspace_index,
+    )
+    return workspace_index, background_source_paths
+
+
 def _load_background_documents(
     documents_by_uri: dict[str, _ProjectDocument],
     *,
@@ -723,6 +741,10 @@ def _nearest_package_workspace_root(source_path: Path) -> Path | None:
         if (directory / 'pkgIndex.tcl').is_file():
             return directory
     return None
+
+
+def _is_package_unit(unit: _AnalysisUnit) -> bool:
+    return unit.root.is_dir() and (unit.root / 'pkgIndex.tcl').is_file()
 
 
 def _index_document(path: Path, *, parser: Parser, extractor: FactExtractor) -> _ProjectDocument:
@@ -914,6 +936,14 @@ def _analyze_unit(
     resolver: Resolver,
     package_index_catalog: tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...],
 ) -> _UnitAnalysisReport:
+    if _is_package_unit(unit):
+        return _analyze_package_unit(
+            unit,
+            document_cache=document_cache,
+            resolver=resolver,
+            package_index_catalog=package_index_catalog,
+        )
+
     prepared_unit = _prepare_unit(
         unit,
         document_cache=document_cache,
@@ -930,6 +960,38 @@ def _analyze_unit(
     return _UnitAnalysisReport(
         source_reports=source_reports,
         background_source_paths=prepared_unit.background_source_paths,
+    )
+
+
+def _analyze_package_unit(
+    unit: _AnalysisUnit,
+    *,
+    document_cache: _DocumentCache,
+    resolver: Resolver,
+    package_index_catalog: tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...],
+) -> _UnitAnalysisReport:
+    source_reports: list[_UnitSourceReport] = []
+    background_source_paths: set[Path] = set()
+
+    for source_path in unit.source_paths:
+        document = document_cache.get(source_path)
+        workspace_index, loaded_background_paths = _prepare_source_workspace(
+            document,
+            package_index_catalog=package_index_catalog,
+            document_cache=document_cache,
+        )
+        background_source_paths.update(loaded_background_paths)
+        source_reports.append(
+            _analyze_source_document(
+                document,
+                resolver=resolver,
+                workspace_index=workspace_index,
+            )
+        )
+
+    return _UnitAnalysisReport(
+        source_reports=tuple(source_reports),
+        background_source_paths=tuple(sorted(background_source_paths)),
     )
 
 

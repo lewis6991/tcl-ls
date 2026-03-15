@@ -53,18 +53,43 @@ def test_analysis_resolves_proc_calls_and_parameters(parser: Parser) -> None:
     assert analysis.diagnostics == ()
 
 
-def test_analysis_reports_duplicate_procs_and_unresolved_symbols(parser: Parser) -> None:
+def test_analysis_prefers_last_same_file_proc_definition(parser: Parser) -> None:
     snapshot = _analyze(
         parser,
         'file:///broken.tcl',
-        'proc greet {} {puts $name}\nmissing_command\nproc greet {} {return ok}\n',
+        'proc greet {} {puts $name}\nmissing_command\nproc greet {} {return ok}\ngreet\n',
     )
     analysis = snapshot.analysis
 
     diagnostic_codes = [diagnostic.code for diagnostic in analysis.diagnostics]
-    assert diagnostic_codes.count('duplicate-proc') == 2
     assert 'unresolved-command' in diagnostic_codes
     assert 'unresolved-variable' in diagnostic_codes
+    assert 'duplicate-proc' not in diagnostic_codes
+    assert 'ambiguous-command' not in diagnostic_codes
+
+    greet_resolution = next(
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command' and resolution.reference.name == 'greet'
+    )
+    assert greet_resolution.uncertainty.state == 'resolved'
+
+
+def test_analysis_reports_duplicate_procs_across_documents(parser: Parser) -> None:
+    extractor = FactExtractor(parser)
+    resolver = Resolver()
+    workspace = WorkspaceIndex()
+
+    first_parse = parser.parse_document('file:///first.tcl', 'proc greet {} {return ok}\n')
+    first_facts = extractor.extract(first_parse)
+    workspace.update(first_facts.uri, first_facts)
+
+    second_parse = parser.parse_document('file:///second.tcl', 'proc greet {} {return ok}\n')
+    second_facts = extractor.extract(second_parse)
+    workspace.update(second_facts.uri, second_facts)
+
+    analysis = resolver.analyze(first_facts.uri, first_facts, workspace)
+    assert [diagnostic.code for diagnostic in analysis.diagnostics] == ['duplicate-proc']
 
 
 def test_analysis_tracks_namespace_resolution(parser: Parser) -> None:
@@ -476,6 +501,25 @@ def test_analysis_resolves_required_tk_commands(parser: Parser) -> None:
     assert analysis.diagnostics == ()
 
 
+def test_analysis_resolves_tcltest_commands_in_test_files_without_explicit_import(
+    parser: Parser,
+) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///suite.test',
+        'test sample {} -body {return ok}\n',
+    )
+    analysis = snapshot.analysis
+
+    resolution = next(
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command' and resolution.reference.name == 'test'
+    )
+    assert resolution.uncertainty.state == 'resolved'
+    assert analysis.diagnostics == ()
+
+
 def test_analysis_resolves_imported_tcltest_commands(parser: Parser) -> None:
     snapshot = _analyze(
         parser,
@@ -578,12 +622,14 @@ def test_analysis_tracks_additional_builtin_variable_writers_and_outputs(parser:
         '    gets stdin line\n'
         '    lassign $items first second\n'
         '    scan "1 2" "%d %d" left right\n'
+        '    binary scan "AB" H* hex\n'
         '    puts $message\n'
         '    puts $line\n'
         '    puts $first\n'
         '    puts $second\n'
         '    puts $left\n'
         '    puts $right\n'
+        '    puts $hex\n'
         '}\n',
     )
     facts = snapshot.facts
@@ -602,6 +648,7 @@ def test_analysis_tracks_additional_builtin_variable_writers_and_outputs(parser:
     assert bindings_by_name['second'] == 'lassign'
     assert bindings_by_name['left'] == 'scan'
     assert bindings_by_name['right'] == 'scan'
+    assert bindings_by_name['hex'] == 'scan'
 
     variable_resolutions = {
         (
@@ -619,8 +666,32 @@ def test_analysis_tracks_additional_builtin_variable_writers_and_outputs(parser:
         'second',
         'left',
         'right',
+        'hex',
     }
     assert set(variable_resolutions.values()) == {'resolved'}
+    assert analysis.diagnostics == ()
+
+
+def test_analysis_normalizes_punctuated_and_array_variable_names(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///variables.tcl',
+        'proc run {pname} {\n'
+        '    global ftp\n'
+        '    set ftp(conn) ok\n'
+        '    puts "$pname:"\n'
+        '    puts ${ftp(conn)}\n'
+        '}\n',
+    )
+    analysis = snapshot.analysis
+
+    variable_states = {
+        resolution.reference.name: resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'variable'
+    }
+    assert variable_states['pname'] == 'resolved'
+    assert variable_states['ftp'] == 'resolved'
     assert analysis.diagnostics == ()
 
 

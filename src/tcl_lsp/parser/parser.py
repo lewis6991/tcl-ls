@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 
 from tcl_lsp.common import Diagnostic, Position, Span
+from tcl_lsp.parser.helpers import consume_bare_variable_name_end
 from tcl_lsp.parser.model import (
     BareWord,
     BracedWord,
@@ -22,9 +23,6 @@ from tcl_lsp.parser.model import (
 
 _HORIZONTAL_WHITESPACE = {' ', '\t', '\r', '\f'}
 _WORD_DELIMITERS = _HORIZONTAL_WHITESPACE | {'\n', ';'}
-_SIMPLE_VARIABLE_CONTINUATIONS = set(
-    'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:'
-)
 _BARE_WORD_PLAIN_TEXT_RUN = re.compile(r'[^ \t\r\f\n;\[$\\]+')
 _BARE_WORD_PLAIN_TEXT_WITH_BRACKET_STOP_RUN = re.compile(r'[^ \t\r\f\n;\[$\\\]]+')
 _COMMENT_TEXT_RUN = re.compile(r'[^\\\n]+')
@@ -530,12 +528,12 @@ class _ParserImplementation:
                 brace_wrapped=True,
             )
 
-        if current_char not in _SIMPLE_VARIABLE_CONTINUATIONS:
+        name_end = consume_bare_variable_name_end(self._text, self._index)
+        if name_end == self._index:
             return LiteralText(span=Span(start=start_position, end=self._current_position()), text='$')
 
         name_start = self._index
-        while not self._is_eof() and self._peek() in _SIMPLE_VARIABLE_CONTINUATIONS:
-            self._advance_char()
+        self._advance_plain_run(name_end)
         name = self._text[name_start : self._index]
         return VariableSubstitution(
             span=Span(start=start_position, end=self._current_position()),

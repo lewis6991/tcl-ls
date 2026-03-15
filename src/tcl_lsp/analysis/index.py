@@ -107,7 +107,9 @@ class WorkspaceIndex:
         matches: list[ProcDecl] = []
         seen: set[str] = set()
         for candidate_name in _procedure_candidates(raw_name, namespace):
-            for proc in self._procedures_by_qualified_name.get(candidate_name, []):
+            for proc in _effective_procedures(
+                self._procedures_by_qualified_name.get(candidate_name, [])
+            ):
                 if proc.symbol_id in seen:
                     continue
                 seen.add(proc.symbol_id)
@@ -115,13 +117,13 @@ class WorkspaceIndex:
         return tuple(matches)
 
     def procedures_for_name(self, qualified_name: str) -> tuple[ProcDecl, ...]:
-        return tuple(self._procedures_by_qualified_name.get(qualified_name, []))
+        return _effective_procedures(self._procedures_by_qualified_name.get(qualified_name, []))
 
     def resolve_imported_procedure(self, raw_name: str, namespace: str) -> tuple[ProcDecl, ...]:
         matches: list[ProcDecl] = []
         seen: set[str] = set()
         for target_name in self.imported_command_candidates(raw_name, namespace):
-            for proc in self._procedures_by_qualified_name.get(target_name, ()):
+            for proc in _effective_procedures(self._procedures_by_qualified_name.get(target_name, ())):
                 if proc.symbol_id in seen:
                     continue
                 seen.add(proc.symbol_id)
@@ -207,3 +209,10 @@ def _normalize_qualified_name(name: str) -> str:
     if not segments:
         return '::'
     return '::' + '::'.join(segments)
+
+
+def _effective_procedures(procedures: list[ProcDecl] | tuple[ProcDecl, ...]) -> tuple[ProcDecl, ...]:
+    latest_by_uri: dict[str, ProcDecl] = {}
+    for procedure in procedures:
+        latest_by_uri[procedure.uri] = procedure
+    return tuple(latest_by_uri.values())

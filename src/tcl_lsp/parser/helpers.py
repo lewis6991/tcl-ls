@@ -12,6 +12,10 @@ from tcl_lsp.parser.model import (
     WordPart,
 )
 
+_BARE_VARIABLE_SEGMENT_CHARS = frozenset(
+    'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_'
+)
+
 
 def iter_word_parts(word: Word) -> Iterator[WordPart]:
     if isinstance(word, BracedWord):
@@ -71,3 +75,27 @@ def _collect_from_script(script: Script) -> list[VariableSubstitution]:
                 elif isinstance(part, CommandSubstitution):
                     substitutions.extend(_collect_from_script(part.script))
     return substitutions
+
+
+def consume_bare_variable_name_end(text: str, start_index: int) -> int:
+    index = start_index
+    if index >= len(text):
+        return start_index
+
+    if text.startswith('::', index):
+        index += 2
+    elif text[index] in _BARE_VARIABLE_SEGMENT_CHARS:
+        index += 1
+    else:
+        return start_index
+
+    while index < len(text):
+        if text[index] in _BARE_VARIABLE_SEGMENT_CHARS:
+            index += 1
+            continue
+        if text.startswith('::', index):
+            index += 2
+            continue
+        break
+
+    return index

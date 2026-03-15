@@ -132,6 +132,32 @@ def test_check_project_resolves_required_tk_commands(tmp_path: Path) -> None:
     assert report.diagnostics == ()
 
 
+def test_check_project_isolates_package_files_from_unreferenced_variants(tmp_path: Path) -> None:
+    package_root = tmp_path / 'workspace' / 'demo'
+    package_root.mkdir(parents=True)
+
+    (package_root / 'pkgIndex.tcl').write_text(
+        'package ifneeded demo 1.0 [list source [file join $dir main1.tcl]]\n',
+        encoding='utf-8',
+    )
+    (package_root / 'main1.tcl').write_text(
+        'package provide demo 1.0\nproc helper {} {return ok}\n',
+        encoding='utf-8',
+    )
+    (package_root / 'main2.tcl').write_text(
+        'proc helper {} {return variant}\n',
+        encoding='utf-8',
+    )
+    (package_root / 'use.tcl').write_text(
+        'package require demo\nhelper\n',
+        encoding='utf-8',
+    )
+
+    report = check_project(package_root)
+
+    assert report.diagnostics == ()
+
+
 def test_check_project_treats_each_pkgindex_directory_as_a_workspace(tmp_path: Path) -> None:
     modules_root = tmp_path / 'workspace' / 'modules'
     first_dir = modules_root / 'first'

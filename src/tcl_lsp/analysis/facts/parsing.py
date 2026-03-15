@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from tcl_lsp.common import Position, Span
+from tcl_lsp.parser.helpers import consume_bare_variable_name_end
 
 _SIMPLE_NAME_CHARS = set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:')
 
@@ -104,12 +105,12 @@ def _consume_static_variable_substitution(
             span=Span(start=start_position, end=position),
         )
 
-    if current_char not in _SIMPLE_NAME_CHARS:
+    name_end = consume_bare_variable_name_end(text, index)
+    if name_end == index:
         return None
 
-    while index < len(text) and text[index] in _SIMPLE_NAME_CHARS:
-        position = position.advance(text[index])
-        index += 1
+    position = position.advance(text[index:name_end])
+    index = name_end
     return ConditionVariableSubstitution(
         name=text[start_index + 1 : index],
         span=Span(start=start_position, end=position),
