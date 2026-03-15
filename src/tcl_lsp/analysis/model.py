@@ -178,7 +178,7 @@ class ResolvedReference:
 @dataclass(frozen=True, slots=True)
 class DocumentFacts:
     uri: str
-    parse_result: ParseResult
+    parse_result: ParseResult | None
     namespaces: tuple[NamespaceScope, ...]
     procedures: tuple[ProcDecl, ...]
     source_directives: tuple[SourceDirective, ...]

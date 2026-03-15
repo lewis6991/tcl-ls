@@ -81,13 +81,14 @@ class FactExtractor:
     def __init__(self, parser: Parser | None = None) -> None:
         self._parser = Parser() if parser is None else parser
 
-    def extract(self, parse_result: ParseResult) -> DocumentFacts:
+    def extract(self, parse_result: ParseResult, *, include_parse_result: bool = True) -> DocumentFacts:
         lowering_result = lower_parse_result(parse_result, parser=self._parser)
         collector = _FactCollector(
             parser=self._parser,
             parse_result=parse_result,
             lowered_script=lowering_result.script,
             diagnostics=parse_result.diagnostics + lowering_result.diagnostics,
+            include_parse_result=include_parse_result,
         )
         return collector.collect()
 
@@ -100,10 +101,12 @@ class _FactCollector:
         *,
         lowered_script: LoweredScript,
         diagnostics: tuple[Diagnostic, ...],
+        include_parse_result: bool,
     ) -> None:
         self._parser = parser
         self._parse_result = parse_result
         self._lowered_script = lowered_script
+        self._include_parse_result = include_parse_result
         self._diagnostics: list[Diagnostic] = list(diagnostics)
         self._namespaces: list[NamespaceScope] = []
         self._procedures: list[ProcDecl] = []
@@ -140,7 +143,7 @@ class _FactCollector:
         self._collect_lowered_script(self._lowered_script, root_context)
         return DocumentFacts(
             uri=self._parse_result.source_id,
-            parse_result=self._parse_result,
+            parse_result=self._parse_result if self._include_parse_result else None,
             namespaces=tuple(self._namespaces),
             procedures=tuple(self._procedures),
             source_directives=tuple(self._source_directives),

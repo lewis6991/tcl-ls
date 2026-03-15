@@ -6,6 +6,8 @@ import sys
 import time
 from collections import Counter
 from collections.abc import Sequence
+from concurrent.futures import ProcessPoolExecutor
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TextIO
@@ -29,6 +31,10 @@ from tcl_lsp.workspace import (
 type ColorMode = Literal['auto', 'always', 'never']
 
 _TAB_SIZE = 4
+_DEFAULT_WORKER_COUNT = 8
+_WORKER_DOCUMENT_CACHE: _DocumentCache | None = None
+_WORKER_RESOLVER: Resolver | None = None
+_WORKER_PACKAGE_INDEX_CATALOG: tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +81,19 @@ class _PreparedUnit:
     source_documents: tuple[_ProjectDocument, ...]
     background_source_paths: tuple[Path, ...]
     workspace_index: WorkspaceIndex
+
+
+@dataclass(frozen=True, slots=True)
+class _UnitSourceReport:
+    path: Path
+    text: str
+    diagnostics: tuple[Diagnostic, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _UnitAnalysisReport:
+    source_reports: tuple[_UnitSourceReport, ...]
+    background_source_paths: tuple[Path, ...]
 
 
 class _DocumentCache:
@@ -254,8 +273,8 @@ class _StreamReporter:
         self._status_visible = False
 
 
-def check_project(path: Path) -> CheckReport:
-    return _run_check(path)
+def check_project(path: Path, *, threads: int = _DEFAULT_WORKER_COUNT) -> CheckReport:
+    return _run_check(path, threads=threads)
 
 
 def format_report(
@@ -401,7 +420,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     try:
-        report = _run_check(target, reporter=reporter)
+        report = _run_check(target, reporter=reporter, threads=args.threads)
     except KeyboardInterrupt:
         reporter.abort()
         print('Interrupted.', file=sys.stderr)
@@ -416,7 +435,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-def _run_check(path: Path, reporter: _StreamReporter | None = None) -> CheckReport:
+def _run_check(
+    path: Path,
+    reporter: _StreamReporter | None = None,
+    *,
+    threads: int = 1,
+) -> CheckReport:
+    worker_count = _worker_count(threads)
     started = time.monotonic()
     target = path.expanduser().resolve(strict=False)
     units = _discover_analysis_units(target)
@@ -425,8 +450,6 @@ def _run_check(path: Path, reporter: _StreamReporter | None = None) -> CheckRepo
 
     parser = Parser()
     extractor = FactExtractor(parser)
-    resolver = Resolver()
-    document_cache = _DocumentCache(parser=parser, extractor=extractor)
     package_index_catalog = _build_package_index_catalog(
         target,
         parser=parser,
@@ -443,54 +466,64 @@ def _run_check(path: Path, reporter: _StreamReporter | None = None) -> CheckRepo
     if reporter is not None:
         reporter.start_indexing(len(units))
 
-    for unit_index, unit in enumerate(units, start=1):
-        if reporter is not None:
-            reporter.workspace_started(
-                unit_index,
-                len(units),
-                unit.root,
-                len(unit.source_paths),
-            )
-
-        prepared_unit = _prepare_unit(
-            unit,
-            document_cache=document_cache,
-            package_index_catalog=package_index_catalog,
-            reporter=reporter,
+    parent_document_cache = _DocumentCache(parser=parser, extractor=extractor)
+    parent_resolver = Resolver()
+    executor = _create_unit_executor(worker_count, package_index_catalog)
+    executor_context = executor if executor is not None else nullcontext(None)
+    with executor_context as executor:
+        futures = (
+            [executor.submit(_analyze_unit_worker, unit) for unit in units]
+            if executor is not None
+            else None
         )
-        background_source_paths.update(prepared_unit.background_source_paths)
 
-        if reporter is not None:
-            reporter.source_indexed(unit_index, len(units))
-            if not analysis_started:
-                reporter.start_analysis(source_count)
-                analysis_started = True
-
-        for document in prepared_unit.source_documents:
-            source_text_by_path[document.path] = document.text
-            document_diagnostics = tuple(
-                sorted(
-                    resolver.analyze(
-                        uri=document.uri,
-                        facts=document.facts,
-                        workspace_index=prepared_unit.workspace_index,
-                    ).diagnostics,
-                    key=_diagnostic_key,
-                )
-            )
-            diagnostics.extend(
-                ProjectDiagnostic(path=document.path, diagnostic=diagnostic)
-                for diagnostic in document_diagnostics
-            )
-            analyzed_sources += 1
+        for unit_index, unit in enumerate(units, start=1):
             if reporter is not None:
-                reporter.source_analyzed(
-                    current=analyzed_sources,
-                    total=source_count,
-                    path=document.path,
-                    text=document.text,
-                    diagnostics=document_diagnostics,
+                reporter.workspace_started(
+                    unit_index,
+                    len(units),
+                    unit.root,
+                    len(unit.source_paths),
                 )
+
+            if futures is None:
+                unit_report = _analyze_unit(
+                    unit,
+                    document_cache=parent_document_cache,
+                    resolver=parent_resolver,
+                    package_index_catalog=package_index_catalog,
+                )
+            else:
+                unit_report = futures[unit_index - 1].result()
+
+            for background_path in unit_report.background_source_paths:
+                if background_path in background_source_paths:
+                    continue
+                background_source_paths.add(background_path)
+                if reporter is not None:
+                    reporter.background_source_loaded(background_path)
+
+            if reporter is not None:
+                reporter.source_indexed(unit_index, len(units))
+                if not analysis_started:
+                    reporter.start_analysis(source_count)
+                    analysis_started = True
+
+            for source_report in unit_report.source_reports:
+                source_text_by_path[source_report.path] = source_report.text
+                diagnostics.extend(
+                    ProjectDiagnostic(path=source_report.path, diagnostic=diagnostic)
+                    for diagnostic in source_report.diagnostics
+                )
+                analyzed_sources += 1
+                if reporter is not None:
+                    reporter.source_analyzed(
+                        current=analyzed_sources,
+                        total=source_count,
+                        path=source_report.path,
+                        text=source_report.text,
+                        diagnostics=source_report.diagnostics,
+                    )
 
     report = CheckReport(
         root=target,
@@ -510,7 +543,6 @@ def _prepare_unit(
     *,
     document_cache: _DocumentCache,
     package_index_catalog: tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...],
-    reporter: _StreamReporter | None = None,
 ) -> _PreparedUnit:
     workspace_index = WorkspaceIndex()
     _apply_package_index_catalog(workspace_index, package_index_catalog)
@@ -525,7 +557,6 @@ def _prepare_unit(
         documents_by_uri,
         document_cache=document_cache,
         workspace_index=workspace_index,
-        reporter=reporter,
     )
     return _PreparedUnit(
         unit=unit,
@@ -540,7 +571,6 @@ def _load_background_documents(
     *,
     document_cache: _DocumentCache,
     workspace_index: WorkspaceIndex,
-    reporter: _StreamReporter | None,
 ) -> tuple[Path, ...]:
     failed_uris: set[str] = set()
     loaded_paths: set[Path] = set()
@@ -556,7 +586,6 @@ def _load_background_documents(
                 if source_path is None:
                     failed_uris.add(source_uri)
                     continue
-
                 try:
                     background_document = document_cache.get(source_path)
                 except OSError:
@@ -566,8 +595,6 @@ def _load_background_documents(
                 documents_by_uri[background_document.uri] = background_document
                 workspace_index.update(background_document.uri, background_document.facts)
                 loaded_paths.add(background_document.path)
-                if reporter is not None:
-                    reporter.background_source_loaded(background_document.path)
                 loaded_document = True
                 break
             if loaded_document:
@@ -595,22 +622,21 @@ def _build_package_index_catalog(
     parser: Parser,
     extractor: FactExtractor,
 ) -> tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...]:
-    catalog_entries: list[tuple[str, tuple[PackageIndexEntry, ...]]] = []
     seen_paths: set[Path] = set()
+    catalog_entries: list[tuple[str, tuple[PackageIndexEntry, ...]]] = []
     for root in _package_index_scan_roots(target):
         for pkg_index_path in sorted(root.rglob('pkgIndex.tcl')):
             resolved_path = pkg_index_path.resolve(strict=False)
             if resolved_path in seen_paths:
                 continue
             seen_paths.add(resolved_path)
-            try:
-                text = read_source_file(resolved_path)
-            except OSError:
-                continue
-            pkg_index_uri = resolved_path.as_uri()
-            parse_result = parser.parse_document(path=pkg_index_uri, text=text)
-            facts = extractor.extract(parse_result)
-            catalog_entries.append((pkg_index_uri, facts.package_index_entries))
+            indexed_entry = _index_package_index(
+                resolved_path,
+                parser=parser,
+                extractor=extractor,
+            )
+            if indexed_entry is not None:
+                catalog_entries.append(indexed_entry)
     return tuple(catalog_entries)
 
 
@@ -689,9 +715,8 @@ def _index_document(path: Path, *, parser: Parser, extractor: FactExtractor) -> 
         path=path,
         uri=uri,
         text=text,
-        facts=extractor.extract(parse_result),
+        facts=extractor.extract(parse_result, include_parse_result=False),
     )
-
 
 def _group_diagnostics(
     diagnostics: tuple[ProjectDiagnostic, ...],
@@ -805,6 +830,16 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         action='store_true',
         help='Exit with status 1 when diagnostics are reported.',
     )
+    parser.add_argument(
+        '-j',
+        '--threads',
+        type=_worker_count,
+        default=_DEFAULT_WORKER_COUNT,
+        help=(
+            'Index documents with this many worker processes. '
+            f'Defaults to {_DEFAULT_WORKER_COUNT}.'
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -845,6 +880,129 @@ def _non_negative_int(value: str) -> int:
     if parsed < 0:
         raise argparse.ArgumentTypeError('value must be >= 0')
     return parsed
+
+
+def _worker_count(value: str | int) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError('value must be >= 1')
+    return parsed
+
+
+def _analyze_unit(
+    unit: _AnalysisUnit,
+    *,
+    document_cache: _DocumentCache,
+    resolver: Resolver,
+    package_index_catalog: tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...],
+) -> _UnitAnalysisReport:
+    prepared_unit = _prepare_unit(
+        unit,
+        document_cache=document_cache,
+        package_index_catalog=package_index_catalog,
+    )
+    source_reports = tuple(
+        _analyze_source_document(
+            document,
+            resolver=resolver,
+            workspace_index=prepared_unit.workspace_index,
+        )
+        for document in prepared_unit.source_documents
+    )
+    return _UnitAnalysisReport(
+        source_reports=source_reports,
+        background_source_paths=prepared_unit.background_source_paths,
+    )
+
+
+def _analyze_source_document(
+    document: _ProjectDocument,
+    *,
+    resolver: Resolver,
+    workspace_index: WorkspaceIndex,
+) -> _UnitSourceReport:
+    diagnostics = tuple(
+        sorted(
+            resolver.analyze(
+                uri=document.uri,
+                facts=document.facts,
+                workspace_index=workspace_index,
+            ).diagnostics,
+            key=_diagnostic_key,
+        )
+    )
+    return _UnitSourceReport(
+        path=document.path,
+        text=document.text,
+        diagnostics=diagnostics,
+    )
+
+
+def _initialize_unit_worker(
+    package_index_catalog: tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...],
+) -> None:
+    global _WORKER_DOCUMENT_CACHE, _WORKER_PACKAGE_INDEX_CATALOG, _WORKER_RESOLVER
+    parser = Parser()
+    extractor = FactExtractor(parser)
+    _WORKER_DOCUMENT_CACHE = _DocumentCache(parser=parser, extractor=extractor)
+    _WORKER_RESOLVER = Resolver()
+    _WORKER_PACKAGE_INDEX_CATALOG = package_index_catalog
+
+
+def _analyze_unit_worker(unit: _AnalysisUnit) -> _UnitAnalysisReport:
+    document_cache, resolver, package_index_catalog = _worker_services()
+    return _analyze_unit(
+        unit,
+        document_cache=document_cache,
+        resolver=resolver,
+        package_index_catalog=package_index_catalog,
+    )
+
+
+def _worker_services() -> tuple[
+    _DocumentCache,
+    Resolver,
+    tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...],
+]:
+    global _WORKER_DOCUMENT_CACHE, _WORKER_PACKAGE_INDEX_CATALOG, _WORKER_RESOLVER
+    if _WORKER_DOCUMENT_CACHE is None or _WORKER_RESOLVER is None:
+        _initialize_unit_worker(())
+    assert _WORKER_DOCUMENT_CACHE is not None
+    assert _WORKER_RESOLVER is not None
+    return (_WORKER_DOCUMENT_CACHE, _WORKER_RESOLVER, _WORKER_PACKAGE_INDEX_CATALOG)
+
+
+def _index_package_index(
+    path: Path,
+    *,
+    parser: Parser,
+    extractor: FactExtractor,
+) -> tuple[str, tuple[PackageIndexEntry, ...]] | None:
+    try:
+        text = read_source_file(path)
+    except OSError:
+        return None
+
+    pkg_index_uri = path.as_uri()
+    parse_result = parser.parse_document(path=pkg_index_uri, text=text)
+    facts = extractor.extract(parse_result, include_parse_result=False)
+    return (pkg_index_uri, facts.package_index_entries)
+
+
+def _create_unit_executor(
+    worker_count: int,
+    package_index_catalog: tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...],
+) -> ProcessPoolExecutor | None:
+    if worker_count <= 1:
+        return None
+    try:
+        return ProcessPoolExecutor(
+            max_workers=worker_count,
+            initializer=_initialize_unit_worker,
+            initargs=(package_index_catalog,),
+        )
+    except (NotImplementedError, PermissionError, OSError):
+        return None
 
 
 def _severity_color(severity: str) -> str:

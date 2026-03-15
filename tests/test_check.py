@@ -162,6 +162,47 @@ def test_check_project_treats_each_pkgindex_directory_as_a_workspace(tmp_path: P
     assert report.diagnostics[0].path == (second_dir / 'second.tcl').resolve(strict=False)
 
 
+def test_check_project_threads_match_sequential_results(tmp_path: Path) -> None:
+    project_root = tmp_path / 'workspace'
+    project_root.mkdir()
+    (project_root / 'helper.inc').write_text(
+        'proc greet {} {return ok}\n',
+        encoding='utf-8',
+    )
+    (project_root / 'defs.tcl').write_text(
+        'source [file join [file dirname [info script]] helper.inc]\n'
+        'proc local_helper {} {greet}\n',
+        encoding='utf-8',
+    )
+    (project_root / 'use.tcl').write_text(
+        'local_helper\nmissing_command\n',
+        encoding='utf-8',
+    )
+
+    sequential = check_project(project_root, threads=1)
+    threaded = check_project(project_root, threads=2)
+
+    assert threaded.source_count == sequential.source_count
+    assert threaded.background_source_count == sequential.background_source_count
+    assert [
+        (
+            item.path,
+            item.diagnostic.code,
+            item.diagnostic.span.start.offset,
+            item.diagnostic.message,
+        )
+        for item in threaded.diagnostics
+    ] == [
+        (
+            item.path,
+            item.diagnostic.code,
+            item.diagnostic.span.start.offset,
+            item.diagnostic.message,
+        )
+        for item in sequential.diagnostics
+    ]
+
+
 def test_tcl_check_main_formats_report_and_can_fail_on_diagnostics(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -170,7 +211,7 @@ def test_tcl_check_main_formats_report_and_can_fail_on_diagnostics(
     project_root.mkdir()
     (project_root / 'broken.tcl').write_text('missing_command\n', encoding='utf-8')
 
-    exit_code = main([str(project_root), '--color=never'])
+    exit_code = main([str(project_root), '--color=never', '--threads=2'])
     output = capsys.readouterr()
 
     assert exit_code == 0
