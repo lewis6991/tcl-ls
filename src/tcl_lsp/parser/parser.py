@@ -56,8 +56,11 @@ class _ParserImplementation:
     def __init__(self, source_id: str, text: str, start_position: Position) -> None:
         self._source_id = source_id
         self._text = text
+        self._text_length = len(text)
         self._index = 0
-        self._position = start_position
+        self._offset = start_position.offset
+        self._line = start_position.line
+        self._character = start_position.character
         self._tokens: list[Token] = []
         self._diagnostics: list[Diagnostic] = []
 
@@ -71,7 +74,7 @@ class _ParserImplementation:
         )
 
     def _parse_script(self, stop_char: str | None) -> Script:
-        start = self._position
+        start = self._current_position()
         commands: list[Command] = []
         at_command_start = True
         pending_comments: list[Token] = []
@@ -85,7 +88,9 @@ class _ParserImplementation:
             current_char = self._peek()
             if current_char == '\n' or current_char == ';':
                 self._record_token(
-                    kind='separator', start_index=self._index, start_position=self._position
+                    kind='separator',
+                    start_index=self._index,
+                    start_position=self._current_position(),
                 )
                 self._advance_char()
                 if pending_comments and previous_token_was_separator:
@@ -107,12 +112,12 @@ class _ParserImplementation:
             previous_token_was_separator = False
             at_command_start = False
 
-        return Script(span=Span(start=start, end=self._position), commands=tuple(commands))
+        return Script(span=Span(start=start, end=self._current_position()), commands=tuple(commands))
 
     def _parse_command(
         self, stop_char: str | None, leading_comments: tuple[Token, ...]
     ) -> Command:
-        start = self._position
+        start = self._current_position()
         words: list[Word] = []
 
         while True:
@@ -149,7 +154,7 @@ class _ParserImplementation:
 
     def _parse_comment(self) -> Token:
         start_index = self._index
-        start_position = self._position
+        start_position = self._current_position()
         while not self._is_eof():
             if self._starts_line_continuation():
                 self._consume_line_continuation()
@@ -159,7 +164,7 @@ class _ParserImplementation:
             self._advance_char()
         comment = Token(
             kind='comment',
-            span=Span(start=start_position, end=self._position),
+            span=Span(start=start_position, end=self._current_position()),
             text=self._text[start_index : self._index],
         )
         self._tokens.append(comment)
@@ -167,7 +172,7 @@ class _ParserImplementation:
 
     def _parse_bare_word(self, stop_char: str | None) -> BareWord:
         start_index = self._index
-        start_position = self._position
+        start_position = self._current_position()
         buffer = _TextBuffer(start=None, pieces=[])
         parts: list[WordPart] = []
 
@@ -192,9 +197,10 @@ class _ParserImplementation:
             self._advance_char()
 
         self._flush_buffer(buffer, parts)
+        end_position = self._current_position()
         word = BareWord(
-            span=Span(start=start_position, end=self._position),
-            content_span=Span(start=start_position, end=self._position),
+            span=Span(start=start_position, end=end_position),
+            content_span=Span(start=start_position, end=end_position),
             parts=tuple(parts),
         )
         self._tokens.append(
@@ -208,9 +214,9 @@ class _ParserImplementation:
 
     def _parse_quoted_word(self) -> QuotedWord:
         start_index = self._index
-        start_position = self._position
+        start_position = self._current_position()
         self._advance_char()
-        content_start = self._position
+        content_start = self._current_position()
         buffer = _TextBuffer(start=None, pieces=[])
         parts: list[WordPart] = []
 
@@ -218,10 +224,11 @@ class _ParserImplementation:
             current_char = self._peek()
             if current_char == '"':
                 self._flush_buffer(buffer, parts)
-                content_end = self._position
+                content_end = self._current_position()
                 self._advance_char()
+                end_position = self._current_position()
                 word = QuotedWord(
-                    span=Span(start=start_position, end=self._position),
+                    span=Span(start=start_position, end=end_position),
                     content_span=Span(start=content_start, end=content_end),
                     parts=tuple(parts),
                 )
@@ -248,15 +255,16 @@ class _ParserImplementation:
             self._advance_char()
 
         self._flush_buffer(buffer, parts)
+        end_position = self._current_position()
         self._add_diagnostic(
             code='unmatched-quote',
             message='Expected a closing `"` for this quoted word.',
             start=start_position,
-            end=self._position,
+            end=end_position,
         )
         word = QuotedWord(
-            span=Span(start=start_position, end=self._position),
-            content_span=Span(start=content_start, end=self._position),
+            span=Span(start=start_position, end=end_position),
+            content_span=Span(start=content_start, end=end_position),
             parts=tuple(parts),
         )
         self._tokens.append(
@@ -270,9 +278,9 @@ class _ParserImplementation:
 
     def _parse_braced_word(self) -> BracedWord:
         start_index = self._index
-        start_position = self._position
+        start_position = self._current_position()
         self._advance_char()
-        content_start = self._position
+        content_start = self._current_position()
         depth = 1
         text_parts: list[str] = []
 
@@ -297,10 +305,11 @@ class _ParserImplementation:
             if current_char == '}':
                 depth -= 1
                 if depth == 0:
-                    content_end = self._position
+                    content_end = self._current_position()
                     self._advance_char()
+                    end_position = self._current_position()
                     word = BracedWord(
-                        span=Span(start=start_position, end=self._position),
+                        span=Span(start=start_position, end=end_position),
                         content_span=Span(start=content_start, end=content_end),
                         text=''.join(text_parts),
                     )
@@ -319,15 +328,16 @@ class _ParserImplementation:
             text_parts.append(current_char)
             self._advance_char()
 
+        end_position = self._current_position()
         self._add_diagnostic(
             code='unmatched-brace',
             message='Expected a closing `}` for this braced word.',
             start=start_position,
-            end=self._position,
+            end=end_position,
         )
         word = BracedWord(
-            span=Span(start=start_position, end=self._position),
-            content_span=Span(start=content_start, end=self._position),
+            span=Span(start=start_position, end=end_position),
+            content_span=Span(start=content_start, end=end_position),
             text=''.join(text_parts),
         )
         self._tokens.append(
@@ -340,38 +350,40 @@ class _ParserImplementation:
         return word
 
     def _parse_command_substitution(self) -> CommandSubstitution:
-        start_position = self._position
+        start_position = self._current_position()
         self._advance_char()
-        content_start = self._position
+        content_start = self._current_position()
         script = self._parse_script(stop_char=']')
-        content_end = self._position
+        content_end = self._current_position()
 
         if self._is_eof() or self._peek() != ']':
+            end_position = self._current_position()
             self._add_diagnostic(
                 code='unmatched-bracket',
                 message='Expected a closing `]` for this command substitution.',
                 start=start_position,
-                end=self._position,
+                end=end_position,
             )
             return CommandSubstitution(
-                span=Span(start=start_position, end=self._position),
+                span=Span(start=start_position, end=end_position),
                 content_span=Span(start=content_start, end=content_end),
                 script=script,
             )
 
         self._advance_char()
+        end_position = self._current_position()
         return CommandSubstitution(
-            span=Span(start=start_position, end=self._position),
+            span=Span(start=start_position, end=end_position),
             content_span=Span(start=content_start, end=content_end),
             script=script,
         )
 
     def _parse_variable_substitution(self) -> WordPart:
         start_index = self._index
-        start_position = self._position
+        start_position = self._current_position()
         self._advance_char()
         if self._is_eof():
-            return LiteralText(span=Span(start=start_position, end=self._position), text='$')
+            return LiteralText(span=Span(start=start_position, end=self._current_position()), text='$')
 
         current_char = self._peek()
         if current_char == '{':
@@ -382,58 +394,60 @@ class _ParserImplementation:
                     break
                 self._advance_char()
             if self._is_eof() or self._peek() != '}':
+                end_position = self._current_position()
                 self._add_diagnostic(
                     code='malformed-variable',
                     message='Expected a closing `}` for this variable substitution.',
                     start=start_position,
-                    end=self._position,
+                    end=end_position,
                 )
                 return LiteralText(
-                    span=Span(start=start_position, end=self._position),
+                    span=Span(start=start_position, end=end_position),
                     text=self._text[start_index : self._index],
                 )
 
             name = self._text[name_start : self._index].strip()
             self._advance_char()
             if not name:
+                end_position = self._current_position()
                 self._add_diagnostic(
                     code='malformed-variable',
                     message='Expected a non-empty variable name inside `${...}`.',
                     start=start_position,
-                    end=self._position,
+                    end=end_position,
                 )
                 return LiteralText(
-                    span=Span(start=start_position, end=self._position),
+                    span=Span(start=start_position, end=end_position),
                     text=self._text[start_index : self._index],
                 )
 
             return VariableSubstitution(
-                span=Span(start=start_position, end=self._position),
+                span=Span(start=start_position, end=self._current_position()),
                 name=name,
                 brace_wrapped=True,
             )
 
         if current_char not in _SIMPLE_VARIABLE_CONTINUATIONS:
-            return LiteralText(span=Span(start=start_position, end=self._position), text='$')
+            return LiteralText(span=Span(start=start_position, end=self._current_position()), text='$')
 
         name_start = self._index
         while not self._is_eof() and self._peek() in _SIMPLE_VARIABLE_CONTINUATIONS:
             self._advance_char()
         name = self._text[name_start : self._index]
         return VariableSubstitution(
-            span=Span(start=start_position, end=self._position),
+            span=Span(start=start_position, end=self._current_position()),
             name=name,
             brace_wrapped=False,
         )
 
     def _append_text(self, buffer: _TextBuffer, text: str) -> None:
         if buffer.start is None:
-            buffer.start = self._position
+            buffer.start = self._current_position()
         buffer.pieces.append(text)
 
     def _append_escape_sequence(self, buffer: _TextBuffer) -> None:
         if buffer.start is None:
-            buffer.start = self._position
+            buffer.start = self._current_position()
         if self._starts_line_continuation():
             self._consume_line_continuation()
             buffer.pieces.append(' ')
@@ -454,7 +468,7 @@ class _ParserImplementation:
             return
         parts.append(
             LiteralText(
-                span=Span(start=buffer.start, end=self._position),
+                span=Span(start=buffer.start, end=self._current_position()),
                 text=''.join(buffer.pieces),
             )
         )
@@ -472,10 +486,11 @@ class _ParserImplementation:
             break
 
     def _record_token(self, kind: TokenKind, start_index: int, start_position: Position) -> None:
+        current_char = self._peek()
         self._tokens.append(
             Token(
                 kind=kind,
-                span=Span(start=start_position, end=self._position.advance(self._peek())),
+                span=Span(start=start_position, end=self._position_after_char(current_char)),
                 text=self._text[start_index : start_index + 1],
             )
         )
@@ -494,13 +509,18 @@ class _ParserImplementation:
     def _advance_char(self) -> None:
         current_char = self._text[self._index]
         self._index += 1
-        self._position = self._position.advance(current_char)
+        self._offset += 1
+        if current_char == '\n':
+            self._line += 1
+            self._character = 0
+            return
+        self._character += 1
 
     def _starts_line_continuation(self) -> bool:
         if self._is_eof() or self._peek() != '\\':
             return False
         next_index = self._index + 1
-        return next_index < len(self._text) and self._text[next_index] in {'\n', '\r'}
+        return next_index < self._text_length and self._text[next_index] in {'\n', '\r'}
 
     def _consume_line_continuation(self) -> None:
         self._advance_char()
@@ -522,4 +542,12 @@ class _ParserImplementation:
         return self._text[self._index]
 
     def _is_eof(self) -> bool:
-        return self._index >= len(self._text)
+        return self._index >= self._text_length
+
+    def _current_position(self) -> Position:
+        return Position(offset=self._offset, line=self._line, character=self._character)
+
+    def _position_after_char(self, char: str) -> Position:
+        if char == '\n':
+            return Position(offset=self._offset + 1, line=self._line + 1, character=0)
+        return Position(offset=self._offset + 1, line=self._line, character=self._character + 1)
