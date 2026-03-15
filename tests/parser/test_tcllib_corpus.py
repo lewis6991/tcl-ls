@@ -50,7 +50,7 @@ def test_parser_parses_tcllib_corpus_without_diagnostics() -> None:
         relative_path = path.relative_to(tcllib_root)
         try:
             result = parser.parse_document(str(relative_path), _read_source(path))
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             failures.append(f'{relative_path}: crashed with {exc!r}')
             continue
         if result.diagnostics:

@@ -19,28 +19,97 @@ from tcl_lsp.analysis.model import (
 from tcl_lsp.common import Diagnostic, HoverInfo, Location
 
 _BUILTIN_COMMANDS = {
+    'after',
     'append',
+    'apply',
+    'array',
+    'binary',
     'break',
     'catch',
+    'cd',
+    'chan',
+    'clock',
+    'close',
+    'concat',
     'continue',
+    'coroutine',
+    'dict',
+    'encoding',
+    'eof',
+    'error',
     'eval',
+    'exec',
+    'exit',
     'expr',
+    'fblocked',
+    'fconfigure',
+    'fcopy',
+    'file',
+    'fileevent',
+    'flush',
     'for',
     'foreach',
+    'format',
+    'gets',
+    'global',
+    'glob',
     'if',
     'incr',
+    'info',
+    'interp',
+    'join',
+    'lappend',
+    'lassign',
+    'lindex',
+    'linsert',
+    'list',
+    'llength',
+    'lmap',
+    'load',
+    'lrange',
+    'lrepeat',
+    'lreplace',
+    'lreverse',
+    'lsearch',
+    'lset',
+    'lsort',
     'namespace',
+    'open',
+    'package',
+    'pid',
     'proc',
     'puts',
+    'read',
+    'regexp',
+    'regsub',
     'rename',
     'return',
+    'scan',
+    'seek',
     'set',
+    'socket',
+    'source',
+    'split',
+    'string',
+    'subst',
     'switch',
+    'tailcall',
+    'tell',
+    'time',
+    'trace',
+    'try',
     'unset',
+    'update',
     'uplevel',
     'upvar',
+    'variable',
+    'vwait',
     'while',
+    'yield',
+    'yieldto',
+    'zlib',
 }
+_BUILTIN_PACKAGES = {'Tcl'}
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +127,7 @@ class Resolver:
         definition_by_symbol = {definition.symbol_id: definition for definition in definitions}
         binding_lookup = self._build_binding_lookup(facts.variable_bindings)
         hovers = self._build_definition_hovers(definitions)
+        required_packages = frozenset(requirement.name for requirement in facts.package_requires)
 
         resolutions: list[ResolutionResult] = []
         resolved_references: list[ResolvedReference] = []
@@ -75,8 +145,27 @@ class Resolver:
                     )
                 )
 
+        for package_require in facts.package_requires:
+            if package_require.name in _BUILTIN_PACKAGES or workspace_index.has_package(
+                package_require.name
+            ):
+                continue
+            diagnostics.append(
+                Diagnostic(
+                    span=package_require.span,
+                    severity='warning',
+                    message=f'Unresolved package `{package_require.name}`.',
+                    source='analysis',
+                    code='unresolved-package',
+                )
+            )
+
         for command_call in facts.command_calls:
-            resolution, command_hover = self._resolve_command(command_call, workspace_index)
+            resolution, command_hover = self._resolve_command(
+                command_call,
+                workspace_index,
+                required_packages,
+            )
             resolutions.append(resolution)
             if command_hover is not None:
                 hovers.append(command_hover)
@@ -209,6 +298,7 @@ class Resolver:
         self,
         command_call: CommandCall,
         workspace_index: WorkspaceIndex,
+        required_packages: frozenset[str],
     ) -> tuple[ResolutionResult, HoverInfo | None]:
         reference = ReferenceSite(
             uri=command_call.uri,
@@ -234,7 +324,8 @@ class Resolver:
                 None,
             )
 
-        if command_call.name in _BUILTIN_COMMANDS:
+        builtin_name = _normalize_command_name(command_call.name)
+        if builtin_name in _BUILTIN_COMMANDS:
             return (
                 ResolutionResult(
                     reference=reference,
@@ -245,12 +336,26 @@ class Resolver:
                     target_symbol_ids=(),
                 ),
                 HoverInfo(
-                    span=command_call.name_span, contents=f'builtin command {command_call.name}'
+                    span=command_call.name_span,
+                    contents=f'builtin command {builtin_name}',
                 ),
             )
 
         matches = workspace_index.resolve_procedure(command_call.name, command_call.namespace)
         if not matches:
+            package_name = _matching_required_package(command_call.name, required_packages)
+            if package_name is not None:
+                return (
+                    ResolutionResult(
+                        reference=reference,
+                        uncertainty=AnalysisUncertainty(
+                            state='dynamic',
+                            reason=f'Command may be provided by required package `{package_name}`.',
+                        ),
+                        target_symbol_ids=(),
+                    ),
+                    None,
+                )
             return (
                 ResolutionResult(
                     reference=reference,
@@ -360,3 +465,18 @@ class Resolver:
 def _proc_detail(proc: ProcDecl) -> str:
     parameters = ', '.join(parameter.name for parameter in proc.parameters)
     return f'proc {proc.qualified_name}({parameters})'
+
+
+def _normalize_command_name(name: str) -> str:
+    return name[2:] if name.startswith('::') else name
+
+
+def _matching_required_package(
+    command_name: str,
+    required_packages: frozenset[str],
+) -> str | None:
+    normalized_name = _normalize_command_name(command_name)
+    for package_name in sorted(required_packages):
+        if normalized_name == package_name or normalized_name.startswith(f'{package_name}::'):
+            return package_name
+    return None

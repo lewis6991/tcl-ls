@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from tcl_lsp.analysis import AnalysisResult, FactExtractor, Resolver, WorkspaceIndex
 from tcl_lsp.analysis.model import DefinitionTarget, DocumentFacts
@@ -31,6 +33,8 @@ class LanguageService:
         self._workspace_index = WorkspaceIndex() if workspace_index is None else workspace_index
         self._resolver = Resolver() if resolver is None else resolver
         self._documents: dict[str, ManagedDocument] = {}
+        self._scanned_package_roots: set[Path] = set()
+        self._failed_background_documents: set[str] = set()
 
     def open_document(self, uri: str, text: str, version: int) -> tuple[Diagnostic, ...]:
         self._upsert_document(uri=uri, text=text, version=version)
@@ -45,6 +49,7 @@ class LanguageService:
             return ()
         del self._documents[uri]
         self._workspace_index.remove(uri)
+        self._ensure_package_documents_loaded()
         self._recompute_workspace_analyses()
         return ()
 
@@ -114,6 +119,12 @@ class LanguageService:
         return self._documents.get(uri)
 
     def _upsert_document(self, uri: str, text: str, version: int) -> None:
+        self._index_document(uri=uri, text=text, version=version)
+        self._discover_package_roots(uri)
+        self._ensure_package_documents_loaded()
+        self._recompute_workspace_analyses()
+
+    def _index_document(self, uri: str, text: str, version: int) -> None:
         parse_result = self._parser.parse_document(path=uri, text=text)
         facts = self._extractor.extract(parse_result)
         self._documents[uri] = ManagedDocument(
@@ -125,7 +136,68 @@ class LanguageService:
             analysis=_empty_analysis(uri, facts.document_symbols),
         )
         self._workspace_index.update(uri, facts)
-        self._recompute_workspace_analyses()
+
+    def _discover_package_roots(self, uri: str) -> None:
+        path = _source_id_to_path(uri)
+        if path is None:
+            return
+
+        for package_root in _candidate_package_roots(path):
+            resolved_root = package_root.resolve(strict=False)
+            if resolved_root in self._scanned_package_roots:
+                continue
+            self._scanned_package_roots.add(resolved_root)
+            self._scan_package_root(resolved_root)
+
+    def _scan_package_root(self, package_root: Path) -> None:
+        for pkg_index_path in sorted(package_root.rglob('pkgIndex.tcl')):
+            try:
+                text = _read_source_file(pkg_index_path)
+            except OSError:
+                continue
+            pkg_index_uri = pkg_index_path.resolve(strict=False).as_uri()
+            parse_result = self._parser.parse_document(path=pkg_index_uri, text=text)
+            facts = self._extractor.extract(parse_result)
+            self._workspace_index.update_package_index(
+                pkg_index_uri,
+                facts.package_index_entries,
+            )
+
+    def _ensure_package_documents_loaded(self) -> None:
+        while True:
+            loaded_document = False
+            for document in tuple(self._documents.values()):
+                for package_require in document.facts.package_requires:
+                    for source_uri in self._workspace_index.package_source_uris(package_require.name):
+                        if source_uri in self._documents:
+                            continue
+                        if source_uri in self._failed_background_documents:
+                            continue
+                        if self._load_background_document(source_uri):
+                            loaded_document = True
+                            break
+                    if loaded_document:
+                        break
+                if loaded_document:
+                    break
+            if not loaded_document:
+                return
+
+    def _load_background_document(self, uri: str) -> bool:
+        path = _source_id_to_path(uri)
+        if path is None:
+            self._failed_background_documents.add(uri)
+            return False
+
+        try:
+            text = _read_source_file(path)
+        except OSError:
+            self._failed_background_documents.add(uri)
+            return False
+
+        self._index_document(uri=uri, text=text, version=0)
+        self._discover_package_roots(uri)
+        return True
 
     def _recompute_workspace_analyses(self) -> None:
         for uri, document in list(self._documents.items()):
@@ -190,3 +262,47 @@ def _empty_analysis(uri: str, document_symbols: tuple[DocumentSymbol, ...]) -> A
         document_symbols=document_symbols,
         hovers=(),
     )
+
+
+def _candidate_package_roots(path: Path) -> tuple[Path, ...]:
+    start_directory = path if path.is_dir() else path.parent
+    direct_package_root: Path | None = None
+
+    for directory in (start_directory, *start_directory.parents):
+        if _has_pkgindex_children(directory):
+            return (directory,)
+        if direct_package_root is None and (directory / 'pkgIndex.tcl').is_file():
+            direct_package_root = directory
+
+    if direct_package_root is None:
+        return ()
+    return (direct_package_root,)
+
+
+def _has_pkgindex_children(directory: Path) -> bool:
+    try:
+        for child in directory.iterdir():
+            if child.is_dir() and (child / 'pkgIndex.tcl').is_file():
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def _source_id_to_path(source_id: str) -> Path | None:
+    parsed = urlparse(source_id)
+    if parsed.scheme == 'file':
+        return Path(unquote(parsed.path))
+    if parsed.scheme:
+        return None
+    return Path(source_id)
+
+
+def _read_source_file(path: Path) -> str:
+    last_error: UnicodeDecodeError | None = None
+    for encoding in ('utf-8', 'iso-8859-1'):
+        try:
+            return path.read_text(encoding=encoding)
+        except UnicodeDecodeError as exc:
+            last_error = exc
+    raise AssertionError(f'Could not decode {path}: {last_error}')

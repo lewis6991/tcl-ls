@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from io import BytesIO
+from pathlib import Path
 from typing import cast
 
 from tcl_lsp.lsp import LanguageServer, LanguageService
@@ -27,6 +28,46 @@ def test_language_service_cross_document_navigation() -> None:
         ('file:///defs.tcl', 0),
         ('file:///use.tcl', 0),
     }
+
+
+def test_language_service_infers_packages_from_pkgindex(tmp_path: Path) -> None:
+    modules_root = tmp_path / 'workspace' / 'modules'
+    helper_dir = modules_root / 'helper'
+    app_dir = modules_root / 'app'
+    helper_dir.mkdir(parents=True)
+    app_dir.mkdir()
+
+    (helper_dir / 'pkgIndex.tcl').write_text(
+        'package ifneeded helper 1.0 [list source [file join $dir helper.tcl]]\n',
+        encoding='utf-8',
+    )
+    (helper_dir / 'helper.tcl').write_text(
+        'package provide helper 1.0\nproc helper::greet {} {return ok}\n',
+        encoding='utf-8',
+    )
+
+    service = LanguageService()
+    main_uri = (app_dir / 'main.tcl').as_uri()
+    diagnostics = service.open_document(main_uri, 'package require helper\nhelper::greet\n', 1)
+
+    assert diagnostics == ()
+
+    definition_locations = service.definition(main_uri, 1, 2)
+    assert len(definition_locations) == 1
+    assert definition_locations[0].uri == (helper_dir / 'helper.tcl').as_uri()
+
+    hover = service.hover(main_uri, 1, 2)
+    assert hover is not None
+    assert hover.contents == 'proc ::helper::greet()'
+
+
+def test_language_service_reports_unresolved_packages(tmp_path: Path) -> None:
+    service = LanguageService()
+    main_uri = (tmp_path / 'missing.tcl').as_uri()
+
+    diagnostics = service.open_document(main_uri, 'package require missing\nmissing::run\n', 1)
+
+    assert [diagnostic.code for diagnostic in diagnostics] == ['unresolved-package']
 
 
 def test_language_server_process_message_publishes_diagnostics() -> None:

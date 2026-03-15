@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from tcl_lsp.analysis.model import (
     CommandCall,
     DocumentFacts,
     NamespaceScope,
+    PackageIndexEntry,
+    PackageProvide,
+    PackageRequire,
     ParameterDecl,
     ProcDecl,
     VarBinding,
@@ -19,6 +24,7 @@ from tcl_lsp.parser.model import (
     CommandSubstitution,
     ParseResult,
     Script,
+    VariableSubstitution,
     Word,
 )
 
@@ -56,6 +62,9 @@ class _FactCollector:
         self._diagnostics: list[Diagnostic] = list(parse_result.diagnostics)
         self._namespaces: list[NamespaceScope] = []
         self._procedures: list[ProcDecl] = []
+        self._package_requires: list[PackageRequire] = []
+        self._package_provides: list[PackageProvide] = []
+        self._package_index_entries: list[PackageIndexEntry] = []
         self._variable_bindings: list[VarBinding] = []
         self._command_calls: list[CommandCall] = []
         self._variable_references: list[VariableReference] = []
@@ -73,6 +82,9 @@ class _FactCollector:
             parse_result=self._parse_result,
             namespaces=tuple(self._namespaces),
             procedures=tuple(self._procedures),
+            package_requires=tuple(self._package_requires),
+            package_provides=tuple(self._package_provides),
+            package_index_entries=tuple(self._package_index_entries),
             variable_bindings=tuple(self._variable_bindings),
             command_calls=tuple(self._command_calls),
             variable_references=tuple(self._variable_references),
@@ -106,6 +118,9 @@ class _FactCollector:
         for word in command.words:
             self._collect_word_references(word, context)
 
+        if command_name == 'package':
+            self._collect_package(command, context)
+
         if command_name == 'proc':
             self._collect_proc(command, context)
             return
@@ -120,6 +135,65 @@ class _FactCollector:
 
         if command_name == 'foreach':
             self._collect_foreach(command, context)
+
+    def _collect_package(self, command: Command, context: _ExtractionContext) -> None:
+        if len(command.words) < 2:
+            return
+
+        subcommand = word_static_text(command.words[1])
+        if subcommand == 'require' and len(command.words) >= 3:
+            package_name = word_static_text(command.words[2])
+            if package_name is None:
+                return
+            version_constraints = tuple(
+                version_text
+                for word in command.words[3:]
+                if (version_text := word_static_text(word)) is not None
+            )
+            self._package_requires.append(
+                PackageRequire(
+                    uri=context.uri,
+                    name=package_name,
+                    version_constraints=version_constraints,
+                    span=command.words[2].span,
+                )
+            )
+            return
+
+        if subcommand == 'provide' and len(command.words) >= 3:
+            package_name = word_static_text(command.words[2])
+            if package_name is None:
+                return
+            version = word_static_text(command.words[3]) if len(command.words) >= 4 else None
+            self._package_provides.append(
+                PackageProvide(
+                    uri=context.uri,
+                    name=package_name,
+                    version=version,
+                    span=command.words[2].span,
+                )
+            )
+            return
+
+        if subcommand == 'ifneeded' and len(command.words) >= 4:
+            package_name = word_static_text(command.words[2])
+            if package_name is None:
+                return
+            version = word_static_text(command.words[3])
+            source_uri = (
+                _extract_ifneeded_source_uri(command.words[4], context.uri)
+                if len(command.words) >= 5
+                else None
+            )
+            self._package_index_entries.append(
+                PackageIndexEntry(
+                    uri=context.uri,
+                    name=package_name,
+                    version=version,
+                    source_uri=source_uri,
+                    span=command.words[2].span,
+                )
+            )
 
     def _collect_word_references(self, word: Word, context: _ExtractionContext) -> None:
         for substitution in collect_variable_substitutions(word):
@@ -560,3 +634,77 @@ def _variable_symbol_id(uri: str, scope_id: str, name: str) -> str:
 
 def _is_simple_name(name: str) -> bool:
     return bool(name) and all(char in _SIMPLE_NAME_CHARS for char in name)
+
+
+def _extract_ifneeded_source_uri(word: Word, source_id: str) -> str | None:
+    package_script = _single_nested_command(word)
+    if package_script is None or len(package_script.words) != 3:
+        return None
+
+    if word_static_text(package_script.words[0]) != 'list':
+        return None
+    if word_static_text(package_script.words[1]) != 'source':
+        return None
+
+    file_join_command = _single_nested_command(package_script.words[2])
+    if file_join_command is None or len(file_join_command.words) < 4:
+        return None
+
+    if word_static_text(file_join_command.words[0]) != 'file':
+        return None
+    if word_static_text(file_join_command.words[1]) != 'join':
+        return None
+    if not _is_dir_variable(file_join_command.words[2]):
+        return None
+
+    relative_parts: list[str] = []
+    for path_word in file_join_command.words[3:]:
+        part = word_static_text(path_word)
+        if part is None:
+            return None
+        relative_parts.append(part)
+
+    source_path = _source_id_to_path(source_id)
+    if source_path is None:
+        return None
+
+    resolved_path = source_path.parent.joinpath(*relative_parts)
+    return _path_to_source_id(resolved_path, source_id)
+
+
+def _single_nested_command(word: Word) -> Command | None:
+    if isinstance(word, BracedWord):
+        return None
+    if len(word.parts) != 1:
+        return None
+    part = word.parts[0]
+    if not isinstance(part, CommandSubstitution):
+        return None
+    if len(part.script.commands) != 1:
+        return None
+    return part.script.commands[0]
+
+
+def _is_dir_variable(word: Word) -> bool:
+    if isinstance(word, BracedWord):
+        return False
+    if len(word.parts) != 1:
+        return False
+    part = word.parts[0]
+    return isinstance(part, VariableSubstitution) and part.name == 'dir'
+
+
+def _source_id_to_path(source_id: str) -> Path | None:
+    parsed = urlparse(source_id)
+    if parsed.scheme == 'file':
+        return Path(unquote(parsed.path))
+    if parsed.scheme:
+        return None
+    return Path(source_id)
+
+
+def _path_to_source_id(path: Path, source_id: str) -> str:
+    parsed = urlparse(source_id)
+    if parsed.scheme == 'file':
+        return path.resolve(strict=False).as_uri()
+    return str(path)

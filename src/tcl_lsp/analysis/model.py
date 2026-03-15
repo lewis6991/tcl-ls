@@ -41,6 +41,31 @@ class ProcDecl:
 
 
 @dataclass(frozen=True, slots=True)
+class PackageRequire:
+    uri: str
+    name: str
+    version_constraints: tuple[str, ...]
+    span: Span
+
+
+@dataclass(frozen=True, slots=True)
+class PackageProvide:
+    uri: str
+    name: str
+    version: str | None
+    span: Span
+
+
+@dataclass(frozen=True, slots=True)
+class PackageIndexEntry:
+    uri: str
+    name: str
+    version: str | None
+    source_uri: str | None
+    span: Span
+
+
+@dataclass(frozen=True, slots=True)
 class VarBinding:
     symbol_id: str
     uri: str
@@ -120,6 +145,9 @@ class DocumentFacts:
     parse_result: ParseResult
     namespaces: tuple[NamespaceScope, ...]
     procedures: tuple[ProcDecl, ...]
+    package_requires: tuple[PackageRequire, ...]
+    package_provides: tuple[PackageProvide, ...]
+    package_index_entries: tuple[PackageIndexEntry, ...]
     variable_bindings: tuple[VarBinding, ...]
     command_calls: tuple[CommandCall, ...]
     variable_references: tuple[VariableReference, ...]

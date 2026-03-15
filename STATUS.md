@@ -48,11 +48,13 @@ This repository contains an early but working bootstrap of a Tcl language server
   - [x] `proc` declarations
   - [x] procedure parameters
   - [x] top-level `namespace eval ... { ... }`
+  - [x] `package require` / `package provide`
+  - [x] conservative `package ifneeded` entries from `pkgIndex.tcl`
   - [x] `set` bindings/references
   - [x] basic `foreach` loop variable bindings
   - [x] variable substitutions
   - [x] statically named command calls
-- [x] Workspace procedure index for cross-file navigation across currently managed/open documents
+- [x] Workspace procedure and package metadata indexes for cross-file navigation and package lookup
 - [x] Resolution states are explicit:
   - [x] `resolved`
   - [x] `unresolved`
@@ -61,9 +63,12 @@ This repository contains an early but working bootstrap of a Tcl language server
 - [x] Semantic diagnostics currently implemented:
   - [x] duplicate procedure declarations
   - [x] unresolved commands
+  - [x] unresolved packages
   - [x] unresolved variables in procedure scope
 - [x] Hover/definition/reference data generation
 - [x] Document symbols for namespaces and procedures
+- [x] Conservative local package inference from nearby `pkgIndex.tcl`
+- [x] Lazy loading of package provider files discovered through local `pkgIndex.tcl`
 - [ ] No full control-flow analysis
 - [ ] No runtime evaluation of dynamic Tcl features
 - [ ] Embedded/body analysis is currently limited to `proc`, top-level `namespace eval`, and basic `foreach`; bodies for most other Tcl control structures are not analyzed
@@ -75,11 +80,11 @@ This repository contains an early but working bootstrap of a Tcl language server
   - [ ] `variable`
   - [ ] dynamically constructed command names
   - [ ] `source`-based project loading
-  - [ ] package resolution
+  - [ ] full package resolution for external/interpreter-installed packages
   - [ ] TclOO/class systems
 - [ ] Global variable resolution is intentionally conservative
-- [ ] Workspace indexing is currently centered on procedures; there is no rich global symbol database beyond the current procedure index
-- [ ] Builtin command recognition is currently limited to a small hardcoded subset, so some valid Tcl builtins may still be reported as unresolved
+- [ ] Workspace indexing is still narrow; beyond procedures and package metadata there is no rich global symbol database
+- [ ] Builtin command recognition is still heuristic and incomplete; Tcl/Tk and extension-specific commands may still be reported as unresolved
 - [ ] Diagnostics are intentionally limited to high-confidence cases
 
 ### LSP and Editor Integration
@@ -100,6 +105,7 @@ This repository contains an early but working bootstrap of a Tcl language server
 - [x] Diagnostics are published on open/change/close
 - [x] Full-document sync model
 - [x] In-memory document store and reanalysis of currently managed/open documents on updates
+- [x] Local package-root discovery and `pkgIndex.tcl` scanning for opened documents
 - [ ] completion
 - [ ] signature help
 - [ ] rename
@@ -113,7 +119,7 @@ This repository contains an early but working bootstrap of a Tcl language server
 - [ ] LSP position handling does not yet account for UTF-16 code-unit semantics or negotiate a `positionEncoding`
 - [ ] No incremental parsing or incremental semantic analysis
 - [ ] No incremental text sync support
-- [ ] No file watching, automatic workspace discovery, or indexing of unopened workspace files
+- [ ] No file watching or full automatic workspace discovery; unopened files are only indexed opportunistically through local package inference
 - [ ] No persistent cache/database on disk
 - [ ] No Neovim/VS Code plugin packaging in this repository
 - [ ] No CI configuration has been added yet
@@ -131,6 +137,8 @@ This repository contains an early but working bootstrap of a Tcl language server
 - [x] LSP tests cover:
   - [x] cross-document definition/reference/hover behavior
   - [x] diagnostics publication
+  - [x] local package inference from `pkgIndex.tcl`
+  - [x] unresolved package diagnostics
   - [x] stdio request/response round trip
 
 ## Practical Summary
@@ -138,7 +146,7 @@ This repository contains an early but working bootstrap of a Tcl language server
 Right now the project is a solid typed bootstrap for a Tcl LSP:
 
 - syntax parsing works for the tested core forms
-- semantic analysis works for a small, statically analyzable Tcl subset
+- semantic analysis works for a small, statically analyzable Tcl subset plus conservative local package inference via `pkgIndex.tcl`
 - navigation features work for that subset
 - the server can speak enough LSP to be used experimentally in an editor
 
