@@ -115,6 +115,25 @@ def test_language_service_infers_packages_from_pkgindex(tmp_path: Path) -> None:
     assert hover.contents == 'proc ::helper::greet()'
 
 
+def test_language_service_analyzes_catch_bodies_and_result_variables() -> None:
+    service = LanguageService()
+    diagnostics = service.open_document(
+        'file:///main.tcl',
+        'proc helper {} {return ok}\n'
+        'proc run {} {\n'
+        '    catch {\n'
+        '        set local [helper]\n'
+        '    } message options\n'
+        '    puts $message\n'
+        '    puts $options\n'
+        '    puts $local\n'
+        '}\n',
+        1,
+    )
+
+    assert diagnostics == ()
+
+
 def test_language_service_reports_unresolved_packages(tmp_path: Path) -> None:
     service = LanguageService()
     main_uri = (tmp_path / 'missing.tcl').as_uri()

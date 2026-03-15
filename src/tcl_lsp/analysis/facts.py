@@ -5,6 +5,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from tcl_lsp.analysis.model import (
+    BindingKind,
     CommandCall,
     DocumentFacts,
     NamespaceScope,
@@ -135,6 +136,10 @@ class _FactCollector:
 
         if command_name == 'foreach':
             self._collect_foreach(command, context)
+            return
+
+        if command_name == 'catch':
+            self._collect_catch(command, context)
 
     def _collect_package(self, command: Command, context: _ExtractionContext) -> None:
         if len(command.words) < 2:
@@ -338,17 +343,11 @@ class _FactCollector:
             return
 
         if len(command.words) >= 3:
-            self._variable_bindings.append(
-                VarBinding(
-                    symbol_id=_variable_symbol_id(context.uri, context.scope_id, variable_name),
-                    uri=context.uri,
-                    name=variable_name,
-                    scope_id=context.scope_id,
-                    namespace=context.namespace,
-                    procedure_symbol_id=context.procedure_symbol_id,
-                    kind='set',
-                    span=command.words[1].span,
-                )
+            self._record_variable_binding(
+                name=variable_name,
+                span=command.words[1].span,
+                context=context,
+                kind='set',
             )
             return
 
@@ -370,17 +369,11 @@ class _FactCollector:
         for item in variables:
             if not _is_simple_name(item.text):
                 continue
-            self._variable_bindings.append(
-                VarBinding(
-                    symbol_id=_variable_symbol_id(context.uri, context.scope_id, item.text),
-                    uri=context.uri,
-                    name=item.text,
-                    scope_id=context.scope_id,
-                    namespace=context.namespace,
-                    procedure_symbol_id=context.procedure_symbol_id,
-                    kind='foreach',
-                    span=item.span,
-                )
+            self._record_variable_binding(
+                name=item.text,
+                span=item.span,
+                context=context,
+                kind='foreach',
             )
 
         embedded_body = _extract_static_script(command.words[3])
@@ -394,6 +387,51 @@ class _FactCollector:
         )
         self._diagnostics.extend(body_result.diagnostics)
         self._collect_script(body_result.script, context)
+
+    def _collect_catch(self, command: Command, context: _ExtractionContext) -> None:
+        if len(command.words) < 2:
+            return
+
+        embedded_body = _extract_static_script(command.words[1])
+        if embedded_body is not None:
+            body_result = self._parser.parse_embedded_script(
+                source_id=context.uri,
+                text=embedded_body[0],
+                start_position=embedded_body[1],
+            )
+            self._diagnostics.extend(body_result.diagnostics)
+            self._collect_script(body_result.script, context)
+
+        for variable_word in command.words[2:4]:
+            variable_name = word_static_text(variable_word)
+            if variable_name is None or not _is_simple_name(variable_name):
+                continue
+            self._record_variable_binding(
+                name=variable_name,
+                span=variable_word.span,
+                context=context,
+                kind='catch',
+            )
+
+    def _record_variable_binding(
+        self,
+        name: str,
+        span: Span,
+        context: _ExtractionContext,
+        kind: BindingKind,
+    ) -> None:
+        self._variable_bindings.append(
+            VarBinding(
+                symbol_id=_variable_symbol_id(context.uri, context.scope_id, name),
+                uri=context.uri,
+                name=name,
+                scope_id=context.scope_id,
+                namespace=context.namespace,
+                procedure_symbol_id=context.procedure_symbol_id,
+                kind=kind,
+                span=span,
+            )
+        )
 
     def _parse_parameter_items(self, word: Word) -> tuple[_ListItem, ...]:
         return tuple(self._parse_list_items(word))

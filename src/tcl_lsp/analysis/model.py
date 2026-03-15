@@ -6,7 +6,7 @@ from typing import Literal
 from tcl_lsp.common import Diagnostic, DocumentSymbol, HoverInfo, Location, Span, SymbolKind
 from tcl_lsp.parser.model import ParseResult
 
-type BindingKind = Literal['parameter', 'set', 'foreach']
+type BindingKind = Literal['parameter', 'set', 'foreach', 'catch']
 type ReferenceKind = Literal['command', 'variable']
 type ResolutionState = Literal['resolved', 'unresolved', 'ambiguous', 'dynamic']
 
