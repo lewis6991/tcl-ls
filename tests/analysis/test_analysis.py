@@ -220,7 +220,7 @@ def test_analysis_supports_builtin_subcommand_hovers(parser: Parser) -> None:
         if resolution.reference.kind == 'command'
         and resolution.reference.name in target_names
     }
-    assert resolution_by_name == {name: 'resolved' for name in target_names}
+    assert resolution_by_name == dict.fromkeys(target_names, 'resolved')
 
     hover_by_offset = {hover.span.start.offset: hover.contents for hover in analysis.hovers}
     subcommands = {
@@ -284,6 +284,123 @@ def test_analysis_tracks_catch_bodies_and_result_variables(parser: Parser) -> No
     assert variable_resolutions['message'] == 'resolved'
     assert variable_resolutions['options'] == 'resolved'
     assert variable_resolutions['local'] == 'resolved'
+    assert analysis.diagnostics == ()
+
+
+def test_analysis_tracks_switch_branch_bodies_from_list_form(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///switch_list.tcl',
+        'proc helper {} {return ok}\n'
+        'proc run {kind} {\n'
+        '    switch -- $kind {\n'
+        '        alpha {\n'
+        '            set local [helper]\n'
+        '            puts $local\n'
+        '        }\n'
+        '        beta -\n'
+        '        default {\n'
+        '            return done\n'
+        '        }\n'
+        '    }\n'
+        '}\n',
+    )
+    analysis = snapshot.analysis
+
+    helper_calls = [
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command' and resolution.reference.name == 'helper'
+    ]
+    assert len(helper_calls) == 1
+    assert helper_calls[0].uncertainty.state == 'resolved'
+
+    local_references = [
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'variable' and resolution.reference.name == 'local'
+    ]
+    assert len(local_references) == 1
+    assert local_references[0].uncertainty.state == 'resolved'
+    assert analysis.diagnostics == ()
+
+
+def test_analysis_tracks_switch_branch_bodies_from_argument_form(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///switch_args.tcl',
+        'proc helper {} {return ok}\n'
+        'proc run {kind} {\n'
+        '    switch -- $kind \\\n'
+        '        alpha {\n'
+        '            helper\n'
+        '        } \\\n'
+        '        default {\n'
+        '            puts $kind\n'
+        '        }\n'
+        '}\n',
+    )
+    analysis = snapshot.analysis
+
+    helper_calls = [
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command' and resolution.reference.name == 'helper'
+    ]
+    assert len(helper_calls) == 1
+    assert helper_calls[0].uncertainty.state == 'resolved'
+
+    kind_references = [
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'variable' and resolution.reference.name == 'kind'
+    ]
+    assert len({resolution.reference.span.start.offset for resolution in kind_references}) == 2
+    assert all(resolution.uncertainty.state == 'resolved' for resolution in kind_references)
+    assert analysis.diagnostics == ()
+
+
+def test_analysis_tracks_regexp_switch_match_variables(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///switch_regexp.tcl',
+        'proc run {value} {\n'
+        '    switch -regexp -matchvar matches -indexvar indices -- $value {\n'
+        '        {^a(b+)$} {\n'
+        '            puts [lindex $matches 1]\n'
+        '            puts [lindex $indices 0]\n'
+        '        }\n'
+        '        default {\n'
+        '            puts $matches\n'
+        '            puts $indices\n'
+        '        }\n'
+        '    }\n'
+        '}\n',
+    )
+    facts = snapshot.facts
+    analysis = snapshot.analysis
+
+    run_proc = next(proc for proc in facts.procedures if proc.qualified_name == '::run')
+    bindings_by_name = {
+        binding.name: binding.kind
+        for binding in facts.variable_bindings
+        if binding.scope_id == run_proc.symbol_id
+    }
+    assert bindings_by_name['matches'] == 'switch'
+    assert bindings_by_name['indices'] == 'switch'
+
+    match_resolutions = [
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'variable' and resolution.reference.name in {'matches', 'indices'}
+    ]
+    unique_match_sites = {
+        (resolution.reference.name, resolution.reference.span.start.offset)
+        for resolution in match_resolutions
+    }
+    assert len(unique_match_sites) == 4
+    assert {name for name, _ in unique_match_sites} == {'matches', 'indices'}
+    assert all(resolution.uncertainty.state == 'resolved' for resolution in match_resolutions)
     assert analysis.diagnostics == ()
 
 

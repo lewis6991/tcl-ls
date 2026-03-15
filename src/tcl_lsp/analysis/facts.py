@@ -61,6 +61,13 @@ class _ConditionCommandSubstitution:
     content_span: Span
 
 
+@dataclass(frozen=True, slots=True)
+class _SwitchLayout:
+    branch_list_word: Word | None
+    branch_words: tuple[Word, ...]
+    regexp_binding_words: tuple[Word, ...]
+
+
 class FactExtractor:
     def __init__(self, parser: Parser | None = None) -> None:
         self._parser = Parser() if parser is None else parser
@@ -157,6 +164,10 @@ class _FactCollector:
 
         if command_name == 'if':
             self._collect_if(command, context)
+            return
+
+        if command_name == 'switch':
+            self._collect_switch(command, context)
             return
 
         if command_name == 'catch':
@@ -501,15 +512,119 @@ class _FactCollector:
                 kind='catch',
             )
 
+    def _collect_switch(self, command: Command, context: _ExtractionContext) -> None:
+        layout = self._switch_layout(command)
+        if layout is None:
+            return
+
+        for binding_word in layout.regexp_binding_words:
+            variable_name = word_static_text(binding_word)
+            if variable_name is None or not _is_simple_name(variable_name):
+                continue
+            self._record_variable_binding(
+                name=variable_name,
+                span=binding_word.span,
+                context=context,
+                kind='switch',
+            )
+
+        if layout.branch_list_word is not None:
+            self._collect_switch_branch_list(layout.branch_list_word, context)
+            return
+
+        if len(layout.branch_words) % 2 != 0:
+            return
+
+        for index in range(1, len(layout.branch_words), 2):
+            body_word = layout.branch_words[index]
+            if word_static_text(body_word) == '-':
+                continue
+            self._collect_embedded_body(body_word, context)
+
+    def _switch_layout(self, command: Command) -> _SwitchLayout | None:
+        if len(command.words) < 3:
+            return None
+
+        if len(command.words) == 3:
+            return _SwitchLayout(
+                branch_list_word=command.words[2],
+                branch_words=(),
+                regexp_binding_words=(),
+            )
+
+        index = 1
+        regexp_binding_words: list[Word] = []
+        regexp_mode = False
+
+        while index < len(command.words):
+            option = word_static_text(command.words[index])
+            if option == '--':
+                index += 1
+                break
+            if option in {'-exact', '-glob', '-nocase'}:
+                index += 1
+                continue
+            if option == '-regexp':
+                regexp_mode = True
+                index += 1
+                continue
+            if option in {'-matchvar', '-indexvar'}:
+                if index + 1 >= len(command.words):
+                    return None
+                if regexp_mode:
+                    regexp_binding_words.append(command.words[index + 1])
+                index += 2
+                continue
+            break
+
+        if index >= len(command.words):
+            return None
+
+        branch_words = tuple(command.words[index + 1 :])
+        if not branch_words:
+            return None
+
+        if len(branch_words) == 1:
+            return _SwitchLayout(
+                branch_list_word=branch_words[0],
+                branch_words=(),
+                regexp_binding_words=tuple(regexp_binding_words),
+            )
+
+        return _SwitchLayout(
+            branch_list_word=None,
+            branch_words=branch_words,
+            regexp_binding_words=tuple(regexp_binding_words),
+        )
+
+    def _collect_switch_branch_list(self, word: Word, context: _ExtractionContext) -> None:
+        items = self._parse_list_items(word)
+        if len(items) % 2 != 0:
+            return
+
+        for index in range(1, len(items), 2):
+            body_item = items[index]
+            if body_item.text == '-':
+                continue
+            self._collect_embedded_script_text(body_item.text, body_item.content_start, context)
+
     def _collect_embedded_body(self, word: Word, context: _ExtractionContext) -> None:
         embedded_body = _extract_static_script(word)
         if embedded_body is None:
             return
 
+        self._collect_embedded_script_text(embedded_body[0], embedded_body[1], context)
+
+    def _collect_embedded_script_text(
+        self,
+        text: str,
+        start_position: Position,
+        context: _ExtractionContext,
+    ) -> None:
         body_result = self._parser.parse_embedded_script(
             source_id=context.uri,
-            text=embedded_body[0],
-            start_position=embedded_body[1],
+            text=text,
+            start_position=start_position,
         )
         self._remember_braced_tokens(body_result)
         self._diagnostics.extend(body_result.diagnostics)
