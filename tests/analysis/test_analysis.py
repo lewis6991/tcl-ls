@@ -127,9 +127,7 @@ def test_analysis_uses_builtin_command_metadata_for_hovers(parser: Parser) -> No
     assert analysis.diagnostics == ()
 
     command_resolution = next(
-        resolution
-        for resolution in analysis.resolutions
-        if resolution.reference.kind == 'command'
+        resolution for resolution in analysis.resolutions if resolution.reference.kind == 'command'
     )
     assert command_resolution.reference.name == 'pwd'
     assert command_resolution.uncertainty.state == 'resolved'
@@ -156,9 +154,7 @@ def test_analysis_includes_single_builtin_signature_when_arguments_exist(
     assert 'With one argument, return the current value of varName.' in hover
 
     command_resolution = next(
-        resolution
-        for resolution in analysis.resolutions
-        if resolution.reference.kind == 'command'
+        resolution for resolution in analysis.resolutions if resolution.reference.kind == 'command'
     )
     assert command_resolution.uncertainty.state == 'resolved'
     assert len(command_resolution.target_symbol_ids) == 1
@@ -174,15 +170,13 @@ def test_analysis_groups_builtin_overloads_in_hover_output(parser: Parser) -> No
 
     assert hover.startswith('builtin command after\n\n')
     assert '`after {ms}`\nExecute a command after a time delay' in hover
-    assert '`after {idle script args}`\nSchedule a script to run when the event loop is idle' in hover
     assert (
-        '`after {cancel idOrScript}`\nCancel a previously scheduled after handler' in hover
+        '`after {idle script args}`\nSchedule a script to run when the event loop is idle' in hover
     )
+    assert '`after {cancel idOrScript}`\nCancel a previously scheduled after handler' in hover
 
     command_resolution = next(
-        resolution
-        for resolution in analysis.resolutions
-        if resolution.reference.kind == 'command'
+        resolution for resolution in analysis.resolutions if resolution.reference.kind == 'command'
     )
     builtin = builtin_command('after')
     assert builtin is not None
@@ -217,16 +211,13 @@ def test_analysis_supports_builtin_subcommand_hovers(parser: Parser) -> None:
     resolution_by_name = {
         resolution.reference.name: resolution.uncertainty.state
         for resolution in analysis.resolutions
-        if resolution.reference.kind == 'command'
-        and resolution.reference.name in target_names
+        if resolution.reference.kind == 'command' and resolution.reference.name in target_names
     }
     assert resolution_by_name == dict.fromkeys(target_names, 'resolved')
 
     hover_by_offset = {hover.span.start.offset: hover.contents for hover in analysis.hovers}
     subcommands = {
-        command.name: command
-        for command in facts.command_calls
-        if command.name in target_names
+        command.name: command for command in facts.command_calls if command.name in target_names
     }
     assert subcommands.keys() == target_names
 
@@ -392,7 +383,8 @@ def test_analysis_tracks_regexp_switch_match_variables(parser: Parser) -> None:
     match_resolutions = [
         resolution
         for resolution in analysis.resolutions
-        if resolution.reference.kind == 'variable' and resolution.reference.name in {'matches', 'indices'}
+        if resolution.reference.kind == 'variable'
+        and resolution.reference.name in {'matches', 'indices'}
     ]
     unique_match_sites = {
         (resolution.reference.name, resolution.reference.span.start.offset)
@@ -432,6 +424,43 @@ def test_analysis_resolves_references_inside_braced_if_conditions() -> None:
     ]
     assert len(helper_calls) == 2
     assert all(resolution.uncertainty.state == 'resolved' for resolution in helper_calls)
+
+    flag_references = [
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'variable' and resolution.reference.name == 'flag'
+    ]
+    assert len(flag_references) == 1
+    assert flag_references[0].uncertainty.state == 'resolved'
+    assert analysis.diagnostics == ()
+
+
+def test_analysis_tracks_nested_if_conditions_inside_command_substitutions() -> None:
+    parser = Parser()
+    extractor = FactExtractor(parser)
+    resolver = Resolver()
+    workspace = WorkspaceIndex()
+
+    parse_result = parser.parse_document(
+        'file:///nested_if_condition.tcl',
+        'proc helper {} {return 1}\n'
+        'proc run {flag} {\n'
+        '    if {[if {$flag} {helper}]} {\n'
+        '        return ok\n'
+        '    }\n'
+        '}\n',
+    )
+    facts = extractor.extract(parse_result)
+    workspace.update(facts.uri, facts)
+    analysis = resolver.analyze(facts.uri, facts, workspace)
+
+    helper_calls = [
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command' and resolution.reference.name == 'helper'
+    ]
+    assert len(helper_calls) == 1
+    assert helper_calls[0].uncertainty.state == 'resolved'
 
     flag_references = [
         resolution
@@ -490,10 +519,7 @@ def test_analysis_treats_meta_command_as_builtin() -> None:
     hover_by_offset = {hover.span.start.offset: hover.contents for hover in analysis.hovers}
     hover = hover_by_offset[facts.command_calls[0].name_span.start.offset]
     assert hover.startswith(
-        'builtin command meta {kind name signature}\n\n'
-        'Declare metadata for Tcl language entities.'
+        'builtin command meta {kind name signature}\n\nDeclare metadata for Tcl language entities.'
     )
-    assert 'structured documentation instead of executable behavior' in hover.replace(
-        '\n', ' '
-    )
+    assert 'structured documentation instead of executable behavior' in hover.replace('\n', ' ')
     assert analysis.diagnostics == ()
