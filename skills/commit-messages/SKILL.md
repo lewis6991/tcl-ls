@@ -22,6 +22,11 @@ description: Write, amend, and reword git commit messages for this repo. Use whe
   literally. Use multiple `-m` flags for separate paragraphs, ANSI-C
   quoting, or `git commit -F <file>` when you need explicit line
   breaks.
+- Validate the message mechanically before reporting the task done.
+  Run `python3 skills/commit-messages/scripts/check_commit_message.py`
+  with one of:
+  `--file <path>`, `--rev HEAD`, or stdin.
+- Do not claim a commit message is complete until the checker passes.
 - Prefer amending related unmerged commits; use a new commit only for
   unrelated changes.
 - Preserve existing commit boundaries unless the user asks to change
