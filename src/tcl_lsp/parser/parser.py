@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from tcl_lsp.common import Diagnostic, Position, Span
@@ -24,6 +25,11 @@ _WORD_DELIMITERS = _HORIZONTAL_WHITESPACE | {'\n', ';'}
 _SIMPLE_VARIABLE_CONTINUATIONS = set(
     'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:'
 )
+_BARE_WORD_PLAIN_TEXT_RUN = re.compile(r'[^ \t\r\f\n;\[$\\]+')
+_BARE_WORD_PLAIN_TEXT_WITH_BRACKET_STOP_RUN = re.compile(r'[^ \t\r\f\n;\[$\\\]]+')
+_COMMENT_TEXT_RUN = re.compile(r'[^\\\n]+')
+_HORIZONTAL_WHITESPACE_RUN = re.compile(r'[ \t\r\f]+')
+_QUOTED_WORD_PLAIN_TEXT_RUN = re.compile(r'[^"[$\\]+')
 
 
 @dataclass(slots=True)
@@ -158,11 +164,16 @@ class _ParserImplementation:
     def _parse_comment(self) -> Token:
         start_index = self._index
         start_position = self._current_position()
+        text = self._text
         while not self._is_eof():
+            comment_text_run = _COMMENT_TEXT_RUN.match(text, self._index)
+            if comment_text_run is not None:
+                self._advance_plain_run(comment_text_run.end())
+                continue
             if self._starts_line_continuation():
                 self._consume_line_continuation()
                 continue
-            if self._peek() == '\n':
+            if text[self._index] == '\n':
                 break
             self._advance_char()
         comment = Token(
@@ -178,11 +189,25 @@ class _ParserImplementation:
         start_position = self._current_position()
         buffer = _TextBuffer(start=None, pieces=[])
         parts: list[WordPart] = []
+        text = self._text
+        plain_text_run = _BARE_WORD_PLAIN_TEXT_RUN
+        if stop_char == ']':
+            plain_text_run = _BARE_WORD_PLAIN_TEXT_WITH_BRACKET_STOP_RUN
+        elif stop_char is not None:
+            plain_text_run = None
 
         while not self._is_eof():
             if self._is_at_stop_char(stop_char):
                 break
-            current_char = self._peek()
+            if plain_text_run is not None:
+                bare_word_text_run = plain_text_run.match(text, self._index)
+                if bare_word_text_run is not None:
+                    plain_text = bare_word_text_run.group(0)
+                    self._append_text(buffer, plain_text)
+                    self._advance_plain_run(bare_word_text_run.end())
+                    continue
+
+            current_char = text[self._index]
             if current_char in _WORD_DELIMITERS:
                 break
             if current_char == '[':
@@ -222,9 +247,17 @@ class _ParserImplementation:
         content_start = self._current_position()
         buffer = _TextBuffer(start=None, pieces=[])
         parts: list[WordPart] = []
+        text = self._text
 
         while not self._is_eof():
-            current_char = self._peek()
+            quoted_text_run = _QUOTED_WORD_PLAIN_TEXT_RUN.match(text, self._index)
+            if quoted_text_run is not None:
+                plain_text = quoted_text_run.group(0)
+                self._append_text(buffer, plain_text)
+                self._advance_text(plain_text)
+                continue
+
+            current_char = text[self._index]
             if current_char == '"':
                 self._flush_buffer(buffer, parts)
                 content_end = self._current_position()
@@ -492,8 +525,9 @@ class _ParserImplementation:
 
     def _consume_horizontal_whitespace(self) -> None:
         while not self._is_eof():
-            if self._peek() in _HORIZONTAL_WHITESPACE:
-                self._advance_char()
+            whitespace_run = _HORIZONTAL_WHITESPACE_RUN.match(self._text, self._index)
+            if whitespace_run is not None:
+                self._advance_plain_run(whitespace_run.end())
                 continue
             if self._starts_line_continuation():
                 self._consume_line_continuation()
@@ -542,6 +576,14 @@ class _ParserImplementation:
             return
         self._line += newline_count
         self._character = len(text) - text.rfind('\n') - 1
+
+    def _advance_plain_run(self, end_index: int) -> None:
+        if end_index <= self._index:
+            return
+        length = end_index - self._index
+        self._index = end_index
+        self._offset += length
+        self._character += length
 
     def _starts_line_continuation(self) -> bool:
         if self._is_eof() or self._peek() != '\\':
