@@ -136,7 +136,12 @@ class _ParserImplementation:
     def _parse_comment(self) -> None:
         start_index = self._index
         start_position = self._position
-        while not self._is_eof() and self._peek() != '\n':
+        while not self._is_eof():
+            if self._starts_line_continuation():
+                self._consume_line_continuation()
+                continue
+            if self._peek() == '\n':
+                break
             self._advance_char()
         self._tokens.append(
             Token(
@@ -260,6 +265,10 @@ class _ParserImplementation:
         while not self._is_eof():
             current_char = self._peek()
             if current_char == '\\':
+                if self._starts_line_continuation():
+                    self._consume_line_continuation()
+                    text_parts.append(' ')
+                    continue
                 text_parts.append(current_char)
                 self._advance_char()
                 if not self._is_eof():
@@ -348,12 +357,6 @@ class _ParserImplementation:
         start_position = self._position
         self._advance_char()
         if self._is_eof():
-            self._add_diagnostic(
-                code='malformed-variable',
-                message='Expected a variable name after `$`.',
-                start=start_position,
-                end=self._position,
-            )
             return LiteralText(span=Span(start=start_position, end=self._position), text='$')
 
         current_char = self._peek()
@@ -397,12 +400,6 @@ class _ParserImplementation:
             )
 
         if current_char not in _SIMPLE_VARIABLE_CONTINUATIONS:
-            self._add_diagnostic(
-                code='malformed-variable',
-                message='Expected a Tcl variable name after `$`.',
-                start=start_position,
-                end=self._position,
-            )
             return LiteralText(span=Span(start=start_position, end=self._position), text='$')
 
         name_start = self._index
@@ -423,6 +420,10 @@ class _ParserImplementation:
     def _append_escape_sequence(self, buffer: _TextBuffer) -> None:
         if buffer.start is None:
             buffer.start = self._position
+        if self._starts_line_continuation():
+            self._consume_line_continuation()
+            buffer.pieces.append(' ')
+            return
         self._advance_char()
         if self._is_eof():
             buffer.pieces.append('\\')
@@ -447,8 +448,14 @@ class _ParserImplementation:
         buffer.pieces.clear()
 
     def _consume_horizontal_whitespace(self) -> None:
-        while not self._is_eof() and self._peek() in _HORIZONTAL_WHITESPACE:
-            self._advance_char()
+        while not self._is_eof():
+            if self._peek() in _HORIZONTAL_WHITESPACE:
+                self._advance_char()
+                continue
+            if self._starts_line_continuation():
+                self._consume_line_continuation()
+                continue
+            break
 
     def _record_token(self, kind: TokenKind, start_index: int, start_position: Position) -> None:
         self._tokens.append(
@@ -474,6 +481,25 @@ class _ParserImplementation:
         current_char = self._text[self._index]
         self._index += 1
         self._position = self._position.advance(current_char)
+
+    def _starts_line_continuation(self) -> bool:
+        if self._is_eof() or self._peek() != '\\':
+            return False
+        next_index = self._index + 1
+        return next_index < len(self._text) and self._text[next_index] in {'\n', '\r'}
+
+    def _consume_line_continuation(self) -> None:
+        self._advance_char()
+        if self._is_eof():
+            return
+        if self._peek() == '\r':
+            self._advance_char()
+            if not self._is_eof() and self._peek() == '\n':
+                self._advance_char()
+        elif self._peek() == '\n':
+            self._advance_char()
+        while not self._is_eof() and self._peek() in _HORIZONTAL_WHITESPACE:
+            self._advance_char()
 
     def _is_at_stop_char(self, stop_char: str | None) -> bool:
         return stop_char is not None and not self._is_eof() and self._peek() == stop_char

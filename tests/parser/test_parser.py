@@ -66,3 +66,36 @@ def test_parse_embedded_script_preserves_absolute_positions() -> None:
     assert variable.span.start.offset == 25
     assert variable.span.start.line == 4
     assert variable.span.start.character == 11
+
+
+def test_parser_treats_invalid_variable_starters_as_literal_text() -> None:
+    parser = Parser()
+    result = parser.parse_document('literal-dollar.tcl', 'puts "```!@#$%^&*()"\nputs $@\nputs $\n')
+
+    assert result.diagnostics == ()
+    assert len(result.script.commands) == 3
+    assert [word_static_text(word) for word in result.script.commands[0].words] == [
+        'puts',
+        '```!@#$%^&*()',
+    ]
+    assert [word_static_text(word) for word in result.script.commands[1].words] == ['puts', '$@']
+    assert [word_static_text(word) for word in result.script.commands[2].words] == ['puts', '$']
+
+
+def test_parser_handles_line_continuations_in_comments_and_commands() -> None:
+    parser = Parser()
+    result = parser.parse_document(
+        'continued.tcl',
+        '# the next line will restart with tclsh wherever it is \\\n'
+        'exec tclsh "$0" "$@"\n'
+        'puts hello \\\n'
+        '    world\n',
+    )
+
+    assert result.diagnostics == ()
+    assert len(result.script.commands) == 1
+    assert [word_static_text(word) for word in result.script.commands[0].words] == [
+        'puts',
+        'hello',
+        'world',
+    ]
