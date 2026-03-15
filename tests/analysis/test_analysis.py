@@ -1,23 +1,38 @@
 from __future__ import annotations
 
-from tcl_lsp.analysis import FactExtractor, Resolver, WorkspaceIndex
+from dataclasses import dataclass
+
+from tcl_lsp.analysis import AnalysisResult, DocumentFacts, FactExtractor, Resolver, WorkspaceIndex
 from tcl_lsp.analysis.builtins import builtin_command
 from tcl_lsp.parser import Parser
 
 
-def test_analysis_resolves_proc_calls_and_parameters() -> None:
-    parser = Parser()
+@dataclass(frozen=True, slots=True)
+class AnalysisSnapshot:
+    facts: DocumentFacts
+    analysis: AnalysisResult
+
+
+def _analyze(parser: Parser, uri: str, text: str) -> AnalysisSnapshot:
     extractor = FactExtractor(parser)
     resolver = Resolver()
     workspace = WorkspaceIndex()
 
-    parse_result = parser.parse_document(
-        'file:///main.tcl',
-        'proc greet {name} {puts $name}\ngreet World\n',
-    )
+    parse_result = parser.parse_document(uri, text)
     facts = extractor.extract(parse_result)
     workspace.update(facts.uri, facts)
     analysis = resolver.analyze(facts.uri, facts, workspace)
+    return AnalysisSnapshot(facts=facts, analysis=analysis)
+
+
+def test_analysis_resolves_proc_calls_and_parameters(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///main.tcl',
+        'proc greet {name} {puts $name}\ngreet World\n',
+    )
+    facts = snapshot.facts
+    analysis = snapshot.analysis
 
     assert [proc.qualified_name for proc in facts.procedures] == ['::greet']
     assert [binding.name for binding in facts.variable_bindings] == ['name']
@@ -38,19 +53,13 @@ def test_analysis_resolves_proc_calls_and_parameters() -> None:
     assert analysis.diagnostics == ()
 
 
-def test_analysis_reports_duplicate_procs_and_unresolved_symbols() -> None:
-    parser = Parser()
-    extractor = FactExtractor(parser)
-    resolver = Resolver()
-    workspace = WorkspaceIndex()
-
-    parse_result = parser.parse_document(
+def test_analysis_reports_duplicate_procs_and_unresolved_symbols(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
         'file:///broken.tcl',
         'proc greet {} {puts $name}\nmissing_command\nproc greet {} {return ok}\n',
     )
-    facts = extractor.extract(parse_result)
-    workspace.update(facts.uri, facts)
-    analysis = resolver.analyze(facts.uri, facts, workspace)
+    analysis = snapshot.analysis
 
     diagnostic_codes = [diagnostic.code for diagnostic in analysis.diagnostics]
     assert diagnostic_codes.count('duplicate-proc') == 2
@@ -58,19 +67,14 @@ def test_analysis_reports_duplicate_procs_and_unresolved_symbols() -> None:
     assert 'unresolved-variable' in diagnostic_codes
 
 
-def test_analysis_tracks_namespace_resolution() -> None:
-    parser = Parser()
-    extractor = FactExtractor(parser)
-    resolver = Resolver()
-    workspace = WorkspaceIndex()
-
-    parse_result = parser.parse_document(
+def test_analysis_tracks_namespace_resolution(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
         'file:///namespace.tcl',
         'namespace eval app { proc greet {} {return ok} }\napp::greet\n',
     )
-    facts = extractor.extract(parse_result)
-    workspace.update(facts.uri, facts)
-    analysis = resolver.analyze(facts.uri, facts, workspace)
+    facts = snapshot.facts
+    analysis = snapshot.analysis
 
     assert [scope.qualified_name for scope in facts.namespaces] == ['::app']
     assert [proc.qualified_name for proc in facts.procedures] == ['::app::greet']
@@ -84,22 +88,17 @@ def test_analysis_tracks_namespace_resolution() -> None:
     assert resolved_commands[0].uncertainty.state == 'resolved'
 
 
-def test_analysis_includes_proc_comment_blocks_in_hovers() -> None:
-    parser = Parser()
-    extractor = FactExtractor(parser)
-    resolver = Resolver()
-    workspace = WorkspaceIndex()
-
-    parse_result = parser.parse_document(
+def test_analysis_includes_proc_comment_blocks_in_hovers(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
         'file:///doc.tcl',
         '# Greets a user by name.\n'
         '# Returns nothing.\n'
         'proc greet {name} {puts $name}\n'
         'greet World\n',
     )
-    facts = extractor.extract(parse_result)
-    workspace.update(facts.uri, facts)
-    analysis = resolver.analyze(facts.uri, facts, workspace)
+    facts = snapshot.facts
+    analysis = snapshot.analysis
 
     assert facts.procedures[0].documentation == 'Greets a user by name.\nReturns nothing.'
 
@@ -120,16 +119,10 @@ def test_analysis_includes_proc_comment_blocks_in_hovers() -> None:
     )
 
 
-def test_analysis_uses_builtin_command_metadata_for_hovers() -> None:
-    parser = Parser()
-    extractor = FactExtractor(parser)
-    resolver = Resolver()
-    workspace = WorkspaceIndex()
-
-    parse_result = parser.parse_document('file:///builtin.tcl', 'pwd\n')
-    facts = extractor.extract(parse_result)
-    workspace.update(facts.uri, facts)
-    analysis = resolver.analyze(facts.uri, facts, workspace)
+def test_analysis_uses_builtin_command_metadata_for_hovers(parser: Parser) -> None:
+    snapshot = _analyze(parser, 'file:///builtin.tcl', 'pwd\n')
+    facts = snapshot.facts
+    analysis = snapshot.analysis
 
     assert analysis.diagnostics == ()
 
@@ -150,16 +143,12 @@ def test_analysis_uses_builtin_command_metadata_for_hovers() -> None:
     assert 'Returns the absolute path name of the current working directory.' in hover
 
 
-def test_analysis_includes_single_builtin_signature_when_arguments_exist() -> None:
-    parser = Parser()
-    extractor = FactExtractor(parser)
-    resolver = Resolver()
-    workspace = WorkspaceIndex()
-
-    parse_result = parser.parse_document('file:///builtin_set.tcl', 'set value 1\n')
-    facts = extractor.extract(parse_result)
-    workspace.update(facts.uri, facts)
-    analysis = resolver.analyze(facts.uri, facts, workspace)
+def test_analysis_includes_single_builtin_signature_when_arguments_exist(
+    parser: Parser,
+) -> None:
+    snapshot = _analyze(parser, 'file:///builtin_set.tcl', 'set value 1\n')
+    facts = snapshot.facts
+    analysis = snapshot.analysis
 
     hover_by_offset = {hover.span.start.offset: hover.contents for hover in analysis.hovers}
     hover = hover_by_offset[facts.command_calls[0].name_span.start.offset]
@@ -175,16 +164,10 @@ def test_analysis_includes_single_builtin_signature_when_arguments_exist() -> No
     assert len(command_resolution.target_symbol_ids) == 1
 
 
-def test_analysis_groups_builtin_overloads_in_hover_output() -> None:
-    parser = Parser()
-    extractor = FactExtractor(parser)
-    resolver = Resolver()
-    workspace = WorkspaceIndex()
-
-    parse_result = parser.parse_document('file:///builtin_overload.tcl', 'after 100\n')
-    facts = extractor.extract(parse_result)
-    workspace.update(facts.uri, facts)
-    analysis = resolver.analyze(facts.uri, facts, workspace)
+def test_analysis_groups_builtin_overloads_in_hover_output(parser: Parser) -> None:
+    snapshot = _analyze(parser, 'file:///builtin_overload.tcl', 'after 100\n')
+    facts = snapshot.facts
+    analysis = snapshot.analysis
 
     hover_by_offset = {hover.span.start.offset: hover.contents for hover in analysis.hovers}
     hover = hover_by_offset[facts.command_calls[0].name_span.start.offset]
@@ -207,13 +190,9 @@ def test_analysis_groups_builtin_overloads_in_hover_output() -> None:
     assert len(command_resolution.target_symbol_ids) == len(builtin.overloads)
 
 
-def test_analysis_tracks_catch_bodies_and_result_variables() -> None:
-    parser = Parser()
-    extractor = FactExtractor(parser)
-    resolver = Resolver()
-    workspace = WorkspaceIndex()
-
-    parse_result = parser.parse_document(
+def test_analysis_tracks_catch_bodies_and_result_variables(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
         'file:///catch.tcl',
         'proc helper {} {return ok}\n'
         'proc run {} {\n'
@@ -225,9 +204,8 @@ def test_analysis_tracks_catch_bodies_and_result_variables() -> None:
         '    puts $local\n'
         '}\n',
     )
-    facts = extractor.extract(parse_result)
-    workspace.update(facts.uri, facts)
-    analysis = resolver.analyze(facts.uri, facts, workspace)
+    facts = snapshot.facts
+    analysis = snapshot.analysis
 
     run_proc = next(proc for proc in facts.procedures if proc.qualified_name == '::run')
     bindings_by_name = {

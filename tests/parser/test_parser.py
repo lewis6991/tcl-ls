@@ -10,8 +10,7 @@ from tcl_lsp.parser import (
 )
 
 
-def test_parser_builds_commands_and_nested_substitutions() -> None:
-    parser = Parser()
+def test_parser_builds_commands_and_nested_substitutions(parser: Parser) -> None:
     result = parser.parse_document(
         'test.tcl',
         '# comment\nset value [greet $name]\nputs "Hello, $name"\n',
@@ -38,8 +37,7 @@ def test_parser_builds_commands_and_nested_substitutions() -> None:
     assert nested_variable.name == 'name'
 
 
-def test_parser_attaches_contiguous_leading_comment_blocks_to_commands() -> None:
-    parser = Parser()
+def test_parser_attaches_contiguous_leading_comment_blocks_to_commands(parser: Parser) -> None:
     result = parser.parse_document(
         'comments.tcl',
         '# first line\n'
@@ -58,8 +56,7 @@ def test_parser_attaches_contiguous_leading_comment_blocks_to_commands() -> None
     assert result.script.commands[1].leading_comments == ()
 
 
-def test_parser_reports_unmatched_constructs() -> None:
-    parser = Parser()
+def test_parser_reports_unmatched_constructs(parser: Parser) -> None:
     result = parser.parse_document(
         'broken.tcl',
         'puts "unterminated\nset value [greet $name\nset other ${missing\n',
@@ -71,8 +68,7 @@ def test_parser_reports_unmatched_constructs() -> None:
     assert 'malformed-variable' in diagnostic_codes
 
 
-def test_parse_embedded_script_preserves_absolute_positions() -> None:
-    parser = Parser()
+def test_parse_embedded_script_preserves_absolute_positions(parser: Parser) -> None:
     result = parser.parse_embedded_script(
         'embedded.tcl',
         'puts $name',
@@ -88,8 +84,7 @@ def test_parse_embedded_script_preserves_absolute_positions() -> None:
     assert variable.span.start.character == 11
 
 
-def test_parser_treats_invalid_variable_starters_as_literal_text() -> None:
-    parser = Parser()
+def test_parser_treats_invalid_variable_starters_as_literal_text(parser: Parser) -> None:
     result = parser.parse_document('literal-dollar.tcl', 'puts "```!@#$%^&*()"\nputs $@\nputs $\n')
 
     assert result.diagnostics == ()
@@ -102,8 +97,7 @@ def test_parser_treats_invalid_variable_starters_as_literal_text() -> None:
     assert [word_static_text(word) for word in result.script.commands[2].words] == ['puts', '$']
 
 
-def test_parser_handles_line_continuations_in_comments_and_commands() -> None:
-    parser = Parser()
+def test_parser_handles_line_continuations_in_comments_and_commands(parser: Parser) -> None:
     result = parser.parse_document(
         'continued.tcl',
         '# the next line will restart with tclsh wherever it is \\\n'
