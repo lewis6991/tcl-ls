@@ -13,6 +13,15 @@ description: Write, amend, and reword git commit messages for this repo. Use whe
 - Keep the subject imperative, omit a trailing period, and keep it at
   50 characters or fewer.
 - Add a detailed body and wrap body lines at 72 characters or fewer.
+- Before staging or amending, verify every file belongs to the same
+  logical change. Leave unrelated edits unstaged or put them in a
+  separate commit; do not fold incidental repo-skill or tooling edits
+  into a feature commit.
+- When invoking `git commit` from the shell, do not rely on `\n`
+  escapes inside regular quoted `-m` arguments because they are stored
+  literally. Use multiple `-m` flags for separate paragraphs, ANSI-C
+  quoting, or `git commit -F <file>` when you need explicit line
+  breaks.
 - Prefer amending related unmerged commits; use a new commit only for
   unrelated changes.
 - Preserve existing commit boundaries unless the user asks to change
