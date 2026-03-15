@@ -69,6 +69,7 @@ This repository contains an early but working bootstrap of a Tcl language server
 - [x] Document symbols for namespaces and procedures
 - [x] Conservative local package inference from nearby `pkgIndex.tcl`
 - [x] Lazy loading of package provider files discovered through local `pkgIndex.tcl`
+- [x] Bundled Tcl builtin metadata for default command recognition and hover docs
 - [ ] No full control-flow analysis
 - [ ] No runtime evaluation of dynamic Tcl features
 - [ ] Embedded/body analysis is currently limited to `proc`, top-level `namespace eval`, and basic `foreach`; bodies for most other Tcl control structures are not analyzed
@@ -84,7 +85,7 @@ This repository contains an early but working bootstrap of a Tcl language server
   - [ ] TclOO/class systems
 - [ ] Global variable resolution is intentionally conservative
 - [ ] Workspace indexing is still narrow; beyond procedures and package metadata there is no rich global symbol database
-- [ ] Builtin command recognition is still heuristic and incomplete; Tcl/Tk and extension-specific commands may still be reported as unresolved
+- [ ] Builtin coverage is limited to default Tcl commands; Tcl/Tk and extension-specific commands may still be reported as unresolved
 - [ ] Diagnostics are intentionally limited to high-confidence cases
 
 ### LSP and Editor Integration

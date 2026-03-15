@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from tcl_lsp.analysis.builtins import BuiltinCommand, builtin_command
 from tcl_lsp.analysis.index import WorkspaceIndex
 from tcl_lsp.analysis.model import (
     AnalysisResult,
@@ -18,97 +19,6 @@ from tcl_lsp.analysis.model import (
 )
 from tcl_lsp.common import Diagnostic, HoverInfo, Location
 
-_BUILTIN_COMMANDS = {
-    'after',
-    'append',
-    'apply',
-    'array',
-    'binary',
-    'break',
-    'catch',
-    'cd',
-    'chan',
-    'clock',
-    'close',
-    'concat',
-    'continue',
-    'coroutine',
-    'dict',
-    'encoding',
-    'eof',
-    'error',
-    'eval',
-    'exec',
-    'exit',
-    'expr',
-    'fblocked',
-    'fconfigure',
-    'fcopy',
-    'file',
-    'fileevent',
-    'flush',
-    'for',
-    'foreach',
-    'format',
-    'gets',
-    'global',
-    'glob',
-    'if',
-    'incr',
-    'info',
-    'interp',
-    'join',
-    'lappend',
-    'lassign',
-    'lindex',
-    'linsert',
-    'list',
-    'llength',
-    'lmap',
-    'load',
-    'lrange',
-    'lrepeat',
-    'lreplace',
-    'lreverse',
-    'lsearch',
-    'lset',
-    'lsort',
-    'namespace',
-    'open',
-    'package',
-    'pid',
-    'proc',
-    'puts',
-    'read',
-    'regexp',
-    'regsub',
-    'rename',
-    'return',
-    'scan',
-    'seek',
-    'set',
-    'socket',
-    'source',
-    'split',
-    'string',
-    'subst',
-    'switch',
-    'tailcall',
-    'tell',
-    'time',
-    'trace',
-    'try',
-    'unset',
-    'update',
-    'uplevel',
-    'upvar',
-    'variable',
-    'vwait',
-    'while',
-    'yield',
-    'yieldto',
-    'zlib',
-}
 _BUILTIN_PACKAGES = {'Tcl'}
 
 
@@ -324,19 +234,20 @@ class Resolver:
             )
 
         builtin_name = _normalize_command_name(command_call.name)
-        if builtin_name in _BUILTIN_COMMANDS:
+        builtin = builtin_command(builtin_name)
+        if builtin is not None:
             return (
                 ResolutionResult(
                     reference=reference,
                     uncertainty=AnalysisUncertainty(
-                        state='dynamic',
-                        reason='Built-in Tcl commands are not indexed as definitions.',
+                        state='resolved',
+                        reason='Resolved to bundled builtin metadata.',
                     ),
-                    target_symbol_ids=(),
+                    target_symbol_ids=tuple(overload.symbol_id for overload in builtin.overloads),
                 ),
                 HoverInfo(
                     span=command_call.name_span,
-                    contents=f'builtin command {builtin_name}',
+                    contents=_builtin_hover(builtin),
                 ),
             )
 
@@ -471,6 +382,21 @@ def _proc_hover(proc: ProcDecl) -> str:
     if proc.documentation is None:
         return detail
     return f'{detail}\n\n{proc.documentation}'
+
+
+def _builtin_hover(builtin: BuiltinCommand) -> str:
+    if len(builtin.overloads) == 1:
+        overload = builtin.overloads[0]
+        return f'builtin command {_builtin_signature_heading(overload.signature)}\n\n{overload.documentation}'
+
+    sections = [
+        f'`{overload.signature}`\n{overload.documentation}' for overload in builtin.overloads
+    ]
+    return f'builtin command {builtin.name}\n\n' + '\n\n'.join(sections)
+
+
+def _builtin_signature_heading(signature: str) -> str:
+    return signature.removesuffix(' {}')
 
 
 def _normalize_command_name(name: str) -> str:

@@ -138,6 +138,10 @@ class _FactCollector:
             self._collect_foreach(command, context)
             return
 
+        if command_name == 'if':
+            self._collect_if(command, context)
+            return
+
         if command_name == 'catch':
             self._collect_catch(command, context)
 
@@ -376,31 +380,50 @@ class _FactCollector:
                 kind='foreach',
             )
 
-        embedded_body = _extract_static_script(command.words[3])
-        if embedded_body is None:
+        self._collect_embedded_body(command.words[3], context)
+
+    def _collect_if(self, command: Command, context: _ExtractionContext) -> None:
+        if len(command.words) < 3:
             return
 
-        body_result = self._parser.parse_embedded_script(
-            source_id=context.uri,
-            text=embedded_body[0],
-            start_position=embedded_body[1],
-        )
-        self._diagnostics.extend(body_result.diagnostics)
-        self._collect_script(body_result.script, context)
+        index = 2
+        if word_static_text(command.words[index]) == 'then':
+            index += 1
+
+        if index >= len(command.words):
+            return
+
+        self._collect_embedded_body(command.words[index], context)
+        index += 1
+
+        while index < len(command.words):
+            keyword = word_static_text(command.words[index])
+            if keyword == 'elseif':
+                index += 1
+                if index >= len(command.words):
+                    return
+                index += 1
+                if index < len(command.words) and word_static_text(command.words[index]) == 'then':
+                    index += 1
+                if index >= len(command.words):
+                    return
+                self._collect_embedded_body(command.words[index], context)
+                index += 1
+                continue
+
+            if keyword == 'else':
+                if index + 1 >= len(command.words):
+                    return
+                self._collect_embedded_body(command.words[index + 1], context)
+                return
+
+            return
 
     def _collect_catch(self, command: Command, context: _ExtractionContext) -> None:
         if len(command.words) < 2:
             return
 
-        embedded_body = _extract_static_script(command.words[1])
-        if embedded_body is not None:
-            body_result = self._parser.parse_embedded_script(
-                source_id=context.uri,
-                text=embedded_body[0],
-                start_position=embedded_body[1],
-            )
-            self._diagnostics.extend(body_result.diagnostics)
-            self._collect_script(body_result.script, context)
+        self._collect_embedded_body(command.words[1], context)
 
         for variable_word in command.words[2:4]:
             variable_name = word_static_text(variable_word)
@@ -412,6 +435,19 @@ class _FactCollector:
                 context=context,
                 kind='catch',
             )
+
+    def _collect_embedded_body(self, word: Word, context: _ExtractionContext) -> None:
+        embedded_body = _extract_static_script(word)
+        if embedded_body is None:
+            return
+
+        body_result = self._parser.parse_embedded_script(
+            source_id=context.uri,
+            text=embedded_body[0],
+            start_position=embedded_body[1],
+        )
+        self._diagnostics.extend(body_result.diagnostics)
+        self._collect_script(body_result.script, context)
 
     def _record_variable_binding(
         self,

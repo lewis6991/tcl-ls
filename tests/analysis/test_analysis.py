@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from tcl_lsp.analysis import FactExtractor, Resolver, WorkspaceIndex
+from tcl_lsp.analysis.builtins import builtin_command
 from tcl_lsp.parser import Parser
 
 
@@ -45,7 +46,7 @@ def test_analysis_reports_duplicate_procs_and_unresolved_symbols() -> None:
 
     parse_result = parser.parse_document(
         'file:///broken.tcl',
-        'proc greet {} {puts $name}\nunknown\nproc greet {} {return ok}\n',
+        'proc greet {} {puts $name}\nmissing_command\nproc greet {} {return ok}\n',
     )
     facts = extractor.extract(parse_result)
     workspace.update(facts.uri, facts)
@@ -119,6 +120,93 @@ def test_analysis_includes_proc_comment_blocks_in_hovers() -> None:
     )
 
 
+def test_analysis_uses_builtin_command_metadata_for_hovers() -> None:
+    parser = Parser()
+    extractor = FactExtractor(parser)
+    resolver = Resolver()
+    workspace = WorkspaceIndex()
+
+    parse_result = parser.parse_document('file:///builtin.tcl', 'pwd\n')
+    facts = extractor.extract(parse_result)
+    workspace.update(facts.uri, facts)
+    analysis = resolver.analyze(facts.uri, facts, workspace)
+
+    assert analysis.diagnostics == ()
+
+    command_resolution = next(
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command'
+    )
+    assert command_resolution.reference.name == 'pwd'
+    assert command_resolution.uncertainty.state == 'resolved'
+    assert len(command_resolution.target_symbol_ids) == 1
+
+    hover_by_offset = {hover.span.start.offset: hover.contents for hover in analysis.hovers}
+    hover = hover_by_offset[facts.command_calls[0].name_span.start.offset]
+    assert hover.startswith(
+        'builtin command pwd\n\nReturn the absolute path of the current working directory.'
+    )
+    assert 'Returns the absolute path name of the current working directory.' in hover
+
+
+def test_analysis_includes_single_builtin_signature_when_arguments_exist() -> None:
+    parser = Parser()
+    extractor = FactExtractor(parser)
+    resolver = Resolver()
+    workspace = WorkspaceIndex()
+
+    parse_result = parser.parse_document('file:///builtin_set.tcl', 'set value 1\n')
+    facts = extractor.extract(parse_result)
+    workspace.update(facts.uri, facts)
+    analysis = resolver.analyze(facts.uri, facts, workspace)
+
+    hover_by_offset = {hover.span.start.offset: hover.contents for hover in analysis.hovers}
+    hover = hover_by_offset[facts.command_calls[0].name_span.start.offset]
+    assert hover.startswith('builtin command set {varName args}\n\nRead and write variables.')
+    assert 'With one argument, return the current value of varName.' in hover
+
+    command_resolution = next(
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command'
+    )
+    assert command_resolution.uncertainty.state == 'resolved'
+    assert len(command_resolution.target_symbol_ids) == 1
+
+
+def test_analysis_groups_builtin_overloads_in_hover_output() -> None:
+    parser = Parser()
+    extractor = FactExtractor(parser)
+    resolver = Resolver()
+    workspace = WorkspaceIndex()
+
+    parse_result = parser.parse_document('file:///builtin_overload.tcl', 'after 100\n')
+    facts = extractor.extract(parse_result)
+    workspace.update(facts.uri, facts)
+    analysis = resolver.analyze(facts.uri, facts, workspace)
+
+    hover_by_offset = {hover.span.start.offset: hover.contents for hover in analysis.hovers}
+    hover = hover_by_offset[facts.command_calls[0].name_span.start.offset]
+
+    assert hover.startswith('builtin command after\n\n')
+    assert '`after {ms}`\nExecute a command after a time delay' in hover
+    assert '`after {idle script args}`\nSchedule a script to run when the event loop is idle' in hover
+    assert (
+        '`after {cancel idOrScript}`\nCancel a previously scheduled after handler' in hover
+    )
+
+    command_resolution = next(
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command'
+    )
+    builtin = builtin_command('after')
+    assert builtin is not None
+    assert command_resolution.uncertainty.state == 'resolved'
+    assert len(command_resolution.target_symbol_ids) == len(builtin.overloads)
+
+
 def test_analysis_tracks_catch_bodies_and_result_variables() -> None:
     parser = Parser()
     extractor = FactExtractor(parser)
@@ -167,4 +255,60 @@ def test_analysis_tracks_catch_bodies_and_result_variables() -> None:
     assert variable_resolutions['message'] == 'resolved'
     assert variable_resolutions['options'] == 'resolved'
     assert variable_resolutions['local'] == 'resolved'
+    assert analysis.diagnostics == ()
+
+
+def test_analysis_tracks_static_if_bodies_for_metadata_guards() -> None:
+    parser = Parser()
+    extractor = FactExtractor(parser)
+    resolver = Resolver()
+    workspace = WorkspaceIndex()
+
+    parse_result = parser.parse_document(
+        'file:///meta_file.tcl',
+        'if {[llength [info commands meta]] == 0} {\n'
+        '    proc meta {args} {}\n'
+        '}\n'
+        '# Builtin metadata entry.\n'
+        'meta command after {ms}\n',
+    )
+    facts = extractor.extract(parse_result)
+    workspace.update(facts.uri, facts)
+    analysis = resolver.analyze(facts.uri, facts, workspace)
+
+    assert [proc.qualified_name for proc in facts.procedures] == ['::meta']
+    assert analysis.diagnostics == ()
+
+
+def test_analysis_treats_meta_command_as_builtin() -> None:
+    parser = Parser()
+    extractor = FactExtractor(parser)
+    resolver = Resolver()
+    workspace = WorkspaceIndex()
+
+    parse_result = parser.parse_document(
+        'file:///meta_builtin.tcl',
+        '# Builtin metadata entry.\nmeta command after {ms}\n',
+    )
+    facts = extractor.extract(parse_result)
+    workspace.update(facts.uri, facts)
+    analysis = resolver.analyze(facts.uri, facts, workspace)
+
+    meta_resolution = next(
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command' and resolution.reference.name == 'meta'
+    )
+    assert meta_resolution.uncertainty.state == 'resolved'
+    assert len(meta_resolution.target_symbol_ids) == 1
+
+    hover_by_offset = {hover.span.start.offset: hover.contents for hover in analysis.hovers}
+    hover = hover_by_offset[facts.command_calls[0].name_span.start.offset]
+    assert hover.startswith(
+        'builtin command meta {kind name signature}\n\n'
+        'Declare metadata for Tcl language entities.'
+    )
+    assert 'structured documentation instead of executable behavior' in hover.replace(
+        '\n', ' '
+    )
     assert analysis.diagnostics == ()

@@ -83,8 +83,10 @@ def _hover_markdown(hover: HoverInfo) -> str:
             return f'```tcl\n{signature}\n```'
         return f'```tcl\n{signature}\n```\n\n{remainder}'
 
-    if hover.contents.startswith('builtin command '):
-        command_name = hover.contents.removeprefix('builtin command ')
-        return f'```tcl\n{command_name}\n```\n\nBuilt-in Tcl command.'
+    if signature.startswith('builtin command '):
+        command_name = signature.removeprefix('builtin command ')
+        if not separator:
+            return f'```tcl\n{command_name}\n```'
+        return f'```tcl\n{command_name}\n```\n\n{remainder}'
 
     return hover.contents

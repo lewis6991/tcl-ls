@@ -5,6 +5,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from tcl_lsp.analysis import AnalysisResult, FactExtractor, Resolver, WorkspaceIndex
+from tcl_lsp.analysis.builtins import builtin_definition_targets
 from tcl_lsp.analysis.model import DefinitionTarget, DocumentFacts
 from tcl_lsp.common import Diagnostic, DocumentSymbol, HoverInfo, Location
 from tcl_lsp.parser import Parser, ParseResult
@@ -221,7 +222,8 @@ class LanguageService:
         direct_matches = [
             definition.symbol_id
             for definition in document.analysis.definitions
-            if definition.location.span.contains(line=line, character=character)
+            if definition.location.uri == uri
+            and definition.location.span.contains(line=line, character=character)
         ]
         if direct_matches:
             return tuple(dict.fromkeys(direct_matches))
@@ -241,6 +243,11 @@ class LanguageService:
                     continue
                 seen.add(definition.symbol_id)
                 definitions.append(definition)
+        for definition in builtin_definition_targets():
+            if definition.symbol_id not in symbol_ids or definition.symbol_id in seen:
+                continue
+            seen.add(definition.symbol_id)
+            definitions.append(definition)
         return tuple(definitions)
 
 
