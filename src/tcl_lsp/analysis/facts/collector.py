@@ -16,6 +16,7 @@ from tcl_lsp.analysis.facts.utils import (
     command_documentation,
     extract_ifneeded_source_uri,
     extract_static_script,
+    name_tail,
     namespace_for_name,
     namespace_scope_id,
     normalize_command_name,
@@ -70,6 +71,14 @@ class _SwitchOptionState:
     regexp_binding_words: tuple[Word, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _VariableTarget:
+    name: str
+    namespace: str
+    scope_id: str
+    symbol_id: str
+
+
 class FactExtractor:
     def __init__(self, parser: Parser | None = None) -> None:
         self._parser = Parser() if parser is None else parser
@@ -94,15 +103,30 @@ class _FactCollector:
         self._variable_bindings: list[VarBinding] = []
         self._command_calls: list[CommandCall] = []
         self._variable_references: list[VariableReference] = []
+        self._linked_variables_by_scope: dict[str, dict[str, _VariableTarget]] = {}
         self._command_handlers: dict[str, Callable[[Command, _ExtractionContext], None]] = {
+            'append': self._collect_append,
+            'array': self._collect_array,
             'package': self._collect_package,
             'proc': self._collect_proc,
             'namespace': self._collect_namespace_eval,
             'set': self._collect_set,
+            'global': self._collect_global,
+            'gets': self._collect_gets,
             'foreach': self._collect_foreach,
+            'for': self._collect_for,
+            'info': self._collect_info,
             'if': self._collect_if,
+            'incr': self._collect_incr,
+            'lappend': self._collect_lappend,
+            'lassign': self._collect_lassign,
+            'lmap': self._collect_lmap,
+            'scan': self._collect_scan,
             'switch': self._collect_switch,
             'catch': self._collect_catch,
+            'variable': self._collect_variable,
+            'vwait': self._collect_vwait,
+            'while': self._collect_while,
         }
 
     def collect(self) -> DocumentFacts:
@@ -314,6 +338,12 @@ class _FactCollector:
                 context=context,
                 kind='set',
             )
+            if context.procedure_symbol_id is None:
+                self._record_variable_reference(
+                    name=variable_name,
+                    span=command.words[1].span,
+                    context=context,
+                )
             return
 
         self._record_variable_reference(
@@ -321,6 +351,46 @@ class _FactCollector:
             span=command.words[1].span,
             context=context,
         )
+
+    def _collect_array(self, command: Command, context: _ExtractionContext) -> None:
+        if len(command.words) < 3:
+            return
+
+        subcommand = word_static_text(command.words[1])
+        if subcommand == 'set':
+            self._record_simple_binding_word(command.words[2], context, kind='array')
+            if context.procedure_symbol_id is None:
+                self._record_simple_reference_word(command.words[2], context)
+            return
+
+        if subcommand in {'exists', 'get', 'names', 'size', 'startsearch', 'statistics', 'unset'}:
+            self._record_simple_reference_word(command.words[2], context)
+
+    def _collect_append(self, command: Command, context: _ExtractionContext) -> None:
+        self._record_variable_writer(command, context, kind='append')
+
+    def _collect_incr(self, command: Command, context: _ExtractionContext) -> None:
+        self._record_variable_writer(command, context, kind='incr')
+
+    def _collect_lappend(self, command: Command, context: _ExtractionContext) -> None:
+        self._record_variable_writer(command, context, kind='lappend')
+
+    def _collect_gets(self, command: Command, context: _ExtractionContext) -> None:
+        if len(command.words) < 3:
+            return
+        self._record_simple_binding_word(command.words[2], context, kind='gets')
+
+    def _collect_lassign(self, command: Command, context: _ExtractionContext) -> None:
+        if len(command.words) < 3:
+            return
+        for variable_word in command.words[2:]:
+            self._record_simple_binding_word(variable_word, context, kind='lassign')
+
+    def _collect_scan(self, command: Command, context: _ExtractionContext) -> None:
+        if len(command.words) < 4:
+            return
+        for variable_word in command.words[3:]:
+            self._record_simple_binding_word(variable_word, context, kind='scan')
 
     def _collect_foreach(self, command: Command, context: _ExtractionContext) -> None:
         if len(command.words) < 4:
@@ -337,6 +407,38 @@ class _FactCollector:
             )
 
         self._collect_embedded_body(command.words[3], context)
+
+    def _collect_lmap(self, command: Command, context: _ExtractionContext) -> None:
+        if len(command.words) < 4:
+            return
+        variables = self._parse_list_items(command.words[1])
+        for item in variables:
+            if not is_simple_name(item.text):
+                continue
+            self._record_variable_binding(
+                name=item.text,
+                span=item.span,
+                context=context,
+                kind='lmap',
+            )
+
+        self._collect_embedded_body(command.words[3], context)
+
+    def _collect_for(self, command: Command, context: _ExtractionContext) -> None:
+        if len(command.words) < 5:
+            return
+
+        self._collect_embedded_body(command.words[1], context)
+        self._collect_if_condition(command.words[2], context)
+        self._collect_embedded_body(command.words[3], context)
+        self._collect_embedded_body(command.words[4], context)
+
+    def _collect_info(self, command: Command, context: _ExtractionContext) -> None:
+        if len(command.words) < 3:
+            return
+        if word_static_text(command.words[1]) != 'exists':
+            return
+        self._record_simple_reference_word(command.words[2], context)
 
     def _collect_if(self, command: Command, context: _ExtractionContext) -> None:
         if len(command.words) < 3:
@@ -362,6 +464,71 @@ class _FactCollector:
         for variable_word in command.words[2:4]:
             self._record_simple_binding_word(variable_word, context, kind='catch')
 
+    def _collect_global(self, command: Command, context: _ExtractionContext) -> None:
+        if context.procedure_symbol_id is None:
+            return
+
+        for variable_word in command.words[1:]:
+            link_details = self._variable_link_details(
+                variable_word,
+                context=context,
+                namespace='::',
+            )
+            if link_details is None:
+                continue
+            local_name, target = link_details
+            self._record_namespace_binding(
+                target=target, span=variable_word.span, uri=context.uri, kind='global'
+            )
+            self._link_variable(context.scope_id, local_name, target)
+            self._record_link_binding(
+                local_name=local_name,
+                span=variable_word.span,
+                context=context,
+                kind='global',
+                target=target,
+            )
+            self._record_variable_reference(
+                name=local_name,
+                span=variable_word.span,
+                context=context,
+            )
+
+    def _collect_variable(self, command: Command, context: _ExtractionContext) -> None:
+        if len(command.words) < 2:
+            return
+
+        for variable_word in command.words[1::2]:
+            link_details = self._variable_link_details(
+                variable_word,
+                context=context,
+                namespace=context.namespace,
+            )
+            if link_details is None:
+                continue
+            local_name, target = link_details
+            self._record_namespace_binding(
+                target=target,
+                span=variable_word.span,
+                uri=context.uri,
+                kind='variable',
+            )
+            if context.procedure_symbol_id is None:
+                continue
+            self._link_variable(context.scope_id, local_name, target)
+            self._record_link_binding(
+                local_name=local_name,
+                span=variable_word.span,
+                context=context,
+                kind='variable',
+                target=target,
+            )
+            self._record_variable_reference(
+                name=local_name,
+                span=variable_word.span,
+                context=context,
+            )
+
     def _collect_switch(self, command: Command, context: _ExtractionContext) -> None:
         layout = self._switch_layout(command)
         if layout is None:
@@ -379,6 +546,34 @@ class _FactCollector:
 
         for body_word in branch_body_words:
             self._collect_embedded_body(body_word, context)
+
+    def _collect_vwait(self, command: Command, context: _ExtractionContext) -> None:
+        if len(command.words) < 2:
+            return
+
+        variable_name = self._simple_variable_name(command.words[1])
+        if variable_name is None:
+            return
+
+        target = self._namespace_variable_target(
+            name=variable_name,
+            uri=context.uri,
+            namespace='::',
+        )
+        self._record_custom_variable_reference(
+            name=target.name,
+            span=command.words[1].span,
+            namespace=target.namespace,
+            scope_id=target.scope_id,
+            procedure_symbol_id=None,
+            uri=context.uri,
+        )
+
+    def _collect_while(self, command: Command, context: _ExtractionContext) -> None:
+        if len(command.words) < 3:
+            return
+        self._collect_if_condition(command.words[1], context)
+        self._collect_embedded_body(command.words[2], context)
 
     def _switch_layout(self, command: Command) -> _SwitchLayout | None:
         if len(command.words) < 3:
@@ -498,15 +693,40 @@ class _FactCollector:
         span: Span,
         context: _ExtractionContext,
     ) -> None:
-        self._variable_references.append(
-            VariableReference(
-                uri=context.uri,
+        if self._linked_variable(context.scope_id, name) is not None:
+            self._record_custom_variable_reference(
                 name=name,
+                span=span,
                 namespace=context.namespace,
                 scope_id=context.scope_id,
                 procedure_symbol_id=context.procedure_symbol_id,
-                span=span,
+                uri=context.uri,
             )
+            return
+
+        direct_target = self._direct_namespace_variable_target(
+            name=name,
+            uri=context.uri,
+            namespace=context.namespace,
+        )
+        if direct_target is not None:
+            self._record_custom_variable_reference(
+                name=direct_target.name,
+                span=span,
+                namespace=direct_target.namespace,
+                scope_id=direct_target.scope_id,
+                procedure_symbol_id=None,
+                uri=context.uri,
+            )
+            return
+
+        self._record_custom_variable_reference(
+            name=name,
+            span=span,
+            namespace=context.namespace,
+            scope_id=context.scope_id,
+            procedure_symbol_id=context.procedure_symbol_id,
+            uri=context.uri,
         )
 
     def _record_variable_binding(
@@ -516,17 +736,105 @@ class _FactCollector:
         context: _ExtractionContext,
         kind: BindingKind,
     ) -> None:
+        linked_target = self._linked_variable(context.scope_id, name)
+        if linked_target is not None:
+            self._record_custom_variable_binding(
+                name=name,
+                span=span,
+                namespace=context.namespace,
+                scope_id=context.scope_id,
+                procedure_symbol_id=context.procedure_symbol_id,
+                symbol_id=linked_target.symbol_id,
+                uri=context.uri,
+                kind=kind,
+            )
+            return
+
+        direct_target = self._direct_namespace_variable_target(
+            name=name,
+            uri=context.uri,
+            namespace=context.namespace,
+        )
+        if direct_target is not None:
+            self._record_namespace_binding(
+                target=direct_target, span=span, uri=context.uri, kind=kind
+            )
+            return
+
+        self._record_custom_variable_binding(
+            name=name,
+            span=span,
+            namespace=context.namespace,
+            scope_id=context.scope_id,
+            procedure_symbol_id=context.procedure_symbol_id,
+            symbol_id=variable_symbol_id(context.uri, context.scope_id, name),
+            uri=context.uri,
+            kind=kind,
+        )
+
+    def _record_custom_variable_reference(
+        self,
+        *,
+        name: str,
+        span: Span,
+        namespace: str,
+        scope_id: str,
+        procedure_symbol_id: str | None,
+        uri: str,
+    ) -> None:
+        self._variable_references.append(
+            VariableReference(
+                uri=uri,
+                name=name,
+                namespace=namespace,
+                scope_id=scope_id,
+                procedure_symbol_id=procedure_symbol_id,
+                span=span,
+            )
+        )
+
+    def _record_custom_variable_binding(
+        self,
+        *,
+        name: str,
+        span: Span,
+        namespace: str,
+        scope_id: str,
+        procedure_symbol_id: str | None,
+        symbol_id: str,
+        uri: str,
+        kind: BindingKind,
+    ) -> None:
         self._variable_bindings.append(
             VarBinding(
-                symbol_id=variable_symbol_id(context.uri, context.scope_id, name),
-                uri=context.uri,
+                symbol_id=symbol_id,
+                uri=uri,
                 name=name,
-                scope_id=context.scope_id,
-                namespace=context.namespace,
-                procedure_symbol_id=context.procedure_symbol_id,
+                scope_id=scope_id,
+                namespace=namespace,
+                procedure_symbol_id=procedure_symbol_id,
                 kind=kind,
                 span=span,
             )
+        )
+
+    def _record_namespace_binding(
+        self,
+        *,
+        target: _VariableTarget,
+        span: Span,
+        uri: str,
+        kind: BindingKind,
+    ) -> None:
+        self._record_custom_variable_binding(
+            name=target.name,
+            span=span,
+            namespace=target.namespace,
+            scope_id=target.scope_id,
+            procedure_symbol_id=None,
+            symbol_id=target.symbol_id,
+            uri=uri,
+            kind=kind,
         )
 
     def _simple_variable_name(self, word: Word) -> str | None:
@@ -534,6 +842,17 @@ class _FactCollector:
         if variable_name is None or not is_simple_name(variable_name):
             return None
         return variable_name
+
+    def _record_variable_writer(
+        self,
+        command: Command,
+        context: _ExtractionContext,
+        *,
+        kind: BindingKind,
+    ) -> None:
+        if len(command.words) < 2:
+            return
+        self._record_simple_binding_word(command.words[1], context, kind=kind)
 
     def _record_simple_binding_word(
         self,
@@ -548,6 +867,90 @@ class _FactCollector:
             name=variable_name,
             span=word.span,
             context=context,
+            kind=kind,
+        )
+
+    def _record_simple_reference_word(self, word: Word, context: _ExtractionContext) -> None:
+        variable_name = self._simple_variable_name(word)
+        if variable_name is None:
+            return
+        self._record_variable_reference(
+            name=variable_name,
+            span=word.span,
+            context=context,
+        )
+
+    def _link_variable(self, scope_id: str, local_name: str, target: _VariableTarget) -> None:
+        self._linked_variables_by_scope.setdefault(scope_id, {})[local_name] = target
+
+    def _linked_variable(self, scope_id: str, name: str) -> _VariableTarget | None:
+        return self._linked_variables_by_scope.get(scope_id, {}).get(name)
+
+    def _direct_namespace_variable_target(
+        self,
+        *,
+        name: str,
+        uri: str,
+        namespace: str,
+    ) -> _VariableTarget | None:
+        if '::' not in name:
+            return None
+        return self._namespace_variable_target(name=name, uri=uri, namespace=namespace)
+
+    def _namespace_variable_target(
+        self,
+        *,
+        name: str,
+        uri: str,
+        namespace: str,
+    ) -> _VariableTarget:
+        qualified_name = qualify_name(name, namespace)
+        target_namespace = namespace_for_name(qualified_name)
+        target_name = name_tail(qualified_name)
+        scope_id = namespace_scope_id(target_namespace)
+        return _VariableTarget(
+            name=target_name,
+            namespace=target_namespace,
+            scope_id=scope_id,
+            symbol_id=variable_symbol_id(uri, scope_id, target_name),
+        )
+
+    def _variable_link_details(
+        self,
+        word: Word,
+        *,
+        context: _ExtractionContext,
+        namespace: str,
+    ) -> tuple[str, _VariableTarget] | None:
+        variable_name = self._simple_variable_name(word)
+        if variable_name is None:
+            return None
+        return (
+            name_tail(variable_name),
+            self._namespace_variable_target(
+                name=variable_name,
+                uri=context.uri,
+                namespace=namespace,
+            ),
+        )
+
+    def _record_link_binding(
+        self,
+        *,
+        local_name: str,
+        span: Span,
+        context: _ExtractionContext,
+        kind: BindingKind,
+        target: _VariableTarget,
+    ) -> None:
+        self._record_custom_variable_binding(
+            name=local_name,
+            span=span,
+            namespace=context.namespace,
+            scope_id=context.scope_id,
+            procedure_symbol_id=context.procedure_symbol_id,
+            symbol_id=target.symbol_id,
+            uri=context.uri,
             kind=kind,
         )
 

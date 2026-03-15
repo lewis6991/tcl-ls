@@ -88,6 +88,133 @@ def test_analysis_tracks_namespace_resolution(parser: Parser) -> None:
     assert resolved_commands[0].uncertainty.state == 'resolved'
 
 
+def test_analysis_global_links_proc_references_to_global_bindings(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///global.tcl',
+        'set shared 0\n'
+        'proc run {} {\n'
+        '    global shared\n'
+        '    incr shared\n'
+        '    puts $shared\n'
+        '}\n'
+        'vwait shared\n',
+    )
+    facts = snapshot.facts
+    analysis = snapshot.analysis
+
+    run_proc = next(proc for proc in facts.procedures if proc.qualified_name == '::run')
+    namespace_bindings = [
+        binding
+        for binding in facts.variable_bindings
+        if binding.scope_id == 'namespace::::' and binding.name == 'shared'
+    ]
+    proc_bindings = [
+        binding
+        for binding in facts.variable_bindings
+        if binding.scope_id == run_proc.symbol_id and binding.name == 'shared'
+    ]
+
+    assert {binding.kind for binding in namespace_bindings} == {'set', 'global'}
+    assert {binding.kind for binding in proc_bindings} == {'global', 'incr'}
+    assert len({binding.symbol_id for binding in namespace_bindings}) == 1
+    assert {binding.symbol_id for binding in proc_bindings} == {
+        namespace_bindings[0].symbol_id,
+    }
+
+    shared_resolutions = [
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'variable' and resolution.reference.name == 'shared'
+    ]
+    assert len(shared_resolutions) == 4
+    assert all(resolution.uncertainty.state == 'resolved' for resolution in shared_resolutions)
+    assert analysis.diagnostics == ()
+
+
+def test_analysis_variable_links_proc_references_to_namespace_bindings(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///variable.tcl',
+        'namespace eval app {\n'
+        '    variable counter 0\n'
+        '    proc run {} {\n'
+        '        variable counter\n'
+        '        incr counter\n'
+        '        puts $counter\n'
+        '    }\n'
+        '}\n',
+    )
+    facts = snapshot.facts
+    analysis = snapshot.analysis
+
+    run_proc = next(proc for proc in facts.procedures if proc.qualified_name == '::app::run')
+    namespace_bindings = [
+        binding
+        for binding in facts.variable_bindings
+        if binding.scope_id == 'namespace::::app' and binding.name == 'counter'
+    ]
+    proc_bindings = [
+        binding
+        for binding in facts.variable_bindings
+        if binding.scope_id == run_proc.symbol_id and binding.name == 'counter'
+    ]
+
+    assert {binding.kind for binding in namespace_bindings} == {'variable'}
+    assert {binding.kind for binding in proc_bindings} == {'variable', 'incr'}
+    assert len({binding.symbol_id for binding in namespace_bindings}) == 1
+    assert {binding.symbol_id for binding in proc_bindings} == {
+        namespace_bindings[0].symbol_id,
+    }
+
+    counter_resolutions = [
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'variable' and resolution.reference.name == 'counter'
+    ]
+    assert len(counter_resolutions) == 2
+    assert all(resolution.uncertainty.state == 'resolved' for resolution in counter_resolutions)
+    assert analysis.diagnostics == ()
+
+
+def test_analysis_resolves_variable_uses_inside_namespace_eval_blocks(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///namespace_eval_variable_uses.tcl',
+        'namespace eval app {\n'
+        '    variable counter\n'
+        '    if {![info exists counter]} { set counter 0 }\n'
+        '    variable options\n'
+        '    array set options {proxy_host localhost}\n'
+        '    array names options\n'
+        '}\n',
+    )
+    facts = snapshot.facts
+    analysis = snapshot.analysis
+
+    namespace_bindings = [
+        binding for binding in facts.variable_bindings if binding.scope_id == 'namespace::::app'
+    ]
+    assert {(binding.name, binding.kind) for binding in namespace_bindings} >= {
+        ('counter', 'variable'),
+        ('counter', 'set'),
+        ('options', 'variable'),
+        ('options', 'array'),
+    }
+
+    variable_resolutions = [
+        resolution for resolution in analysis.resolutions if resolution.reference.kind == 'variable'
+    ]
+    unique_sites = {
+        (resolution.reference.name, resolution.reference.span.start.offset)
+        for resolution in variable_resolutions
+    }
+    assert len(unique_sites) == 4
+    assert {name for name, _ in unique_sites} == {'counter', 'options'}
+    assert all(resolution.uncertainty.state == 'resolved' for resolution in variable_resolutions)
+    assert analysis.diagnostics == ()
+
+
 def test_analysis_includes_proc_comment_blocks_in_hovers(parser: Parser) -> None:
     snapshot = _analyze(
         parser,
@@ -278,6 +405,62 @@ def test_analysis_tracks_catch_bodies_and_result_variables(parser: Parser) -> No
     assert analysis.diagnostics == ()
 
 
+def test_analysis_tracks_additional_builtin_variable_writers_and_outputs(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///writers.tcl',
+        'proc run {} {\n'
+        '    append message hello world\n'
+        '    lappend items a b\n'
+        '    gets stdin line\n'
+        '    lassign $items first second\n'
+        '    scan "1 2" "%d %d" left right\n'
+        '    puts $message\n'
+        '    puts $line\n'
+        '    puts $first\n'
+        '    puts $second\n'
+        '    puts $left\n'
+        '    puts $right\n'
+        '}\n',
+    )
+    facts = snapshot.facts
+    analysis = snapshot.analysis
+
+    run_proc = next(proc for proc in facts.procedures if proc.qualified_name == '::run')
+    bindings_by_name = {
+        binding.name: binding.kind
+        for binding in facts.variable_bindings
+        if binding.scope_id == run_proc.symbol_id
+    }
+    assert bindings_by_name['message'] == 'append'
+    assert bindings_by_name['items'] == 'lappend'
+    assert bindings_by_name['line'] == 'gets'
+    assert bindings_by_name['first'] == 'lassign'
+    assert bindings_by_name['second'] == 'lassign'
+    assert bindings_by_name['left'] == 'scan'
+    assert bindings_by_name['right'] == 'scan'
+
+    variable_resolutions = {
+        (
+            resolution.reference.name,
+            resolution.reference.span.start.offset,
+        ): resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'variable'
+    }
+    assert {name for name, _ in variable_resolutions} == {
+        'items',
+        'message',
+        'line',
+        'first',
+        'second',
+        'left',
+        'right',
+    }
+    assert set(variable_resolutions.values()) == {'resolved'}
+    assert analysis.diagnostics == ()
+
+
 def test_analysis_tracks_switch_branch_bodies_from_list_form(parser: Parser) -> None:
     snapshot = _analyze(
         parser,
@@ -393,6 +576,50 @@ def test_analysis_tracks_regexp_switch_match_variables(parser: Parser) -> None:
     assert len(unique_match_sites) == 4
     assert {name for name, _ in unique_match_sites} == {'matches', 'indices'}
     assert all(resolution.uncertainty.state == 'resolved' for resolution in match_resolutions)
+    assert analysis.diagnostics == ()
+
+
+def test_analysis_tracks_for_while_and_lmap_bodies(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///loop_bodies.tcl',
+        'proc helper {} {return ok}\n'
+        'proc run {items flag} {\n'
+        '    for {set i 0} {$i < 2} {incr i} {\n'
+        '        helper\n'
+        '        puts $i\n'
+        '    }\n'
+        '    while {$flag} {\n'
+        '        set flag 0\n'
+        '        helper\n'
+        '    }\n'
+        '    lmap item $items {\n'
+        '        helper\n'
+        '        puts $item\n'
+        '    }\n'
+        '}\n',
+    )
+    analysis = snapshot.analysis
+
+    helper_calls = [
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command' and resolution.reference.name == 'helper'
+    ]
+    assert len(helper_calls) == 3
+    assert all(resolution.uncertainty.state == 'resolved' for resolution in helper_calls)
+
+    variable_resolutions = {
+        (
+            resolution.reference.name,
+            resolution.reference.span.start.offset,
+        ): resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'variable'
+        and resolution.reference.name in {'flag', 'i', 'item', 'items'}
+    }
+    assert {name for name, _ in variable_resolutions} == {'flag', 'i', 'item', 'items'}
+    assert set(variable_resolutions.values()) == {'resolved'}
     assert analysis.diagnostics == ()
 
 

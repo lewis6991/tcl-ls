@@ -77,6 +77,13 @@ def namespace_for_name(qualified_name: str) -> str:
     return '::' + '::'.join(segments[:-1])
 
 
+def name_tail(qualified_name: str) -> str:
+    segments = [segment for segment in qualified_name.split('::') if segment]
+    if not segments:
+        return qualified_name
+    return segments[-1]
+
+
 def namespace_scope_id(namespace: str) -> str:
     return f'namespace::{namespace}'
 

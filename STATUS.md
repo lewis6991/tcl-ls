@@ -51,7 +51,12 @@ This repository contains an early but working bootstrap of a Tcl language server
   - [x] `package require` / `package provide`
   - [x] conservative `package ifneeded` entries from `pkgIndex.tcl`
   - [x] `set` bindings/references
-  - [x] basic `foreach` loop variable bindings
+  - [x] `append` / `incr` / `lappend` variable writers
+  - [x] `gets`, `lassign`, and `scan` output variable bindings
+  - [x] `global` / `variable` namespace-variable links
+  - [x] `vwait` global variable references
+  - [x] `foreach` / `lmap` loop variable bindings
+  - [x] `for` / `while` body analysis
   - [x] variable substitutions
   - [x] statically named command calls
 - [x] Workspace procedure and package metadata indexes for cross-file navigation and package lookup
@@ -72,18 +77,16 @@ This repository contains an early but working bootstrap of a Tcl language server
 - [x] Bundled Tcl builtin metadata for default command recognition and hover docs
 - [ ] No full control-flow analysis
 - [ ] No runtime evaluation of dynamic Tcl features
-- [ ] Embedded/body analysis is currently limited to `proc`, top-level `namespace eval`, and basic `foreach`; bodies for most other Tcl control structures are not analyzed
+- [ ] Embedded/body analysis is still selective; it covers `proc`, top-level `namespace eval`, `if`, `catch`, `switch`, `foreach`, `lmap`, `for`, and `while`, but many Tcl constructs are still not analyzed
 - [ ] No modeling of:
   - [ ] `eval`
-  - [ ] `global`
   - [ ] `uplevel`
   - [ ] `upvar`
-  - [ ] `variable`
   - [ ] dynamically constructed command names
   - [ ] `source`-based project loading
   - [ ] full package resolution for external/interpreter-installed packages
   - [ ] TclOO/class systems
-- [ ] Global variable resolution is intentionally conservative
+- [ ] Global and namespace variable resolution is still conservative outside explicit links (`global` / `variable`) and statically qualified names
 - [ ] Workspace indexing is still narrow; beyond procedures and package metadata there is no rich global symbol database
 - [ ] Builtin coverage is limited to default Tcl commands; Tcl/Tk and extension-specific commands may still be reported as unresolved
 - [ ] Diagnostics are intentionally limited to high-confidence cases

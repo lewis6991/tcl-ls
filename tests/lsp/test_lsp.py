@@ -139,6 +139,84 @@ def test_language_service_definition_returns_all_builtin_overloads(
     assert definition_locations == tuple(overload.location for overload in builtin.overloads)
 
 
+def test_language_service_definition_resolves_global_variable_links(
+    service: LanguageService,
+) -> None:
+    service.open_document(
+        _MAIN_URI,
+        'set shared 0\nproc run {} {\n    global shared\n    incr shared\n    puts $shared\n}\n',
+        1,
+    )
+
+    definition_locations = service.definition(_MAIN_URI, 4, 11)
+    assert len(definition_locations) == 1
+    assert definition_locations[0].uri == _MAIN_URI
+    assert definition_locations[0].span.start.line == 0
+    assert definition_locations[0].span.start.character == 4
+
+    hover = service.hover(_MAIN_URI, 4, 11)
+    assert hover is not None
+    assert hover.contents == 'set shared'
+
+
+def test_language_service_definition_resolves_namespace_variable_links(
+    service: LanguageService,
+) -> None:
+    service.open_document(
+        _MAIN_URI,
+        'namespace eval app {\n'
+        '    variable counter 0\n'
+        '    proc run {} {\n'
+        '        variable counter\n'
+        '        puts $counter\n'
+        '    }\n'
+        '}\n',
+        1,
+    )
+
+    definition_locations = service.definition(_MAIN_URI, 4, 16)
+    assert len(definition_locations) == 1
+    assert definition_locations[0].uri == _MAIN_URI
+    assert definition_locations[0].span.start.line == 1
+    assert definition_locations[0].span.start.character == 13
+
+    hover = service.hover(_MAIN_URI, 4, 16)
+    assert hover is not None
+    assert hover.contents == 'variable counter'
+
+
+def test_language_service_definition_resolves_variable_alias_sites(
+    service: LanguageService,
+) -> None:
+    service.open_document(
+        _MAIN_URI,
+        'namespace eval app {\n'
+        '    variable counter\n'
+        '    if {![info exists counter]} { set counter 0 }\n'
+        '    proc run {} {\n'
+        '        variable counter\n'
+        '    }\n'
+        '}\n',
+        1,
+    )
+
+    alias_definition_locations = service.definition(_MAIN_URI, 4, 18)
+    assert len(alias_definition_locations) == 1
+    assert alias_definition_locations[0].uri == _MAIN_URI
+    assert alias_definition_locations[0].span.start.line == 1
+    assert alias_definition_locations[0].span.start.character == 13
+
+    alias_hover = service.hover(_MAIN_URI, 4, 18)
+    assert alias_hover is not None
+    assert alias_hover.contents == 'variable counter'
+
+    namespace_write_definition_locations = service.definition(_MAIN_URI, 2, 38)
+    assert len(namespace_write_definition_locations) == 1
+    assert namespace_write_definition_locations[0].uri == _MAIN_URI
+    assert namespace_write_definition_locations[0].span.start.line == 1
+    assert namespace_write_definition_locations[0].span.start.character == 13
+
+
 def test_language_server_hover_uses_markdown_code_fences_for_signatures(
     server: LanguageServer,
 ) -> None:
