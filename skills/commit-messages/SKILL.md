@@ -9,7 +9,8 @@ description: Write, amend, and reword git commit messages for this repo. Use whe
   message.
 - Use Conventional Commits with `type(scope): summary`; omit the scope
   when it adds no value.
-- Prefer `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, and `ci`.
+- Prefer `feat`, `fix`, `perf`, `docs`, `refactor`, `test`,
+  `chore`, and `ci`.
 - Keep the subject imperative, omit a trailing period, and keep it at
   50 characters or fewer.
 - Add a detailed body and wrap body lines at 72 characters or fewer.

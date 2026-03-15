@@ -8,7 +8,7 @@ from pathlib import Path
 
 _SUBJECT_LIMIT = 50
 _BODY_LIMIT = 72
-_ALLOWED_TYPES = ('feat', 'fix', 'docs', 'refactor', 'test', 'chore', 'ci')
+_ALLOWED_TYPES = ('feat', 'fix', 'perf', 'docs', 'refactor', 'test', 'chore', 'ci')
 
 
 def validate_message(message: str) -> tuple[str, ...]:
