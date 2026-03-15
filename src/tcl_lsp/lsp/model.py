@@ -83,7 +83,7 @@ class ReferenceParams(TypedDict):
 
 
 class MarkupContentDict(TypedDict):
-    kind: Literal['plaintext']
+    kind: Literal['plaintext', 'markdown']
     value: str
 
 

@@ -66,6 +66,7 @@ type Word = BareWord | BracedWord | QuotedWord
 class Command:
     span: Span
     words: tuple[Word, ...]
+    leading_comments: tuple[Token, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

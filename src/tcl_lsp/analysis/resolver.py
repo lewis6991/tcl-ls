@@ -242,14 +242,13 @@ class Resolver:
     def _build_definitions(self, facts: DocumentFacts) -> list[DefinitionTarget]:
         definitions: list[DefinitionTarget] = []
         for proc in facts.procedures:
-            parameter_names = ', '.join(parameter.name for parameter in proc.parameters)
             definitions.append(
                 DefinitionTarget(
                     symbol_id=proc.symbol_id,
                     name=proc.qualified_name,
                     kind='function',
                     location=Location(uri=proc.uri, span=proc.name_span),
-                    detail=f'proc {proc.qualified_name}({parameter_names})',
+                    detail=_proc_hover(proc),
                 )
             )
 
@@ -381,7 +380,7 @@ class Resolver:
             )
         if len(matches) == 1:
             proc = matches[0]
-            detail = _proc_detail(proc)
+            detail = _proc_hover(proc)
             return (
                 ResolutionResult(
                     reference=reference,
@@ -465,6 +464,13 @@ class Resolver:
 def _proc_detail(proc: ProcDecl) -> str:
     parameters = ', '.join(parameter.name for parameter in proc.parameters)
     return f'proc {proc.qualified_name}({parameters})'
+
+
+def _proc_hover(proc: ProcDecl) -> str:
+    detail = _proc_detail(proc)
+    if proc.documentation is None:
+        return detail
+    return f'{detail}\n\n{proc.documentation}'
 
 
 def _normalize_command_name(name: str) -> str:

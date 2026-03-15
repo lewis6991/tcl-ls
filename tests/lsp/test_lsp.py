@@ -30,6 +30,60 @@ def test_language_service_cross_document_navigation() -> None:
     }
 
 
+def test_language_service_hover_includes_proc_comment_blocks() -> None:
+    service = LanguageService()
+    service.open_document(
+        'file:///defs.tcl',
+        '# Greets a user by name.\n# Returns nothing.\nproc greet {name} {puts $name}\n',
+        1,
+    )
+    service.open_document('file:///use.tcl', 'greet World\n', 1)
+
+    hover = service.hover('file:///use.tcl', 0, 1)
+    assert hover is not None
+    assert hover.contents == 'proc ::greet(name)\n\nGreets a user by name.\nReturns nothing.'
+
+
+def test_language_server_hover_uses_markdown_code_fences_for_signatures() -> None:
+    server = LanguageServer()
+    server.process_message(
+        {
+            'jsonrpc': '2.0',
+            'method': 'textDocument/didOpen',
+            'params': {
+                'textDocument': {
+                    'uri': 'file:///main.tcl',
+                    'languageId': 'tcl',
+                    'version': 1,
+                    'text': '# Greets a user by name.\nproc greet {name} {puts $name}\ngreet World\n',
+                }
+            },
+        }
+    )
+
+    messages = server.process_message(
+        {
+            'jsonrpc': '2.0',
+            'id': 1,
+            'method': 'textDocument/hover',
+            'params': {
+                'textDocument': {'uri': 'file:///main.tcl'},
+                'position': {'line': 2, 'character': 1},
+            },
+        }
+    )
+
+    hover_response = next(message for message in messages if message.get('id') == 1)
+    hover_response_dict = cast(dict[str, object], hover_response)
+    hover_result = _as_dict(hover_response_dict['result'])
+    hover_contents = _as_dict(hover_result['contents'])
+    assert hover_contents['kind'] == 'markdown'
+    assert (
+        hover_contents['value']
+        == '```tcl\nproc ::greet(name)\n```\n\nGreets a user by name.'
+    )
+
+
 def test_language_service_infers_packages_from_pkgindex(tmp_path: Path) -> None:
     modules_root = tmp_path / 'workspace' / 'modules'
     helper_dir = modules_root / 'helper'

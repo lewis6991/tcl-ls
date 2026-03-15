@@ -57,8 +57,8 @@ def diagnostic_to_lsp(diagnostic: Diagnostic) -> DiagnosticDict:
 
 def hover_to_lsp(hover: HoverInfo) -> HoverDict:
     contents: MarkupContentDict = {
-        'kind': 'plaintext',
-        'value': hover.contents,
+        'kind': 'markdown',
+        'value': _hover_markdown(hover),
     }
     return {
         'contents': contents,
@@ -74,3 +74,17 @@ def document_symbol_to_lsp(symbol: DocumentSymbol) -> DocumentSymbolDict:
         'selectionRange': range_to_lsp(symbol.selection_span),
         'children': [document_symbol_to_lsp(child) for child in symbol.children],
     }
+
+
+def _hover_markdown(hover: HoverInfo) -> str:
+    signature, separator, remainder = hover.contents.partition('\n\n')
+    if signature.startswith('proc '):
+        if not separator:
+            return f'```tcl\n{signature}\n```'
+        return f'```tcl\n{signature}\n```\n\n{remainder}'
+
+    if hover.contents.startswith('builtin command '):
+        command_name = hover.contents.removeprefix('builtin command ')
+        return f'```tcl\n{command_name}\n```\n\nBuilt-in Tcl command.'
+
+    return hover.contents

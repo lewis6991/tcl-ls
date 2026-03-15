@@ -74,6 +74,8 @@ class _ParserImplementation:
         start = self._position
         commands: list[Command] = []
         at_command_start = True
+        pending_comments: list[Token] = []
+        previous_token_was_separator = False
 
         while True:
             self._consume_horizontal_whitespace()
@@ -86,22 +88,30 @@ class _ParserImplementation:
                     kind='separator', start_index=self._index, start_position=self._position
                 )
                 self._advance_char()
+                if pending_comments and previous_token_was_separator:
+                    pending_comments.clear()
+                previous_token_was_separator = True
                 at_command_start = True
                 continue
 
             if at_command_start and current_char == '#':
-                self._parse_comment()
+                pending_comments.append(self._parse_comment())
+                previous_token_was_separator = False
                 at_command_start = True
                 continue
 
-            command = self._parse_command(stop_char)
+            command = self._parse_command(stop_char, tuple(pending_comments))
             if command.words:
                 commands.append(command)
+            pending_comments.clear()
+            previous_token_was_separator = False
             at_command_start = False
 
         return Script(span=Span(start=start, end=self._position), commands=tuple(commands))
 
-    def _parse_command(self, stop_char: str | None) -> Command:
+    def _parse_command(
+        self, stop_char: str | None, leading_comments: tuple[Token, ...]
+    ) -> Command:
         start = self._position
         words: list[Word] = []
 
@@ -123,7 +133,11 @@ class _ParserImplementation:
                 break
 
         end = words[-1].span.end if words else start
-        return Command(span=Span(start=start, end=end), words=tuple(words))
+        return Command(
+            span=Span(start=start, end=end),
+            words=tuple(words),
+            leading_comments=leading_comments,
+        )
 
     def _parse_word(self, stop_char: str | None) -> Word:
         current_char = self._peek()
@@ -133,7 +147,7 @@ class _ParserImplementation:
             return self._parse_quoted_word()
         return self._parse_bare_word(stop_char)
 
-    def _parse_comment(self) -> None:
+    def _parse_comment(self) -> Token:
         start_index = self._index
         start_position = self._position
         while not self._is_eof():
@@ -143,13 +157,13 @@ class _ParserImplementation:
             if self._peek() == '\n':
                 break
             self._advance_char()
-        self._tokens.append(
-            Token(
-                kind='comment',
-                span=Span(start=start_position, end=self._position),
-                text=self._text[start_index : self._index],
-            )
+        comment = Token(
+            kind='comment',
+            span=Span(start=start_position, end=self._position),
+            text=self._text[start_index : self._index],
         )
+        self._tokens.append(comment)
+        return comment
 
     def _parse_bare_word(self, stop_char: str | None) -> BareWord:
         start_index = self._index

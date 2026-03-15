@@ -37,6 +37,7 @@ class ProcDecl:
     span: Span
     name_span: Span
     parameters: tuple[ParameterDecl, ...]
+    documentation: str | None
     body_span: Span | None
 
 

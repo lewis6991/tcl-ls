@@ -251,6 +251,7 @@ class _FactCollector:
             span=command.span,
             name_span=name_word.span,
             parameters=tuple(parameters),
+            documentation=_command_documentation(command),
             body_span=_body_span(body_word),
         )
         self._procedures.append(proc_decl)
@@ -442,6 +443,22 @@ def _extract_static_script(word: Word) -> tuple[str, Position] | None:
     if text is None:
         return None
     return text, _body_start(word)
+
+
+def _command_documentation(command: Command) -> str | None:
+    if not command.leading_comments:
+        return None
+
+    lines = [_comment_text(comment.text) for comment in command.leading_comments]
+    documentation = '\n'.join(lines).strip()
+    return documentation or None
+
+
+def _comment_text(text: str) -> str:
+    if not text.startswith('#'):
+        return text
+    text = text[1:]
+    return text[1:] if text.startswith(' ') else text
 
 
 def _body_start(word: Word) -> Position:

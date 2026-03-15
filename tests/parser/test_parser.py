@@ -38,6 +38,26 @@ def test_parser_builds_commands_and_nested_substitutions() -> None:
     assert nested_variable.name == 'name'
 
 
+def test_parser_attaches_contiguous_leading_comment_blocks_to_commands() -> None:
+    parser = Parser()
+    result = parser.parse_document(
+        'comments.tcl',
+        '# first line\n'
+        '# second line\n'
+        'proc greet {} {return ok}\n'
+        '\n'
+        '# detached\n'
+        '\n'
+        'proc skip {} {return ok}\n',
+    )
+
+    assert [comment.text for comment in result.script.commands[0].leading_comments] == [
+        '# first line',
+        '# second line',
+    ]
+    assert result.script.commands[1].leading_comments == ()
+
+
 def test_parser_reports_unmatched_constructs() -> None:
     parser = Parser()
     result = parser.parse_document(

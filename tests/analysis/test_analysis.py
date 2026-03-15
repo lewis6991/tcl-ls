@@ -81,3 +81,39 @@ def test_analysis_tracks_namespace_resolution() -> None:
     ]
     assert len(resolved_commands) == 1
     assert resolved_commands[0].uncertainty.state == 'resolved'
+
+
+def test_analysis_includes_proc_comment_blocks_in_hovers() -> None:
+    parser = Parser()
+    extractor = FactExtractor(parser)
+    resolver = Resolver()
+    workspace = WorkspaceIndex()
+
+    parse_result = parser.parse_document(
+        'file:///doc.tcl',
+        '# Greets a user by name.\n'
+        '# Returns nothing.\n'
+        'proc greet {name} {puts $name}\n'
+        'greet World\n',
+    )
+    facts = extractor.extract(parse_result)
+    workspace.update(facts.uri, facts)
+    analysis = resolver.analyze(facts.uri, facts, workspace)
+
+    assert facts.procedures[0].documentation == 'Greets a user by name.\nReturns nothing.'
+
+    hover_by_offset = {hover.span.start.offset: hover.contents for hover in analysis.hovers}
+    assert (
+        hover_by_offset[facts.procedures[0].name_span.start.offset]
+        == 'proc ::greet(name)\n\nGreets a user by name.\nReturns nothing.'
+    )
+
+    greet_call = next(
+        command
+        for command in facts.command_calls
+        if command.name == 'greet' and command.name_span.start.line == 3
+    )
+    assert (
+        hover_by_offset[greet_call.name_span.start.offset]
+        == 'proc ::greet(name)\n\nGreets a user by name.\nReturns nothing.'
+    )
