@@ -44,6 +44,7 @@ class Parser:
             source_id=path,
             text=text,
             start_position=Position(offset=0, line=0, character=0),
+            collect_tokens=True,
         )
         return implementation.parse()
 
@@ -57,12 +58,34 @@ class Parser:
             source_id=source_id,
             text=text,
             start_position=start_position,
+            collect_tokens=True,
+        )
+        return implementation.parse()
+
+    def parse_embedded_script_for_analysis(
+        self,
+        source_id: str,
+        text: str,
+        start_position: Position,
+    ) -> ParseResult:
+        implementation = _ParserImplementation(
+            source_id=source_id,
+            text=text,
+            start_position=start_position,
+            collect_tokens=False,
         )
         return implementation.parse()
 
 
 class _ParserImplementation:
-    def __init__(self, source_id: str, text: str, start_position: Position) -> None:
+    def __init__(
+        self,
+        source_id: str,
+        text: str,
+        start_position: Position,
+        *,
+        collect_tokens: bool,
+    ) -> None:
         self._source_id = source_id
         self._text = text
         self._text_length = len(text)
@@ -70,6 +93,7 @@ class _ParserImplementation:
         self._offset = start_position.offset
         self._line = start_position.line
         self._character = start_position.character
+        self._collect_tokens = collect_tokens
         self._tokens: list[Token] = []
         self._diagnostics: list[Diagnostic] = []
 
@@ -181,7 +205,7 @@ class _ParserImplementation:
             span=Span(start=start_position, end=self._current_position()),
             text=self._text[start_index : self._index],
         )
-        self._tokens.append(comment)
+        self._append_token(comment)
         return comment
 
     def _parse_bare_word(self, stop_char: str | None) -> BareWord:
@@ -231,7 +255,7 @@ class _ParserImplementation:
             content_span=Span(start=start_position, end=end_position),
             parts=tuple(parts),
         )
-        self._tokens.append(
+        self._append_token(
             Token(
                 kind='bare_word',
                 span=word.span,
@@ -268,7 +292,7 @@ class _ParserImplementation:
                     content_span=Span(start=content_start, end=content_end),
                     parts=tuple(parts),
                 )
-                self._tokens.append(
+                self._append_token(
                     Token(
                         kind='quoted_word',
                         span=word.span,
@@ -303,7 +327,7 @@ class _ParserImplementation:
             content_span=Span(start=content_start, end=end_position),
             parts=tuple(parts),
         )
-        self._tokens.append(
+        self._append_token(
             Token(
                 kind='quoted_word',
                 span=word.span,
@@ -360,8 +384,9 @@ class _ParserImplementation:
                         span=Span(start=start_position, end=end_position),
                         content_span=Span(start=content_start, end=content_end),
                         text=''.join(text_parts),
+                        raw_text=self._text[start_index : self._index],
                     )
-                    self._tokens.append(
+                    self._append_token(
                         Token(
                             kind='braced_word',
                             span=word.span,
@@ -387,8 +412,9 @@ class _ParserImplementation:
             span=Span(start=start_position, end=end_position),
             content_span=Span(start=content_start, end=end_position),
             text=''.join(text_parts),
+            raw_text=self._text[start_index : self._index],
         )
-        self._tokens.append(
+        self._append_token(
             Token(
                 kind='braced_word',
                 span=word.span,
@@ -536,13 +562,17 @@ class _ParserImplementation:
 
     def _record_token(self, kind: TokenKind, start_index: int, start_position: Position) -> None:
         current_char = self._peek()
-        self._tokens.append(
+        self._append_token(
             Token(
                 kind=kind,
                 span=Span(start=start_position, end=self._position_after_char(current_char)),
                 text=self._text[start_index : start_index + 1],
             )
         )
+
+    def _append_token(self, token: Token) -> None:
+        if self._collect_tokens:
+            self._tokens.append(token)
 
     def _add_diagnostic(self, code: str, message: str, start: Position, end: Position) -> None:
         self._diagnostics.append(

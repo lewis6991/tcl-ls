@@ -4,19 +4,27 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from tcl_lsp.analysis.builtins import builtin_command
-from tcl_lsp.analysis.facts.parsing import (
-    ConditionVariableSubstitution,
-    ListItem,
-    is_simple_name,
-    scan_static_tcl_substitutions,
-    split_tcl_list,
+from tcl_lsp.analysis.facts.lowering import (
+    LoweredCatchCommand,
+    LoweredCommand,
+    LoweredCondition,
+    LoweredForCommand,
+    LoweredForeachCommand,
+    LoweredIfCommand,
+    LoweredLmapCommand,
+    LoweredNamespaceEvalCommand,
+    LoweredProcCommand,
+    LoweredScript,
+    LoweredScriptBody,
+    LoweredSwitchCommand,
+    LoweredWhileCommand,
+    LoweredWordReferences,
+    lower_parse_result,
 )
+from tcl_lsp.analysis.facts.parsing import ListItem, is_simple_name, split_tcl_list
 from tcl_lsp.analysis.facts.utils import (
-    body_span,
-    command_documentation,
     extract_ifneeded_source_uri,
     extract_static_source_uri,
-    extract_static_script,
     name_tail,
     namespace_for_name,
     namespace_scope_id,
@@ -41,14 +49,13 @@ from tcl_lsp.analysis.model import (
     VarBinding,
     VariableReference,
 )
-from tcl_lsp.common import Diagnostic, DocumentSymbol, Position, Span
-from tcl_lsp.parser import Parser, collect_variable_substitutions, word_static_text
+from tcl_lsp.common import Diagnostic, DocumentSymbol, Span
+from tcl_lsp.parser import Parser, word_static_text
 from tcl_lsp.parser.model import (
     BracedWord,
     Command,
     CommandSubstitution,
     ParseResult,
-    Script,
     VariableSubstitution,
     Word,
 )
@@ -60,19 +67,6 @@ class _ExtractionContext:
     namespace: str
     scope_id: str
     procedure_symbol_id: str | None
-
-
-@dataclass(frozen=True, slots=True)
-class _SwitchLayout:
-    branch_list_word: Word | None
-    branch_words: tuple[Word, ...]
-    regexp_binding_words: tuple[Word, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _SwitchOptionState:
-    value_index: int
-    regexp_binding_words: tuple[Word, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,17 +82,29 @@ class FactExtractor:
         self._parser = Parser() if parser is None else parser
 
     def extract(self, parse_result: ParseResult) -> DocumentFacts:
-        collector = _FactCollector(parser=self._parser, parse_result=parse_result)
+        lowering_result = lower_parse_result(parse_result, parser=self._parser)
+        collector = _FactCollector(
+            parser=self._parser,
+            parse_result=parse_result,
+            lowered_script=lowering_result.script,
+            diagnostics=parse_result.diagnostics + lowering_result.diagnostics,
+        )
         return collector.collect()
 
 
 class _FactCollector:
-    def __init__(self, parser: Parser, parse_result: ParseResult) -> None:
+    def __init__(
+        self,
+        parser: Parser,
+        parse_result: ParseResult,
+        *,
+        lowered_script: LoweredScript,
+        diagnostics: tuple[Diagnostic, ...],
+    ) -> None:
         self._parser = parser
         self._parse_result = parse_result
-        self._braced_token_text_by_span: dict[Span, str] = {}
-        self._remember_braced_tokens(parse_result)
-        self._diagnostics: list[Diagnostic] = list(parse_result.diagnostics)
+        self._lowered_script = lowered_script
+        self._diagnostics: list[Diagnostic] = list(diagnostics)
         self._namespaces: list[NamespaceScope] = []
         self._procedures: list[ProcDecl] = []
         self._source_directives: list[SourceDirective] = []
@@ -114,32 +120,24 @@ class _FactCollector:
             'append': self._collect_append,
             'array': self._collect_array,
             'package': self._collect_package,
-            'proc': self._collect_proc,
             'namespace': self._collect_namespace,
             'set': self._collect_set,
             'global': self._collect_global,
             'gets': self._collect_gets,
-            'foreach': self._collect_foreach,
-            'for': self._collect_for,
             'info': self._collect_info,
-            'if': self._collect_if,
             'incr': self._collect_incr,
             'lappend': self._collect_lappend,
             'lassign': self._collect_lassign,
-            'lmap': self._collect_lmap,
             'scan': self._collect_scan,
             'source': self._collect_source,
-            'switch': self._collect_switch,
-            'catch': self._collect_catch,
             'upvar': self._collect_upvar,
             'variable': self._collect_variable,
             'vwait': self._collect_vwait,
-            'while': self._collect_while,
         }
 
     def collect(self) -> DocumentFacts:
         root_context = self._namespace_context(self._parse_result.source_id, '::')
-        self._collect_script(self._parse_result.script, root_context)
+        self._collect_lowered_script(self._lowered_script, root_context)
         return DocumentFacts(
             uri=self._parse_result.source_id,
             parse_result=self._parse_result,
@@ -157,36 +155,74 @@ class _FactCollector:
             diagnostics=tuple(self._diagnostics),
         )
 
-    def _remember_braced_tokens(self, parse_result: ParseResult) -> None:
-        for token in parse_result.tokens:
-            if token.kind == 'braced_word':
-                self._braced_token_text_by_span[token.span] = token.text
-
-    def _collect_script(self, script: Script, context: _ExtractionContext) -> None:
+    def _collect_lowered_script(self, script: LoweredScript, context: _ExtractionContext) -> None:
         for command in script.commands:
-            self._collect_command(command, context)
+            self._collect_lowered_command(command, context)
 
-    def _collect_command(self, command: Command, context: _ExtractionContext) -> None:
-        if not command.words:
+    def _collect_lowered_command(self, command: LoweredCommand, context: _ExtractionContext) -> None:
+        syntax_command = command.command
+        command_name = self._collect_command_common(command, context)
+        normalized_command_name = (
+            normalize_command_name(command_name) if command_name is not None else None
+        )
+        if isinstance(command, LoweredProcCommand):
+            self._collect_lowered_proc(command, context)
+            return
+        if isinstance(command, LoweredNamespaceEvalCommand):
+            self._collect_lowered_namespace_eval(command, context)
+            return
+        if isinstance(command, LoweredForeachCommand):
+            self._collect_lowered_foreach(command, context)
+            return
+        if isinstance(command, LoweredLmapCommand):
+            self._collect_lowered_lmap(command, context)
+            return
+        if isinstance(command, LoweredForCommand):
+            self._collect_lowered_for(command, context)
+            return
+        if isinstance(command, LoweredIfCommand):
+            self._collect_lowered_if(command, context)
+            return
+        if isinstance(command, LoweredCatchCommand):
+            self._collect_lowered_catch(command, context)
+            return
+        if isinstance(command, LoweredSwitchCommand):
+            self._collect_lowered_switch(command, context)
+            return
+        if isinstance(command, LoweredWhileCommand):
+            self._collect_lowered_while(command, context)
             return
 
-        command_name_word = command.words[0]
-        command_name = word_static_text(command_name_word)
+        handler = (
+            self._command_handlers.get(normalized_command_name)
+            if normalized_command_name is not None
+            else None
+        )
+        if handler is not None:
+            handler(syntax_command, context)
+
+    def _collect_command_common(
+        self,
+        command: LoweredCommand,
+        context: _ExtractionContext,
+    ) -> str | None:
+        syntax_command = command.command
+        if not syntax_command.words:
+            return None
+
+        command_name_word = syntax_command.words[0]
         self._record_command_call(
-            command_name=command_name,
-            command_span=command.span,
+            command_name=command.command_name,
+            command_span=syntax_command.span,
             name_span=command_name_word.span,
             context=context,
         )
 
-        for word in command.words:
-            self._collect_word_references(word, context)
+        for word_references in command.word_references:
+            self._collect_lowered_word_references(word_references, context)
 
-        self._collect_builtin_subcommands(command, context)
-
-        handler = self._command_handlers.get(command_name) if command_name is not None else None
-        if handler is not None:
-            handler(command, context)
+        self._collect_builtin_subcommands(syntax_command, context)
+        return command.command_name
 
     def _record_command_call(
         self,
@@ -304,58 +340,82 @@ class _FactCollector:
             )
         )
 
-    def _collect_word_references(self, word: Word, context: _ExtractionContext) -> None:
-        for substitution in collect_variable_substitutions(word):
+    def _collect_lowered_word_references(
+        self,
+        word_references: LoweredWordReferences,
+        context: _ExtractionContext,
+    ) -> None:
+        for substitution in word_references.variable_substitutions:
             self._record_variable_reference(
                 name=substitution.name,
                 span=substitution.span,
                 context=context,
             )
 
-        if isinstance(word, BracedWord):
+        for script in word_references.command_substitutions:
+            self._collect_lowered_script(script, context)
+
+    def _collect_lowered_proc(
+        self,
+        command: LoweredProcCommand,
+        context: _ExtractionContext,
+    ) -> None:
+        if command.name is None or command.name_span is None or command.body_span is None:
             return
 
-        for part in word.parts:
-            if isinstance(part, CommandSubstitution):
-                self._collect_script(part.script, context)
-
-    def _collect_proc(self, command: Command, context: _ExtractionContext) -> None:
-        proc_details = self._build_proc_declaration(command, context)
-        if proc_details is None:
-            return
-
-        proc_decl, body_word = proc_details
+        qualified_name = qualify_name(command.name, context.namespace)
+        proc_id = proc_symbol_id(context.uri, qualified_name, command.name_span.start.offset)
+        proc_decl = ProcDecl(
+            symbol_id=proc_id,
+            uri=context.uri,
+            name=command.name,
+            qualified_name=qualified_name,
+            namespace=namespace_for_name(qualified_name),
+            span=command.command.span,
+            name_span=command.name_span,
+            parameters=self._parameter_decls_from_items(
+                command.parameter_items,
+                uri=context.uri,
+                proc_symbol_id=proc_id,
+            ),
+            documentation=command.documentation,
+            body_span=command.body_span,
+        )
         self._procedures.append(proc_decl)
 
         body_context = self._procedure_context(proc_decl)
         self._record_parameter_bindings(proc_decl.parameters, body_context)
-        self._collect_embedded_body(body_word, body_context)
+        self._collect_lowered_body(command.body, body_context)
 
     def _collect_namespace(self, command: Command, context: _ExtractionContext) -> None:
         if len(command.words) < 2:
             return
 
-        subcommand = word_static_text(command.words[1])
-        if subcommand == 'eval':
-            self._collect_namespace_eval(command, context)
-            return
-
-        if subcommand == 'import':
+        if word_static_text(command.words[1]) == 'import':
             self._collect_namespace_import(command, context)
 
-    def _collect_namespace_eval(self, command: Command, context: _ExtractionContext) -> None:
-        namespace_eval = self._namespace_eval_details(command, context)
-        if namespace_eval is None:
+    def _collect_lowered_namespace_eval(
+        self,
+        command: LoweredNamespaceEvalCommand,
+        context: _ExtractionContext,
+    ) -> None:
+        if command.namespace_name is None or command.namespace_span is None:
             return
 
-        namespace_scope, body_word = namespace_eval
+        namespace_scope = NamespaceScope(
+            uri=context.uri,
+            name=command.namespace_name,
+            qualified_name=qualify_namespace(command.namespace_name, context.namespace),
+            span=command.namespace_span,
+            selection_span=command.namespace_span,
+        )
         self._namespaces.append(namespace_scope)
 
         if context.procedure_symbol_id is not None:
             return
 
-        self._collect_embedded_body(
-            body_word,
+        self._collect_lowered_body(
+            command.body,
             self._namespace_context(context.uri, namespace_scope.qualified_name),
         )
 
@@ -463,46 +523,31 @@ class _FactCollector:
         for variable_word in command.words[3:]:
             self._record_simple_binding_word(variable_word, context, kind='scan')
 
-    def _collect_foreach(self, command: Command, context: _ExtractionContext) -> None:
-        if len(command.words) < 4:
-            return
-        variables = self._parse_list_items(command.words[1])
-        for item in variables:
-            if not is_simple_name(item.text):
-                continue
-            self._record_variable_binding(
-                name=item.text,
-                span=item.span,
-                context=context,
-                kind='foreach',
-            )
+    def _collect_lowered_foreach(
+        self,
+        command: LoweredForeachCommand,
+        context: _ExtractionContext,
+    ) -> None:
+        self._record_list_item_bindings(command.variable_items, context=context, kind='foreach')
+        self._collect_lowered_body(command.body, context)
 
-        self._collect_embedded_body(command.words[3], context)
+    def _collect_lowered_lmap(
+        self,
+        command: LoweredLmapCommand,
+        context: _ExtractionContext,
+    ) -> None:
+        self._record_list_item_bindings(command.variable_items, context=context, kind='lmap')
+        self._collect_lowered_body(command.body, context)
 
-    def _collect_lmap(self, command: Command, context: _ExtractionContext) -> None:
-        if len(command.words) < 4:
-            return
-        variables = self._parse_list_items(command.words[1])
-        for item in variables:
-            if not is_simple_name(item.text):
-                continue
-            self._record_variable_binding(
-                name=item.text,
-                span=item.span,
-                context=context,
-                kind='lmap',
-            )
-
-        self._collect_embedded_body(command.words[3], context)
-
-    def _collect_for(self, command: Command, context: _ExtractionContext) -> None:
-        if len(command.words) < 5:
-            return
-
-        self._collect_embedded_body(command.words[1], context)
-        self._collect_if_condition(command.words[2], context)
-        self._collect_embedded_body(command.words[3], context)
-        self._collect_embedded_body(command.words[4], context)
+    def _collect_lowered_for(
+        self,
+        command: LoweredForCommand,
+        context: _ExtractionContext,
+    ) -> None:
+        self._collect_lowered_body(command.start_body, context)
+        self._collect_lowered_condition(command.condition, context)
+        self._collect_lowered_body(command.next_body, context)
+        self._collect_lowered_body(command.body, context)
 
     def _collect_info(self, command: Command, context: _ExtractionContext) -> None:
         if len(command.words) < 3:
@@ -511,28 +556,23 @@ class _FactCollector:
             return
         self._record_simple_reference_word(command.words[2], context)
 
-    def _collect_if(self, command: Command, context: _ExtractionContext) -> None:
-        if len(command.words) < 3:
-            return
+    def _collect_lowered_if(
+        self,
+        command: LoweredIfCommand,
+        context: _ExtractionContext,
+    ) -> None:
+        for clause in command.clauses:
+            self._collect_lowered_condition(clause.condition, context)
+            self._collect_lowered_body(clause.body, context)
+        self._collect_lowered_body(command.else_body, context)
 
-        index = self._collect_if_clause(command.words, 1, context)
-        while index is not None and index < len(command.words):
-            keyword = word_static_text(command.words[index])
-            if keyword == 'elseif':
-                index = self._collect_if_clause(command.words, index + 1, context)
-                continue
-
-            if keyword == 'else':
-                self._collect_if_else_clause(command.words, index, context)
-            return
-
-    def _collect_catch(self, command: Command, context: _ExtractionContext) -> None:
-        if len(command.words) < 2:
-            return
-
-        self._collect_embedded_body(command.words[1], context)
-
-        for variable_word in command.words[2:4]:
+    def _collect_lowered_catch(
+        self,
+        command: LoweredCatchCommand,
+        context: _ExtractionContext,
+    ) -> None:
+        self._collect_lowered_body(command.body, context)
+        for variable_word in command.command.words[2:4]:
             self._record_simple_binding_word(variable_word, context, kind='catch')
 
     def _collect_global(self, command: Command, context: _ExtractionContext) -> None:
@@ -652,23 +692,14 @@ class _FactCollector:
         for local_word in command.words[start_index + 1 :: 2]:
             self._record_simple_binding_word(local_word, context, kind='upvar')
 
-    def _collect_switch(self, command: Command, context: _ExtractionContext) -> None:
-        layout = self._switch_layout(command)
-        if layout is None:
-            return
-
-        self._collect_switch_regexp_bindings(layout.regexp_binding_words, context)
-
-        if layout.branch_list_word is not None:
-            self._collect_switch_branch_list(layout.branch_list_word, context)
-            return
-
-        branch_body_words = self._switch_branch_body_words(layout.branch_words)
-        if branch_body_words is None:
-            return
-
-        for body_word in branch_body_words:
-            self._collect_embedded_body(body_word, context)
+    def _collect_lowered_switch(
+        self,
+        command: LoweredSwitchCommand,
+        context: _ExtractionContext,
+    ) -> None:
+        self._collect_switch_regexp_bindings(command.regexp_binding_words, context)
+        for body in command.branch_bodies:
+            self._collect_lowered_body(body, context)
 
     def _collect_vwait(self, command: Command, context: _ExtractionContext) -> None:
         if len(command.words) < 2:
@@ -692,91 +723,38 @@ class _FactCollector:
             uri=context.uri,
         )
 
-    def _collect_while(self, command: Command, context: _ExtractionContext) -> None:
-        if len(command.words) < 3:
-            return
-        self._collect_if_condition(command.words[1], context)
-        self._collect_embedded_body(command.words[2], context)
-
-    def _switch_layout(self, command: Command) -> _SwitchLayout | None:
-        if len(command.words) < 3:
-            return None
-
-        option_state = self._scan_switch_options(command.words)
-        if option_state is None or option_state.value_index >= len(command.words):
-            return None
-
-        branch_words = tuple(command.words[option_state.value_index + 1 :])
-        if not branch_words:
-            return None
-
-        if len(branch_words) == 1:
-            return _SwitchLayout(
-                branch_list_word=branch_words[0],
-                branch_words=(),
-                regexp_binding_words=option_state.regexp_binding_words,
-            )
-
-        return _SwitchLayout(
-            branch_list_word=None,
-            branch_words=branch_words,
-            regexp_binding_words=option_state.regexp_binding_words,
-        )
-
-    def _collect_switch_branch_list(self, word: Word, context: _ExtractionContext) -> None:
-        items = self._parse_list_items(word)
-        if len(items) % 2 != 0:
-            return
-
-        for index in range(1, len(items), 2):
-            body_item = items[index]
-            if body_item.text == '-':
-                continue
-            self._collect_embedded_script_text(body_item.text, body_item.content_start, context)
-
-    def _collect_embedded_body(self, word: Word, context: _ExtractionContext) -> None:
-        embedded_body = extract_static_script(word)
-        if embedded_body is None:
-            return
-
-        self._collect_embedded_script_text(embedded_body[0], embedded_body[1], context)
-
-    def _collect_embedded_script_text(
+    def _collect_lowered_while(
         self,
-        text: str,
-        start_position: Position,
+        command: LoweredWhileCommand,
         context: _ExtractionContext,
     ) -> None:
-        body_result = self._parse_embedded_script(text, start_position, source_id=context.uri)
-        self._collect_script(body_result.script, context)
+        self._collect_lowered_condition(command.condition, context)
+        self._collect_lowered_body(command.body, context)
 
-    def _collect_if_condition(self, word: Word, context: _ExtractionContext) -> None:
-        if not isinstance(word, BracedWord):
+    def _collect_lowered_body(
+        self,
+        body: LoweredScriptBody | None,
+        context: _ExtractionContext,
+    ) -> None:
+        if body is None:
             return
+        self._collect_lowered_script(body.script, context)
 
-        source_text = self._braced_token_text_by_span.get(word.span)
-        if source_text is None:
+    def _collect_lowered_condition(
+        self,
+        condition: LoweredCondition | None,
+        context: _ExtractionContext,
+    ) -> None:
+        if condition is None:
             return
-
-        condition_text = source_text[1:]
-        if condition_text.endswith('}'):
-            condition_text = condition_text[:-1]
-
-        for substitution in scan_static_tcl_substitutions(condition_text, word.content_span.start):
-            if isinstance(substitution, ConditionVariableSubstitution):
-                self._record_variable_reference(
-                    name=substitution.name,
-                    span=substitution.span,
-                    context=context,
-                )
-                continue
-
-            nested_result = self._parse_embedded_script(
-                substitution.text,
-                substitution.content_span.start,
-                source_id=context.uri,
+        for substitution in condition.variable_substitutions:
+            self._record_variable_reference(
+                name=substitution.name,
+                span=substitution.span,
+                context=context,
             )
-            self._collect_script(nested_result.script, context)
+        for script in condition.command_substitutions:
+            self._collect_lowered_script(script, context)
 
     def _namespace_context(self, uri: str, namespace: str) -> _ExtractionContext:
         return _ExtractionContext(
@@ -793,22 +771,6 @@ class _FactCollector:
             scope_id=proc_decl.symbol_id,
             procedure_symbol_id=proc_decl.symbol_id,
         )
-
-    def _parse_embedded_script(
-        self,
-        text: str,
-        start_position: Position,
-        *,
-        source_id: str,
-    ) -> ParseResult:
-        parse_result = self._parser.parse_embedded_script(
-            source_id=source_id,
-            text=text,
-            start_position=start_position,
-        )
-        self._remember_braced_tokens(parse_result)
-        self._diagnostics.extend(parse_result.diagnostics)
-        return parse_result
 
     def _record_variable_reference(
         self,
@@ -1131,54 +1093,15 @@ class _FactCollector:
     def _is_upvar_level(self, value: str) -> bool:
         return value.isdigit() or (value.startswith('#') and value[1:].isdigit())
 
-    def _build_proc_declaration(
+    def _parameter_decls_from_items(
         self,
-        command: Command,
-        context: _ExtractionContext,
-    ) -> tuple[ProcDecl, Word] | None:
-        if len(command.words) < 4:
-            return None
-
-        name_word = command.words[1]
-        args_word = command.words[2]
-        body_word = command.words[3]
-        raw_name = word_static_text(name_word)
-        if raw_name is None:
-            return None
-
-        qualified_name = qualify_name(raw_name, context.namespace)
-        proc_id = proc_symbol_id(context.uri, qualified_name, name_word.span.start.offset)
-        parameters = self._parse_proc_parameters(
-            args_word,
-            uri=context.uri,
-            proc_symbol_id=proc_id,
-        )
-        proc_namespace = namespace_for_name(qualified_name)
-        return (
-            ProcDecl(
-                symbol_id=proc_id,
-                uri=context.uri,
-                name=raw_name,
-                qualified_name=qualified_name,
-                namespace=proc_namespace,
-                span=command.span,
-                name_span=name_word.span,
-                parameters=parameters,
-                documentation=command_documentation(command),
-                body_span=body_span(body_word),
-            ),
-            body_word,
-        )
-
-    def _parse_proc_parameters(
-        self,
-        word: Word,
+        items: tuple[ListItem, ...],
         *,
         uri: str,
         proc_symbol_id: str,
     ) -> tuple[ParameterDecl, ...]:
         parameters: list[ParameterDecl] = []
-        for item in self._parse_parameter_items(word):
+        for item in items:
             parameter_name, parameter_span = self._parameter_from_item(item)
             if parameter_name is None:
                 continue
@@ -1204,68 +1127,6 @@ class _FactCollector:
                 kind='parameter',
             )
 
-    def _namespace_eval_details(
-        self,
-        command: Command,
-        context: _ExtractionContext,
-    ) -> tuple[NamespaceScope, Word] | None:
-        if len(command.words) < 4:
-            return None
-        if word_static_text(command.words[1]) != 'eval':
-            return None
-
-        namespace_word = command.words[2]
-        namespace_name = word_static_text(namespace_word)
-        if namespace_name is None:
-            return None
-
-        qualified_namespace = qualify_namespace(namespace_name, context.namespace)
-        return (
-            NamespaceScope(
-                uri=context.uri,
-                name=namespace_name,
-                qualified_name=qualified_namespace,
-                span=namespace_word.span,
-                selection_span=namespace_word.span,
-            ),
-            command.words[3],
-        )
-
-    def _collect_if_clause(
-        self,
-        words: tuple[Word, ...],
-        condition_index: int,
-        context: _ExtractionContext,
-    ) -> int | None:
-        if condition_index >= len(words):
-            return None
-
-        self._collect_if_condition(words[condition_index], context)
-        body_index = self._if_body_index(words, condition_index + 1)
-        if body_index is None:
-            return None
-
-        self._collect_embedded_body(words[body_index], context)
-        return body_index + 1
-
-    def _if_body_index(self, words: tuple[Word, ...], index: int) -> int | None:
-        if index < len(words) and word_static_text(words[index]) == 'then':
-            index += 1
-        if index >= len(words):
-            return None
-        return index
-
-    def _collect_if_else_clause(
-        self,
-        words: tuple[Word, ...],
-        keyword_index: int,
-        context: _ExtractionContext,
-    ) -> None:
-        body_index = keyword_index + 1
-        if body_index >= len(words):
-            return
-        self._collect_embedded_body(words[body_index], context)
-
     def _collect_switch_regexp_bindings(
         self,
         binding_words: tuple[Word, ...],
@@ -1274,57 +1135,22 @@ class _FactCollector:
         for binding_word in binding_words:
             self._record_simple_binding_word(binding_word, context, kind='switch')
 
-    def _switch_branch_body_words(self, branch_words: tuple[Word, ...]) -> tuple[Word, ...] | None:
-        if len(branch_words) % 2 != 0:
-            return None
-
-        body_words: list[Word] = []
-        for index in range(1, len(branch_words), 2):
-            body_word = branch_words[index]
-            if word_static_text(body_word) == '-':
+    def _record_list_item_bindings(
+        self,
+        items: tuple[ListItem, ...] | list[ListItem],
+        *,
+        context: _ExtractionContext,
+        kind: BindingKind,
+    ) -> None:
+        for item in items:
+            if not is_simple_name(item.text):
                 continue
-            body_words.append(body_word)
-        return tuple(body_words)
-
-    def _scan_switch_options(self, words: tuple[Word, ...]) -> _SwitchOptionState | None:
-        index = 1
-        regexp_binding_words: list[Word] = []
-        regexp_mode = False
-
-        while index < len(words):
-            option = word_static_text(words[index])
-            if option == '--':
-                index += 1
-                break
-            if option in {'-exact', '-glob', '-nocase'}:
-                index += 1
-                continue
-            if option == '-regexp':
-                regexp_mode = True
-                index += 1
-                continue
-            if option in {'-matchvar', '-indexvar'}:
-                if index + 1 >= len(words):
-                    return None
-                if regexp_mode:
-                    regexp_binding_words.append(words[index + 1])
-                index += 2
-                continue
-            break
-
-        return _SwitchOptionState(
-            value_index=index,
-            regexp_binding_words=tuple(regexp_binding_words),
-        )
-
-    def _parse_parameter_items(self, word: Word) -> tuple[ListItem, ...]:
-        return tuple(self._parse_list_items(word))
-
-    def _parse_list_items(self, word: Word) -> list[ListItem]:
-        static_text = word_static_text(word)
-        if static_text is None:
-            return []
-        return split_tcl_list(static_text, word.content_span.start)
+            self._record_variable_binding(
+                name=item.text,
+                span=item.span,
+                context=context,
+                kind=kind,
+            )
 
     def _parameter_from_item(self, item: ListItem) -> tuple[str | None, Span]:
         if ' ' not in item.text and '\t' not in item.text and '\n' not in item.text:

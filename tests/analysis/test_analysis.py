@@ -862,6 +862,25 @@ def test_analysis_tracks_nested_if_conditions_inside_command_substitutions() -> 
     assert analysis.diagnostics == ()
 
 
+def test_extractor_does_not_duplicate_variable_references_in_command_substitutions() -> None:
+    parser = Parser()
+    extractor = FactExtractor(parser)
+
+    parse_result = parser.parse_document(
+        'file:///command_substitution_refs.tcl',
+        'puts [foo $x [bar $y]]\n',
+    )
+    facts = extractor.extract(parse_result)
+
+    assert [
+        (reference.name, reference.span.start.offset, reference.span.end.offset)
+        for reference in facts.variable_references
+    ] == [
+        ('x', 10, 12),
+        ('y', 18, 20),
+    ]
+
+
 def test_analysis_tracks_static_if_bodies_for_metadata_guards() -> None:
     parser = Parser()
     extractor = FactExtractor(parser)

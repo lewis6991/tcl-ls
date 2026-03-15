@@ -50,6 +50,7 @@ class BracedWord:
     span: Span
     content_span: Span
     text: str
+    raw_text: str
 
 
 @dataclass(frozen=True, slots=True)

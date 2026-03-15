@@ -1,0 +1,507 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from tcl_lsp.analysis.facts.parsing import (
+    ConditionVariableSubstitution,
+    ListItem,
+    scan_static_tcl_substitutions,
+    split_tcl_list,
+)
+from tcl_lsp.analysis.facts.utils import (
+    body_span,
+    command_documentation,
+    extract_static_script,
+    normalize_command_name,
+)
+from tcl_lsp.common import Diagnostic, Position, Span
+from tcl_lsp.parser import Parser, word_static_text
+from tcl_lsp.parser.model import (
+    BracedWord,
+    Command,
+    CommandSubstitution,
+    ParseResult,
+    Script,
+    VariableSubstitution,
+    Word,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class LoweredScript:
+    commands: tuple[LoweredCommand, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class LoweredScriptBody:
+    script: LoweredScript
+
+
+@dataclass(frozen=True, slots=True)
+class LoweredWordReferences:
+    variable_substitutions: tuple[VariableSubstitution, ...]
+    command_substitutions: tuple[LoweredScript, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class LoweredCondition:
+    variable_substitutions: tuple[ConditionVariableSubstitution, ...]
+    command_substitutions: tuple[LoweredScript, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class LoweredIfClause:
+    condition: LoweredCondition | None
+    body: LoweredScriptBody | None
+
+
+@dataclass(frozen=True, slots=True)
+class LoweredCommandBase:
+    command: Command
+    command_name: str | None
+    word_references: tuple[LoweredWordReferences, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class LoweredGenericCommand(LoweredCommandBase):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class LoweredProcCommand(LoweredCommandBase):
+    name: str | None
+    name_span: Span | None
+    documentation: str | None
+    parameter_items: tuple[ListItem, ...]
+    body_span: Span | None
+    body: LoweredScriptBody | None
+
+
+@dataclass(frozen=True, slots=True)
+class LoweredNamespaceEvalCommand(LoweredCommandBase):
+    namespace_name: str | None
+    namespace_span: Span | None
+    body: LoweredScriptBody | None
+
+
+@dataclass(frozen=True, slots=True)
+class LoweredForeachCommand(LoweredCommandBase):
+    variable_items: tuple[ListItem, ...]
+    body: LoweredScriptBody | None
+
+
+@dataclass(frozen=True, slots=True)
+class LoweredLmapCommand(LoweredCommandBase):
+    variable_items: tuple[ListItem, ...]
+    body: LoweredScriptBody | None
+
+
+@dataclass(frozen=True, slots=True)
+class LoweredForCommand(LoweredCommandBase):
+    start_body: LoweredScriptBody | None
+    condition: LoweredCondition | None
+    next_body: LoweredScriptBody | None
+    body: LoweredScriptBody | None
+
+
+@dataclass(frozen=True, slots=True)
+class LoweredIfCommand(LoweredCommandBase):
+    clauses: tuple[LoweredIfClause, ...]
+    else_body: LoweredScriptBody | None
+
+
+@dataclass(frozen=True, slots=True)
+class LoweredCatchCommand(LoweredCommandBase):
+    body: LoweredScriptBody | None
+
+
+@dataclass(frozen=True, slots=True)
+class LoweredSwitchCommand(LoweredCommandBase):
+    regexp_binding_words: tuple[Word, ...]
+    branch_bodies: tuple[LoweredScriptBody, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class LoweredWhileCommand(LoweredCommandBase):
+    condition: LoweredCondition | None
+    body: LoweredScriptBody | None
+
+
+type LoweredCommand = LoweredCommandBase
+
+
+@dataclass(frozen=True, slots=True)
+class LoweringResult:
+    script: LoweredScript
+    diagnostics: tuple[Diagnostic, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _SwitchLayout:
+    branch_list_word: Word | None
+    branch_words: tuple[Word, ...]
+    regexp_binding_words: tuple[Word, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _SwitchOptionState:
+    value_index: int
+    regexp_binding_words: tuple[Word, ...]
+
+
+def lower_parse_result(parse_result: ParseResult, *, parser: Parser) -> LoweringResult:
+    return lower_script(parse_result.script, parser=parser, source_id=parse_result.source_id)
+
+
+def lower_script(script: Script, *, parser: Parser, source_id: str) -> LoweringResult:
+    lowerer = _Lowerer(parser=parser, source_id=source_id)
+    return LoweringResult(
+        script=lowerer.lower_script(script),
+        diagnostics=tuple(lowerer.diagnostics),
+    )
+
+
+class _Lowerer:
+    def __init__(self, *, parser: Parser, source_id: str) -> None:
+        self._parser = parser
+        self._source_id = source_id
+        self.diagnostics: list[Diagnostic] = []
+
+    def lower_script(self, script: Script) -> LoweredScript:
+        return LoweredScript(commands=tuple(self._lower_command(command) for command in script.commands))
+
+    def _lower_command(self, command: Command) -> LoweredCommand:
+        if not command.words:
+            return LoweredGenericCommand(
+                command=command,
+                command_name=None,
+                word_references=(),
+            )
+
+        command_name = self._command_name(command)
+        dispatch_name = normalize_command_name(command_name) if command_name is not None else None
+        base_kwargs = self._command_base_kwargs(command, command_name)
+        if dispatch_name == 'proc':
+            return self._lower_proc(**base_kwargs)
+        if dispatch_name == 'namespace':
+            return self._lower_namespace(**base_kwargs)
+        if dispatch_name == 'foreach':
+            return self._lower_foreach(**base_kwargs)
+        if dispatch_name == 'lmap':
+            return self._lower_lmap(**base_kwargs)
+        if dispatch_name == 'for':
+            return self._lower_for(**base_kwargs)
+        if dispatch_name == 'if':
+            return self._lower_if(**base_kwargs)
+        if dispatch_name == 'catch':
+            return self._lower_catch(**base_kwargs)
+        if dispatch_name == 'switch':
+            return self._lower_switch(**base_kwargs)
+        if dispatch_name == 'while':
+            return self._lower_while(**base_kwargs)
+        return LoweredGenericCommand(**base_kwargs)
+
+    def _lower_proc(self, command: Command, **base_kwargs: object) -> LoweredCommand:
+        name_word = command.words[1] if len(command.words) > 1 else None
+        body_word = command.words[3] if len(command.words) > 3 else None
+        return LoweredProcCommand(
+            command=command,
+            **base_kwargs,
+            name=word_static_text(name_word) if name_word is not None else None,
+            name_span=name_word.span if name_word is not None else None,
+            documentation=command_documentation(command),
+            parameter_items=self._parse_list_items(command.words[2] if len(command.words) > 2 else None),
+            body_span=body_span(body_word) if body_word is not None else None,
+            body=self._lower_script_word(body_word),
+        )
+
+    def _lower_namespace(self, command: Command, **base_kwargs: object) -> LoweredCommand:
+        if len(command.words) < 2 or word_static_text(command.words[1]) != 'eval':
+            return LoweredGenericCommand(command=command, **base_kwargs)
+        namespace_word = command.words[2] if len(command.words) > 2 else None
+        return LoweredNamespaceEvalCommand(
+            command=command,
+            **base_kwargs,
+            namespace_name=word_static_text(namespace_word) if namespace_word is not None else None,
+            namespace_span=namespace_word.span if namespace_word is not None else None,
+            body=self._lower_script_word(command.words[3] if len(command.words) > 3 else None),
+        )
+
+    def _lower_foreach(self, command: Command, **base_kwargs: object) -> LoweredCommand:
+        return LoweredForeachCommand(
+            command=command,
+            **base_kwargs,
+            variable_items=self._parse_list_items(command.words[1] if len(command.words) > 1 else None),
+            body=self._lower_script_word(command.words[3] if len(command.words) > 3 else None),
+        )
+
+    def _lower_lmap(self, command: Command, **base_kwargs: object) -> LoweredCommand:
+        return LoweredLmapCommand(
+            command=command,
+            **base_kwargs,
+            variable_items=self._parse_list_items(command.words[1] if len(command.words) > 1 else None),
+            body=self._lower_script_word(command.words[3] if len(command.words) > 3 else None),
+        )
+
+    def _lower_for(self, command: Command, **base_kwargs: object) -> LoweredCommand:
+        return LoweredForCommand(
+            command=command,
+            **base_kwargs,
+            start_body=self._lower_script_word(command.words[1] if len(command.words) > 1 else None),
+            condition=self._lower_condition_word(command.words[2] if len(command.words) > 2 else None),
+            next_body=self._lower_script_word(command.words[3] if len(command.words) > 3 else None),
+            body=self._lower_script_word(command.words[4] if len(command.words) > 4 else None),
+        )
+
+    def _lower_if(self, command: Command, **base_kwargs: object) -> LoweredCommand:
+        clauses: list[LoweredIfClause] = []
+        else_body: LoweredScriptBody | None = None
+
+        index = 1
+        while index < len(command.words):
+            if clauses:
+                keyword = word_static_text(command.words[index])
+                if keyword == 'elseif':
+                    index += 1
+                elif keyword == 'else':
+                    else_body = self._lower_script_word(
+                        command.words[index + 1] if index + 1 < len(command.words) else None
+                    )
+                    break
+                else:
+                    break
+
+            condition = self._lower_condition_word(command.words[index] if index < len(command.words) else None)
+            body_index = self._if_body_index(command.words, index + 1)
+            if body_index is None:
+                break
+
+            clauses.append(
+                LoweredIfClause(
+                    condition=condition,
+                    body=self._lower_script_word(command.words[body_index]),
+                )
+            )
+            index = body_index + 1
+
+        return LoweredIfCommand(
+            command=command,
+            **base_kwargs,
+            clauses=tuple(clauses),
+            else_body=else_body,
+        )
+
+    def _lower_catch(self, command: Command, **base_kwargs: object) -> LoweredCommand:
+        return LoweredCatchCommand(
+            command=command,
+            **base_kwargs,
+            body=self._lower_script_word(command.words[1] if len(command.words) > 1 else None),
+        )
+
+    def _lower_switch(self, command: Command, **base_kwargs: object) -> LoweredCommand:
+        layout = self._switch_layout(command.words)
+        if layout is None:
+            return LoweredSwitchCommand(
+                command=command,
+                **base_kwargs,
+                regexp_binding_words=(),
+                branch_bodies=(),
+            )
+
+        if layout.branch_list_word is not None:
+            branch_bodies = self._lower_switch_branch_list(layout.branch_list_word)
+        else:
+            branch_bodies = self._lower_switch_branch_words(layout.branch_words)
+
+        return LoweredSwitchCommand(
+            command=command,
+            **base_kwargs,
+            regexp_binding_words=layout.regexp_binding_words,
+            branch_bodies=branch_bodies,
+        )
+
+    def _lower_while(self, command: Command, **base_kwargs: object) -> LoweredCommand:
+        return LoweredWhileCommand(
+            command=command,
+            **base_kwargs,
+            condition=self._lower_condition_word(command.words[1] if len(command.words) > 1 else None),
+            body=self._lower_script_word(command.words[2] if len(command.words) > 2 else None),
+        )
+
+    def _lower_condition_word(self, word: Word | None) -> LoweredCondition | None:
+        if not isinstance(word, BracedWord):
+            return None
+
+        condition_text = word.raw_text[1:]
+        if condition_text.endswith('}'):
+            condition_text = condition_text[:-1]
+
+        variable_substitutions: list[ConditionVariableSubstitution] = []
+        command_substitutions: list[LoweredScript] = []
+        for substitution in scan_static_tcl_substitutions(condition_text, word.content_span.start):
+            if isinstance(substitution, ConditionVariableSubstitution):
+                variable_substitutions.append(substitution)
+                continue
+            command_substitutions.append(
+                self._lower_embedded_script(substitution.text, substitution.content_span.start)
+            )
+
+        return LoweredCondition(
+            variable_substitutions=tuple(variable_substitutions),
+            command_substitutions=tuple(command_substitutions),
+        )
+
+    def _lower_script_word(self, word: Word | None) -> LoweredScriptBody | None:
+        if word is None:
+            return None
+        embedded_script = extract_static_script(word)
+        if embedded_script is None:
+            return None
+        text, start_position = embedded_script
+        return LoweredScriptBody(script=self._lower_embedded_script(text, start_position))
+
+    def _lower_embedded_script(self, text: str, start_position: Position) -> LoweredScript:
+        parse_result = self._parser.parse_embedded_script_for_analysis(
+            source_id=self._source_id,
+            text=text,
+            start_position=start_position,
+        )
+        self.diagnostics.extend(parse_result.diagnostics)
+        return self.lower_script(parse_result.script)
+
+    def _command_name(self, command: Command) -> str | None:
+        if not command.words:
+            return None
+        return word_static_text(command.words[0])
+
+    def _command_base_kwargs(
+        self,
+        command: Command,
+        command_name: str | None,
+    ) -> dict[str, object]:
+        return {
+            'command': command,
+            'command_name': command_name,
+            'word_references': tuple(self._lower_word_references(word) for word in command.words),
+        }
+
+    def _lower_word_references(self, word: Word) -> LoweredWordReferences:
+        if isinstance(word, BracedWord):
+            return LoweredWordReferences(variable_substitutions=(), command_substitutions=())
+
+        variable_substitutions: list[VariableSubstitution] = []
+        command_substitutions: list[LoweredScript] = []
+        for part in word.parts:
+            if isinstance(part, VariableSubstitution):
+                variable_substitutions.append(part)
+                continue
+            if isinstance(part, CommandSubstitution):
+                command_substitutions.append(self.lower_script(part.script))
+
+        return LoweredWordReferences(
+            variable_substitutions=tuple(variable_substitutions),
+            command_substitutions=tuple(command_substitutions),
+        )
+
+    def _parse_list_items(self, word: Word | None) -> tuple[ListItem, ...]:
+        if word is None:
+            return ()
+        static_text = word_static_text(word)
+        if static_text is None:
+            return ()
+        return tuple(split_tcl_list(static_text, word.content_span.start))
+
+    def _if_body_index(self, words: tuple[Word, ...], index: int) -> int | None:
+        if index < len(words) and word_static_text(words[index]) == 'then':
+            index += 1
+        if index >= len(words):
+            return None
+        return index
+
+    def _switch_layout(self, words: tuple[Word, ...]) -> _SwitchLayout | None:
+        if len(words) < 3:
+            return None
+
+        option_state = self._scan_switch_options(words)
+        if option_state is None or option_state.value_index >= len(words):
+            return None
+
+        branch_words = tuple(words[option_state.value_index + 1 :])
+        if not branch_words:
+            return None
+
+        if len(branch_words) == 1:
+            return _SwitchLayout(
+                branch_list_word=branch_words[0],
+                branch_words=(),
+                regexp_binding_words=option_state.regexp_binding_words,
+            )
+
+        return _SwitchLayout(
+            branch_list_word=None,
+            branch_words=branch_words,
+            regexp_binding_words=option_state.regexp_binding_words,
+        )
+
+    def _lower_switch_branch_list(self, word: Word) -> tuple[LoweredScriptBody, ...]:
+        items = self._parse_list_items(word)
+        if len(items) % 2 != 0:
+            return ()
+
+        bodies: list[LoweredScriptBody] = []
+        for index in range(1, len(items), 2):
+            body_item = items[index]
+            if body_item.text == '-':
+                continue
+            bodies.append(
+                LoweredScriptBody(script=self._lower_embedded_script(body_item.text, body_item.content_start))
+            )
+        return tuple(bodies)
+
+    def _lower_switch_branch_words(
+        self,
+        branch_words: tuple[Word, ...],
+    ) -> tuple[LoweredScriptBody, ...]:
+        if len(branch_words) % 2 != 0:
+            return ()
+
+        bodies: list[LoweredScriptBody] = []
+        for index in range(1, len(branch_words), 2):
+            body_word = branch_words[index]
+            if word_static_text(body_word) == '-':
+                continue
+            lowered_body = self._lower_script_word(body_word)
+            if lowered_body is not None:
+                bodies.append(lowered_body)
+        return tuple(bodies)
+
+    def _scan_switch_options(self, words: tuple[Word, ...]) -> _SwitchOptionState | None:
+        index = 1
+        regexp_binding_words: list[Word] = []
+        regexp_mode = False
+
+        while index < len(words):
+            option = word_static_text(words[index])
+            if option == '--':
+                index += 1
+                break
+            if option in {'-exact', '-glob', '-nocase'}:
+                index += 1
+                continue
+            if option == '-regexp':
+                regexp_mode = True
+                index += 1
+                continue
+            if option in {'-matchvar', '-indexvar'}:
+                if index + 1 >= len(words):
+                    return None
+                if regexp_mode:
+                    regexp_binding_words.append(words[index + 1])
+                index += 2
+                continue
+            break
+
+        return _SwitchOptionState(
+            value_index=index,
+            regexp_binding_words=tuple(regexp_binding_words),
+        )
