@@ -42,7 +42,10 @@ class Parser:
         return implementation.parse()
 
     def parse_embedded_script(
-        self, source_id: str, text: str, start_position: Position
+        self,
+        source_id: str,
+        text: str,
+        start_position: Position,
     ) -> ParseResult:
         implementation = _ParserImplementation(
             source_id=source_id,
@@ -285,6 +288,18 @@ class _ParserImplementation:
         text_parts: list[str] = []
 
         while not self._is_eof():
+            next_special_index = self._next_braced_special_index()
+            if next_special_index == -1:
+                remaining_text = self._text[self._index :]
+                text_parts.append(remaining_text)
+                self._advance_text(remaining_text)
+                break
+            if next_special_index > self._index:
+                plain_text = self._text[self._index : next_special_index]
+                text_parts.append(plain_text)
+                self._advance_text(plain_text)
+                continue
+
             current_char = self._peek()
             if current_char == '\\':
                 if self._starts_line_continuation():
@@ -516,6 +531,18 @@ class _ParserImplementation:
             return
         self._character += 1
 
+    def _advance_text(self, text: str) -> None:
+        if not text:
+            return
+        self._index += len(text)
+        self._offset += len(text)
+        newline_count = text.count('\n')
+        if not newline_count:
+            self._character += len(text)
+            return
+        self._line += newline_count
+        self._character = len(text) - text.rfind('\n') - 1
+
     def _starts_line_continuation(self) -> bool:
         if self._is_eof() or self._peek() != '\\':
             return False
@@ -551,3 +578,17 @@ class _ParserImplementation:
         if char == '\n':
             return Position(offset=self._offset + 1, line=self._line + 1, character=0)
         return Position(offset=self._offset + 1, line=self._line, character=self._character + 1)
+
+    def _next_braced_special_index(self) -> int:
+        backslash_index = self._text.find('\\', self._index)
+        open_brace_index = self._text.find('{', self._index)
+        close_brace_index = self._text.find('}', self._index)
+
+        next_index = self._text_length
+        for candidate in (backslash_index, open_brace_index, close_brace_index):
+            if candidate != -1 and candidate < next_index:
+                next_index = candidate
+
+        if next_index == self._text_length:
+            return -1
+        return next_index
