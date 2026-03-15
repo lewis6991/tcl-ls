@@ -54,6 +54,49 @@ def test_check_project_uses_pkgindex_metadata(tmp_path: Path) -> None:
     assert report.diagnostics == ()
 
 
+def test_check_project_loads_static_source_commands(tmp_path: Path) -> None:
+    project_root = tmp_path / 'workspace'
+    project_root.mkdir()
+    (project_root / 'helper.inc').write_text(
+        'proc greet {} {return ok}\n',
+        encoding='utf-8',
+    )
+    (project_root / 'main.tcl').write_text(
+        'source [file join [file dirname [info script]] helper.inc]\ngreet\n',
+        encoding='utf-8',
+    )
+
+    report = check_project(project_root)
+
+    assert report.source_count == 1
+    assert report.background_source_count == 1
+    assert report.diagnostics == ()
+
+
+def test_check_project_loads_transitive_static_source_commands(tmp_path: Path) -> None:
+    package_root = tmp_path / 'workspace' / 'modules' / 'demo'
+    package_root.mkdir(parents=True)
+    (package_root / 'support.inc').write_text(
+        'source [file join [file dirname [info script]] helper.inc]\n',
+        encoding='utf-8',
+    )
+    (package_root / 'helper.inc').write_text(
+        'proc greet {} {return ok}\n',
+        encoding='utf-8',
+    )
+    (package_root / 'main.test').write_text(
+        'source [file join [file dirname [file dirname [file join [pwd] [info script]]]] demo support.inc]\n'
+        'greet\n',
+        encoding='utf-8',
+    )
+
+    report = check_project(package_root)
+
+    assert report.source_count == 1
+    assert report.background_source_count == 2
+    assert report.diagnostics == ()
+
+
 def test_check_project_treats_each_pkgindex_directory_as_a_workspace(tmp_path: Path) -> None:
     modules_root = tmp_path / 'workspace' / 'modules'
     first_dir = modules_root / 'first'

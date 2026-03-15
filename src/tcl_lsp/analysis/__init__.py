@@ -16,6 +16,7 @@ from tcl_lsp.analysis.model import (
     ReferenceSite,
     ResolutionResult,
     ResolvedReference,
+    SourceDirective,
     VarBinding,
     VariableReference,
 )
@@ -39,6 +40,7 @@ __all__ = [
     'ResolutionResult',
     'ResolvedReference',
     'Resolver',
+    'SourceDirective',
     'VarBinding',
     'VariableReference',
     'WorkspaceIndex',

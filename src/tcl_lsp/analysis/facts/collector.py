@@ -15,6 +15,7 @@ from tcl_lsp.analysis.facts.utils import (
     body_span,
     command_documentation,
     extract_ifneeded_source_uri,
+    extract_static_source_uri,
     extract_static_script,
     name_tail,
     namespace_for_name,
@@ -36,6 +37,7 @@ from tcl_lsp.analysis.model import (
     PackageRequire,
     ParameterDecl,
     ProcDecl,
+    SourceDirective,
     VarBinding,
     VariableReference,
 )
@@ -99,6 +101,7 @@ class _FactCollector:
         self._diagnostics: list[Diagnostic] = list(parse_result.diagnostics)
         self._namespaces: list[NamespaceScope] = []
         self._procedures: list[ProcDecl] = []
+        self._source_directives: list[SourceDirective] = []
         self._command_imports: list[CommandImport] = []
         self._package_requires: list[PackageRequire] = []
         self._package_provides: list[PackageProvide] = []
@@ -125,6 +128,7 @@ class _FactCollector:
             'lassign': self._collect_lassign,
             'lmap': self._collect_lmap,
             'scan': self._collect_scan,
+            'source': self._collect_source,
             'switch': self._collect_switch,
             'catch': self._collect_catch,
             'upvar': self._collect_upvar,
@@ -141,6 +145,7 @@ class _FactCollector:
             parse_result=self._parse_result,
             namespaces=tuple(self._namespaces),
             procedures=tuple(self._procedures),
+            source_directives=tuple(self._source_directives),
             command_imports=tuple(self._command_imports),
             package_requires=tuple(self._package_requires),
             package_provides=tuple(self._package_provides),
@@ -285,6 +290,19 @@ class _FactCollector:
                     span=command.words[2].span,
                 )
             )
+
+    def _collect_source(self, command: Command, context: _ExtractionContext) -> None:
+        target_uri = extract_static_source_uri(command, context.uri)
+        if target_uri is None:
+            return
+
+        self._source_directives.append(
+            SourceDirective(
+                uri=context.uri,
+                target_uri=target_uri,
+                span=command.span,
+            )
+        )
 
     def _collect_word_references(self, word: Word, context: _ExtractionContext) -> None:
         for substitution in collect_variable_substitutions(word):

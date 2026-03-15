@@ -85,6 +85,13 @@ class PackageIndexEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceDirective:
+    uri: str
+    target_uri: str
+    span: Span
+
+
+@dataclass(frozen=True, slots=True)
 class CommandImport:
     uri: str
     namespace: str
@@ -174,6 +181,7 @@ class DocumentFacts:
     parse_result: ParseResult
     namespaces: tuple[NamespaceScope, ...]
     procedures: tuple[ProcDecl, ...]
+    source_directives: tuple[SourceDirective, ...]
     command_imports: tuple[CommandImport, ...]
     package_requires: tuple[PackageRequire, ...]
     package_provides: tuple[PackageProvide, ...]

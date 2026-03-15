@@ -129,7 +129,7 @@ class _Palette:
     def _style(self, text: str, *codes: str) -> str:
         if not self.enabled or not codes:
             return text
-        return f"\x1b[{';'.join(codes)}m{text}\x1b[0m"
+        return f'\x1b[{";".join(codes)}m{text}\x1b[0m'
 
 
 class _StreamReporter:
@@ -162,7 +162,7 @@ class _StreamReporter:
 
     def source_indexed(self, current: int, total: int) -> None:
         background_suffix = (
-            f', loaded {self._background_sources} package sources'
+            f', loaded {self._background_sources} background sources'
             if self._background_sources
             else ''
         )
@@ -174,7 +174,7 @@ class _StreamReporter:
     def background_source_loaded(self, path: Path) -> None:
         self._background_sources += 1
         self._update_status(
-            'Loaded package source '
+            'Loaded background source '
             f'{_display_path(path, self._root)} ({self._background_sources} total)',
         )
 
@@ -315,7 +315,9 @@ def format_file_diagnostics(
 ) -> str:
     count_label = 'diagnostic' if len(diagnostics) == 1 else 'diagnostics'
     display_path = _display_path(path, root)
-    header = f'{palette.file(str(display_path))}{palette.dim(f" ({len(diagnostics)} {count_label})")}'
+    header = (
+        f'{palette.file(str(display_path))}{palette.dim(f" ({len(diagnostics)} {count_label})")}'
+    )
 
     location_width = max(
         len(f'{diagnostic.span.start.line + 1}:{diagnostic.span.start.character + 1}')
@@ -360,8 +362,8 @@ def format_summary(report: CheckReport, *, palette: _Palette) -> str:
     if report.background_source_count:
         background_label = 'file' if report.background_source_count == 1 else 'files'
         lines.append(
-            f'Loaded {report.background_source_count} package source {background_label} '
-            'from package ifneeded entries.'
+            f'Loaded {report.background_source_count} background source {background_label} '
+            'from package indexes or static source commands.'
         )
 
     if not report.diagnostics:
@@ -546,35 +548,45 @@ def _load_background_documents(
     while True:
         loaded_document = False
         for document in tuple(documents_by_uri.values()):
-            for package_require in document.facts.package_requires:
-                for source_uri in workspace_index.package_source_uris(package_require.name):
-                    if source_uri in documents_by_uri or source_uri in failed_uris:
-                        continue
+            for source_uri in _background_source_uris(document, workspace_index):
+                if source_uri in documents_by_uri or source_uri in failed_uris:
+                    continue
 
-                    source_path = source_id_to_path(source_uri)
-                    if source_path is None:
-                        failed_uris.add(source_uri)
-                        continue
+                source_path = source_id_to_path(source_uri)
+                if source_path is None:
+                    failed_uris.add(source_uri)
+                    continue
 
-                    try:
-                        background_document = document_cache.get(source_path)
-                    except OSError:
-                        failed_uris.add(source_uri)
-                        continue
+                try:
+                    background_document = document_cache.get(source_path)
+                except OSError:
+                    failed_uris.add(source_uri)
+                    continue
 
-                    documents_by_uri[background_document.uri] = background_document
-                    workspace_index.update(background_document.uri, background_document.facts)
-                    loaded_paths.add(background_document.path)
-                    if reporter is not None:
-                        reporter.background_source_loaded(background_document.path)
-                    loaded_document = True
-                    break
-                if loaded_document:
-                    break
+                documents_by_uri[background_document.uri] = background_document
+                workspace_index.update(background_document.uri, background_document.facts)
+                loaded_paths.add(background_document.path)
+                if reporter is not None:
+                    reporter.background_source_loaded(background_document.path)
+                loaded_document = True
+                break
             if loaded_document:
                 break
         if not loaded_document:
             return tuple(sorted(loaded_paths))
+
+
+def _background_source_uris(
+    document: _ProjectDocument,
+    workspace_index: WorkspaceIndex,
+) -> tuple[str, ...]:
+    uris: dict[str, None] = {}
+    for directive in document.facts.source_directives:
+        uris.setdefault(directive.target_uri, None)
+    for package_require in document.facts.package_requires:
+        for source_uri in workspace_index.package_source_uris(package_require.name):
+            uris.setdefault(source_uri, None)
+    return tuple(uris)
 
 
 def _build_package_index_catalog(
@@ -612,7 +624,9 @@ def _apply_package_index_catalog(
 
 def _package_index_scan_roots(target: Path) -> tuple[Path, ...]:
     roots = tuple(
-        dict.fromkeys(package_root.resolve(strict=False) for package_root in candidate_package_roots(target))
+        dict.fromkeys(
+            package_root.resolve(strict=False) for package_root in candidate_package_roots(target)
+        )
     )
     if roots:
         return roots

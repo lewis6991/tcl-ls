@@ -355,6 +355,36 @@ def test_language_service_infers_packages_from_pkgindex(
     assert hover.contents == 'proc ::helper::greet()'
 
 
+def test_language_service_loads_static_source_commands(
+    service: LanguageService,
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / 'workspace'
+    project_root.mkdir()
+    helper_path = project_root / 'helper.inc'
+    helper_path.write_text(
+        'proc greet {} {return ok}\n',
+        encoding='utf-8',
+    )
+
+    main_uri = (project_root / 'main.tcl').as_uri()
+    diagnostics = service.open_document(
+        main_uri,
+        'source [file join [file dirname [info script]] helper.inc]\ngreet\n',
+        1,
+    )
+
+    assert diagnostics == ()
+
+    definition_locations = service.definition(main_uri, 1, 2)
+    assert len(definition_locations) == 1
+    assert definition_locations[0].uri == helper_path.as_uri()
+
+    hover = service.hover(main_uri, 1, 2)
+    assert hover is not None
+    assert hover.contents == 'proc ::greet()'
+
+
 def test_language_service_analyzes_catch_bodies_and_result_variables(
     service: LanguageService,
 ) -> None:

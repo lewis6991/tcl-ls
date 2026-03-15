@@ -51,7 +51,7 @@ class LanguageService:
             return ()
         del self._documents[uri]
         self._workspace_index.remove(uri)
-        self._ensure_package_documents_loaded()
+        self._ensure_background_documents_loaded()
         self._recompute_workspace_analyses()
         return ()
 
@@ -128,7 +128,7 @@ class LanguageService:
             loaded_any = True
         if not loaded_any:
             return
-        self._ensure_package_documents_loaded()
+        self._ensure_background_documents_loaded()
         self._recompute_workspace_analyses()
 
     def _index_document(self, uri: str, text: str, version: int) -> None:
@@ -170,25 +170,31 @@ class LanguageService:
                 facts.package_index_entries,
             )
 
-    def _ensure_package_documents_loaded(self) -> None:
+    def _ensure_background_documents_loaded(self) -> None:
         while True:
             loaded_document = False
             for document in tuple(self._documents.values()):
-                for package_require in document.facts.package_requires:
-                    for source_uri in self._workspace_index.package_source_uris(package_require.name):
-                        if source_uri in self._documents:
-                            continue
-                        if source_uri in self._failed_background_documents:
-                            continue
-                        if self._load_background_document(source_uri):
-                            loaded_document = True
-                            break
-                    if loaded_document:
+                for source_uri in self._background_document_uris(document.facts):
+                    if source_uri in self._documents:
+                        continue
+                    if source_uri in self._failed_background_documents:
+                        continue
+                    if self._load_background_document(source_uri):
+                        loaded_document = True
                         break
                 if loaded_document:
                     break
             if not loaded_document:
                 return
+
+    def _background_document_uris(self, facts: DocumentFacts) -> tuple[str, ...]:
+        uris: dict[str, None] = {}
+        for directive in facts.source_directives:
+            uris.setdefault(directive.target_uri, None)
+        for package_require in facts.package_requires:
+            for source_uri in self._workspace_index.package_source_uris(package_require.name):
+                uris.setdefault(source_uri, None)
+        return tuple(uris)
 
     def _load_background_document(self, uri: str) -> bool:
         path = source_id_to_path(uri)
