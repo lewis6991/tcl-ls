@@ -265,8 +265,8 @@ class _Lowerer:
             command=command,
             command_name=command_name,
             word_references=word_references,
-            variable_items=self._parse_list_items(command.words[1] if len(command.words) > 1 else None),
-            body=self._lower_script_word(command.words[3] if len(command.words) > 3 else None),
+            variable_items=self._lower_loop_variable_items(command),
+            body=self._lower_script_word(command.words[-1] if len(command.words) > 3 else None),
         )
 
     def _lower_lmap(
@@ -279,8 +279,8 @@ class _Lowerer:
             command=command,
             command_name=command_name,
             word_references=word_references,
-            variable_items=self._parse_list_items(command.words[1] if len(command.words) > 1 else None),
-            body=self._lower_script_word(command.words[3] if len(command.words) > 3 else None),
+            variable_items=self._lower_loop_variable_items(command),
+            body=self._lower_script_word(command.words[-1] if len(command.words) > 3 else None),
         )
 
     def _lower_for(
@@ -473,6 +473,12 @@ class _Lowerer:
         if static_text is None:
             return ()
         return tuple(split_tcl_list(static_text, word.content_span.start))
+
+    def _lower_loop_variable_items(self, command: Command) -> tuple[ListItem, ...]:
+        items: list[ListItem] = []
+        for index in range(1, len(command.words) - 2, 2):
+            items.extend(self._parse_list_items(command.words[index]))
+        return tuple(items)
 
     def _if_body_index(self, words: tuple[Word, ...], index: int) -> int | None:
         if index < len(words) and word_static_text(words[index]) == 'then':

@@ -4,6 +4,12 @@
 # Define and run a named test case.
 meta command tcltest::test {name description args}
 
+# Format the standard wrong-argument-count error for a command.
+meta command tcltest::wrongNumArgs {command usage argc}
+
+# Format the standard too-many-arguments error for a command.
+meta command tcltest::tooManyArgs {command usage}
+
 # Load the tested commands into the current interpreter.
 meta command tcltest::loadTestedCommands {}
 

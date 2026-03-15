@@ -118,6 +118,20 @@ def test_check_project_resolves_sourced_tcltest_imports(tmp_path: Path) -> None:
     assert report.diagnostics == ()
 
 
+def test_check_project_resolves_implicit_tcltest_in_test_tcl_files(tmp_path: Path) -> None:
+    project_root = tmp_path / 'workspace'
+    project_root.mkdir()
+    (project_root / 'main.test.tcl').write_text(
+        'test demo {} -body {return ok}\n',
+        encoding='utf-8',
+    )
+
+    report = check_project(project_root)
+
+    assert report.source_count == 1
+    assert report.diagnostics == ()
+
+
 def test_check_project_resolves_required_tk_commands(tmp_path: Path) -> None:
     project_root = tmp_path / 'workspace'
     project_root.mkdir()

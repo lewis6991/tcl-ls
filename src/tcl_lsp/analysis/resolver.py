@@ -6,6 +6,7 @@ from tcl_lsp.analysis.builtins import (
     BuiltinCommand,
     builtin_commands_any,
     builtin_commands_for_packages,
+    is_builtin_package,
 )
 from tcl_lsp.analysis.index import WorkspaceIndex
 from tcl_lsp.analysis.model import (
@@ -22,9 +23,6 @@ from tcl_lsp.analysis.model import (
     VariableReference,
 )
 from tcl_lsp.common import Diagnostic, HoverInfo, Location
-
-_BUILTIN_PACKAGES = {'Tcl', 'Tk', 'tcltest'}
-
 
 @dataclass(frozen=True, slots=True)
 class _BindingSummary:
@@ -62,7 +60,7 @@ class Resolver:
                 )
 
         for package_require in facts.package_requires:
-            if package_require.name in _BUILTIN_PACKAGES or workspace_index.has_package(
+            if is_builtin_package(package_require.name) or workspace_index.has_package(
                 package_require.name
             ):
                 continue
@@ -378,7 +376,7 @@ class Resolver:
                         reference=reference,
                         uncertainty=AnalysisUncertainty(
                             state='resolved',
-                            reason='Resolved via implicit tcltest imports for a `.test` file.',
+                            reason='Resolved via implicit tcltest imports for a test file.',
                         ),
                         target_symbol_ids=tuple(
                             overload.symbol_id for overload in builtin.overloads
@@ -545,7 +543,7 @@ class Resolver:
         self,
         command_call: CommandCall,
     ) -> tuple[BuiltinCommand, ...]:
-        if not command_call.uri.endswith('.test'):
+        if not _is_implicit_tcltest_file(command_call.uri):
             return ()
         if command_call.name is None or '::' in command_call.name:
             return ()
@@ -588,6 +586,10 @@ def _builtin_resolution_reason(builtin: BuiltinCommand) -> str:
 
 def _normalize_command_name(name: str) -> str:
     return name[2:] if name.startswith('::') else name
+
+
+def _is_implicit_tcltest_file(uri: str) -> bool:
+    return uri.endswith('.test') or uri.endswith('.test.tcl')
 
 
 def _matching_required_package(

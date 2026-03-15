@@ -501,12 +501,91 @@ def test_analysis_resolves_required_tk_commands(parser: Parser) -> None:
     assert analysis.diagnostics == ()
 
 
+def test_analysis_resolves_required_msgcat_commands(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///msgcat.tcl',
+        'package require msgcat\n'
+        'namespace import ::msgcat::*\n'
+        'mcset en greeting Hello\n'
+        '::msgcat::mc greeting\n',
+    )
+    analysis = snapshot.analysis
+
+    resolution_by_name = {
+        resolution.reference.name: resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command'
+    }
+    assert resolution_by_name['mcset'] == 'resolved'
+    assert resolution_by_name['::msgcat::mc'] == 'resolved'
+    assert analysis.diagnostics == ()
+
+
+def test_analysis_resolves_required_tcloo_commands(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///tcloo.tcl',
+        'package require TclOO\n'
+        'oo::class create Foo {}\n'
+        'oo::define Foo {}\n'
+        'oo::objdefine ::oo::object {}\n',
+    )
+    analysis = snapshot.analysis
+
+    resolution_by_name = {
+        resolution.reference.name: resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command'
+    }
+    assert resolution_by_name['oo::class'] == 'resolved'
+    assert resolution_by_name['oo::define'] == 'resolved'
+    assert resolution_by_name['oo::objdefine'] == 'resolved'
+    assert analysis.diagnostics == ()
+
+
+def test_analysis_treats_tcl_oo_alias_as_builtin_package(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///tcl_oo_alias.tcl',
+        'package require tcl::oo\noo::class create Foo {}\n',
+    )
+    analysis = snapshot.analysis
+
+    resolution = next(
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command' and resolution.reference.name == 'oo::class'
+    )
+    assert resolution.uncertainty.state == 'resolved'
+    assert analysis.diagnostics == ()
+
+
 def test_analysis_resolves_tcltest_commands_in_test_files_without_explicit_import(
     parser: Parser,
 ) -> None:
     snapshot = _analyze(
         parser,
         'file:///suite.test',
+        'test sample {} -body {return ok}\n',
+    )
+    analysis = snapshot.analysis
+
+    resolution = next(
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command' and resolution.reference.name == 'test'
+    )
+    assert resolution.uncertainty.state == 'resolved'
+    assert analysis.diagnostics == ()
+
+
+def test_analysis_resolves_tcltest_commands_in_test_tcl_files_without_explicit_import(
+    parser: Parser,
+) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///suite.test.tcl',
         'test sample {} -body {return ok}\n',
     )
     analysis = snapshot.analysis
@@ -853,6 +932,54 @@ def test_analysis_tracks_for_while_and_lmap_bodies(parser: Parser) -> None:
         and resolution.reference.name in {'flag', 'i', 'item', 'items'}
     }
     assert {name for name, _ in variable_resolutions} == {'flag', 'i', 'item', 'items'}
+    assert set(variable_resolutions.values()) == {'resolved'}
+    assert analysis.diagnostics == ()
+
+
+def test_analysis_tracks_multi_source_foreach_and_lmap_bodies(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///multi_loop_pairs.tcl',
+        'proc helper {} {return ok}\n'
+        'proc run {left right} {\n'
+        '    foreach item $left weight $right {\n'
+        '        helper\n'
+        '        puts $item\n'
+        '        puts $weight\n'
+        '    }\n'
+        '    lmap value $left code $right {\n'
+        '        helper\n'
+        '        list $value $code\n'
+        '    }\n'
+        '}\n',
+    )
+    analysis = snapshot.analysis
+
+    helper_calls = [
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command' and resolution.reference.name == 'helper'
+    ]
+    assert len(helper_calls) == 2
+    assert all(resolution.uncertainty.state == 'resolved' for resolution in helper_calls)
+
+    variable_resolutions = {
+        (
+            resolution.reference.name,
+            resolution.reference.span.start.offset,
+        ): resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'variable'
+        and resolution.reference.name in {'item', 'weight', 'value', 'code', 'left', 'right'}
+    }
+    assert {name for name, _ in variable_resolutions} == {
+        'item',
+        'weight',
+        'value',
+        'code',
+        'left',
+        'right',
+    }
     assert set(variable_resolutions.values()) == {'resolved'}
     assert analysis.diagnostics == ()
 

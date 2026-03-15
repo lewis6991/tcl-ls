@@ -15,7 +15,10 @@ _METADATA_PATHS: tuple[tuple[str, Path], ...] = (
     (_CORE_PACKAGE, _DATA_DIR / 'tcl_builtin_commands.tcl'),
     ('Tk', _DATA_DIR / 'tk_builtin_commands.tcl'),
     ('tcltest', _DATA_DIR / 'tcltest_builtin_commands.tcl'),
+    ('msgcat', _DATA_DIR / 'msgcat_builtin_commands.tcl'),
+    ('TclOO', _DATA_DIR / 'tcloo_builtin_commands.tcl'),
 )
+_PACKAGE_ALIASES = {'tcl::oo': 'TclOO'}
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,7 +78,9 @@ def builtin_commands_for_packages(
         matches.append(core_command)
 
     for package_name in sorted(required_packages):
-        package_commands = builtin_commands_by_package().get(package_name)
+        package_commands = builtin_commands_by_package().get(
+            _canonical_package_name(package_name)
+        )
         if package_commands is None:
             continue
         package_command = package_commands.get(name)
@@ -95,6 +100,10 @@ def builtin_commands_any(name: str) -> tuple[BuiltinCommand, ...]:
             continue
         matches.append(command)
     return tuple(matches)
+
+
+def is_builtin_package(package_name: str) -> bool:
+    return _canonical_package_name(package_name) in builtin_commands_by_package()
 
 
 @lru_cache(maxsize=1)
@@ -191,3 +200,7 @@ def _signature(name: str, parameter_list: str) -> str:
 
 def _builtin_symbol_id(package_name: str, name: str, offset: int) -> str:
     return f'builtin::{package_name}::{name}::{offset}'
+
+
+def _canonical_package_name(package_name: str) -> str:
+    return _PACKAGE_ALIASES.get(package_name, package_name)
