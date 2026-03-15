@@ -385,6 +385,37 @@ def test_language_service_loads_static_source_commands(
     assert hover.contents == 'proc ::greet()'
 
 
+def test_language_service_resolves_sourced_tcltest_imports(
+    service: LanguageService,
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / 'workspace'
+    project_root.mkdir()
+    (project_root / 'helper.inc').write_text(
+        'package require tcltest\nnamespace import -force ::tcltest::*\n',
+        encoding='utf-8',
+    )
+
+    main_uri = (project_root / 'main.test').as_uri()
+    diagnostics = service.open_document(
+        main_uri,
+        'source [file join [file dirname [info script]] helper.inc]\n'
+        'test demo {} -body {return ok}\n'
+        '::tcltest::cleanupTests\n',
+        1,
+    )
+
+    assert diagnostics == ()
+
+    hover = service.hover(main_uri, 1, 1)
+    assert hover is not None
+    assert hover.contents.startswith('builtin command tcltest::test')
+
+    qualified_hover = service.hover(main_uri, 2, 3)
+    assert qualified_hover is not None
+    assert qualified_hover.contents.startswith('builtin command tcltest::cleanupTests')
+
+
 def test_language_service_analyzes_catch_bodies_and_result_variables(
     service: LanguageService,
 ) -> None:

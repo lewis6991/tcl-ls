@@ -258,7 +258,9 @@ def test_analysis_treats_dynamic_namespace_variable_links_as_bindings(parser: Pa
     analysis = snapshot.analysis
 
     run_proc = next(proc for proc in facts.procedures if proc.qualified_name == '::app::run')
-    run_bindings = [binding for binding in facts.variable_bindings if binding.scope_id == run_proc.symbol_id]
+    run_bindings = [
+        binding for binding in facts.variable_bindings if binding.scope_id == run_proc.symbol_id
+    ]
     assert {(binding.name, binding.kind) for binding in run_bindings} >= {
         ('ns', 'parameter'),
         ('counter', 'variable'),
@@ -453,6 +455,71 @@ def test_analysis_supports_builtin_subcommand_hovers(parser: Parser) -> None:
         assert hover_by_offset[subcommands[name].name_span.start.offset] == (
             f'builtin command {heading}\n\n{overload.documentation}'
         )
+
+
+def test_analysis_resolves_required_tk_commands(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///tk.tcl',
+        'package require Tk\nframe .f\npack .f\nwm title . "Demo"\n',
+    )
+    analysis = snapshot.analysis
+
+    resolution_by_name = {
+        resolution.reference.name: resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command'
+    }
+    assert resolution_by_name['frame'] == 'resolved'
+    assert resolution_by_name['pack'] == 'resolved'
+    assert resolution_by_name['wm'] == 'resolved'
+    assert analysis.diagnostics == ()
+
+
+def test_analysis_resolves_imported_tcltest_commands(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///tcltest_import.tcl',
+        'package require tcltest\n'
+        'namespace import ::tcltest::*\n'
+        'loadTestedCommands\n'
+        'test sample {} -body {return ok}\n',
+    )
+    analysis = snapshot.analysis
+
+    resolution_by_name = {
+        resolution.reference.name: resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command'
+    }
+    assert resolution_by_name['loadTestedCommands'] == 'resolved'
+    assert resolution_by_name['test'] == 'resolved'
+    assert analysis.diagnostics == ()
+
+
+def test_analysis_resolves_qualified_tcltest_commands(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///tcltest_qualified.tcl',
+        'package require tcltest\n::tcltest::configure -verbose p\n::tcltest::loadTestedCommands\n',
+    )
+    analysis = snapshot.analysis
+
+    configure_resolution = next(
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command'
+        and resolution.reference.name == '::tcltest::configure'
+    )
+    load_resolution = next(
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command'
+        and resolution.reference.name == '::tcltest::loadTestedCommands'
+    )
+    assert configure_resolution.uncertainty.state == 'resolved'
+    assert load_resolution.uncertainty.state == 'resolved'
+    assert analysis.diagnostics == ()
 
 
 def test_analysis_tracks_catch_bodies_and_result_variables(parser: Parser) -> None:

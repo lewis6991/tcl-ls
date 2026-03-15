@@ -109,22 +109,28 @@ class WorkspaceIndex:
         return tuple(self._procedures_by_qualified_name.get(qualified_name, []))
 
     def resolve_imported_procedure(self, raw_name: str, namespace: str) -> tuple[ProcDecl, ...]:
+        matches: list[ProcDecl] = []
+        seen: set[str] = set()
+        for target_name in self.imported_command_candidates(raw_name, namespace):
+            for proc in self._procedures_by_qualified_name.get(target_name, ()):
+                if proc.symbol_id in seen:
+                    continue
+                seen.add(proc.symbol_id)
+                matches.append(proc)
+        return tuple(matches)
+
+    def imported_command_candidates(self, raw_name: str, namespace: str) -> tuple[str, ...]:
         if '::' in raw_name:
             return ()
 
-        matches: list[ProcDecl] = []
-        seen: set[str] = set()
+        candidates: dict[str, None] = {}
         for candidate_namespace in _namespace_candidates(namespace):
             for command_import in self._command_imports_by_namespace.get(candidate_namespace, ()):
                 target_name = _import_target_name(command_import, raw_name)
                 if target_name is None:
                     continue
-                for proc in self._procedures_by_qualified_name.get(target_name, ()):
-                    if proc.symbol_id in seen:
-                        continue
-                    seen.add(proc.symbol_id)
-                    matches.append(proc)
-        return tuple(matches)
+                candidates.setdefault(target_name, None)
+        return tuple(candidates)
 
     def provided_packages_for_name(self, package_name: str) -> tuple[PackageProvide, ...]:
         return tuple(self._provided_packages_by_name.get(package_name, ()))

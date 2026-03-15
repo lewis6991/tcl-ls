@@ -97,6 +97,41 @@ def test_check_project_loads_transitive_static_source_commands(tmp_path: Path) -
     assert report.diagnostics == ()
 
 
+def test_check_project_resolves_sourced_tcltest_imports(tmp_path: Path) -> None:
+    project_root = tmp_path / 'workspace'
+    project_root.mkdir()
+    (project_root / 'helper.inc').write_text(
+        'package require tcltest\nnamespace import -force ::tcltest::*\n',
+        encoding='utf-8',
+    )
+    (project_root / 'main.test').write_text(
+        'source [file join [file dirname [info script]] helper.inc]\n'
+        'test demo {} -body {return ok}\n'
+        '::tcltest::cleanupTests\n',
+        encoding='utf-8',
+    )
+
+    report = check_project(project_root)
+
+    assert report.source_count == 1
+    assert report.background_source_count == 1
+    assert report.diagnostics == ()
+
+
+def test_check_project_resolves_required_tk_commands(tmp_path: Path) -> None:
+    project_root = tmp_path / 'workspace'
+    project_root.mkdir()
+    (project_root / 'main.tcl').write_text(
+        'package require Tk\nframe .f\npack .f\nwm title . "Demo"\n',
+        encoding='utf-8',
+    )
+
+    report = check_project(project_root)
+
+    assert report.source_count == 1
+    assert report.diagnostics == ()
+
+
 def test_check_project_treats_each_pkgindex_directory_as_a_workspace(tmp_path: Path) -> None:
     modules_root = tmp_path / 'workspace' / 'modules'
     first_dir = modules_root / 'first'

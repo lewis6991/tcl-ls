@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from tcl_lsp.analysis.builtins import BuiltinCommand, builtin_command
+from tcl_lsp.analysis.builtins import (
+    BuiltinCommand,
+    builtin_command,
+    builtin_command_for_packages,
+    builtin_commands_any,
+    builtin_commands_for_packages,
+)
 from tcl_lsp.analysis.index import WorkspaceIndex
 from tcl_lsp.analysis.model import (
     AnalysisResult,
@@ -19,7 +25,7 @@ from tcl_lsp.analysis.model import (
 )
 from tcl_lsp.common import Diagnostic, HoverInfo, Location
 
-_BUILTIN_PACKAGES = {'Tcl'}
+_BUILTIN_PACKAGES = {'Tcl', 'Tk', 'tcltest'}
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,14 +240,15 @@ class Resolver:
             )
 
         builtin_name = _normalize_command_name(command_call.name)
-        builtin = builtin_command(builtin_name)
-        if builtin is not None:
+        builtin_matches = builtin_commands_for_packages(builtin_name, required_packages)
+        if len(builtin_matches) == 1:
+            builtin = builtin_matches[0]
             return (
                 ResolutionResult(
                     reference=reference,
                     uncertainty=AnalysisUncertainty(
                         state='resolved',
-                        reason='Resolved to bundled builtin metadata.',
+                        reason=_builtin_resolution_reason(builtin),
                     ),
                     target_symbol_ids=tuple(overload.symbol_id for overload in builtin.overloads),
                 ),
@@ -250,6 +257,64 @@ class Resolver:
                     contents=_builtin_hover(builtin),
                 ),
             )
+        if len(builtin_matches) > 1:
+            return (
+                ResolutionResult(
+                    reference=reference,
+                    uncertainty=AnalysisUncertainty(
+                        state='ambiguous',
+                        reason='Multiple bundled command metadata entries match this command name.',
+                    ),
+                    target_symbol_ids=tuple(
+                        overload.symbol_id
+                        for builtin in builtin_matches
+                        for overload in builtin.overloads
+                    ),
+                ),
+                None,
+            )
+        if '::' in builtin_name:
+            qualified_builtin_matches = builtin_commands_any(builtin_name)
+            if len(qualified_builtin_matches) == 1:
+                builtin = qualified_builtin_matches[0]
+                return (
+                    ResolutionResult(
+                        reference=reference,
+                        uncertainty=AnalysisUncertainty(
+                            state='resolved',
+                            reason=(
+                                'Resolved to bundled package metadata by fully '
+                                'qualified command name.'
+                            ),
+                        ),
+                        target_symbol_ids=tuple(
+                            overload.symbol_id for overload in builtin.overloads
+                        ),
+                    ),
+                    HoverInfo(
+                        span=command_call.name_span,
+                        contents=_builtin_hover(builtin),
+                    ),
+                )
+            if len(qualified_builtin_matches) > 1:
+                return (
+                    ResolutionResult(
+                        reference=reference,
+                        uncertainty=AnalysisUncertainty(
+                            state='ambiguous',
+                            reason=(
+                                'Multiple bundled package metadata entries match '
+                                'this fully qualified command name.'
+                            ),
+                        ),
+                        target_symbol_ids=tuple(
+                            overload.symbol_id
+                            for builtin in qualified_builtin_matches
+                            for overload in builtin.overloads
+                        ),
+                    ),
+                    None,
+                )
 
         matches = workspace_index.resolve_procedure(command_call.name, command_call.namespace)
         resolved_via_import = False
@@ -259,6 +324,51 @@ class Resolver:
                 command_call.namespace,
             )
             resolved_via_import = bool(matches)
+        builtin_from_import = None
+        if not matches:
+            imported_builtin_matches = self._resolve_imported_builtins(
+                command_call.name,
+                command_call.namespace,
+                workspace_index,
+            )
+            if len(imported_builtin_matches) == 1:
+                builtin_from_import = imported_builtin_matches[0]
+            elif len(imported_builtin_matches) > 1:
+                return (
+                    ResolutionResult(
+                        reference=reference,
+                        uncertainty=AnalysisUncertainty(
+                            state='ambiguous',
+                            reason='Multiple imported builtin commands match this command name.',
+                        ),
+                        target_symbol_ids=tuple(
+                            overload.symbol_id
+                            for builtin in imported_builtin_matches
+                            for overload in builtin.overloads
+                        ),
+                    ),
+                    None,
+                )
+        if builtin_from_import is not None:
+            return (
+                ResolutionResult(
+                    reference=reference,
+                    uncertainty=AnalysisUncertainty(
+                        state='resolved',
+                        reason=(
+                            'Resolved via a static namespace import to bundled '
+                            f'{builtin_from_import.package} metadata.'
+                        ),
+                    ),
+                    target_symbol_ids=tuple(
+                        overload.symbol_id for overload in builtin_from_import.overloads
+                    ),
+                ),
+                HoverInfo(
+                    span=command_call.name_span,
+                    contents=_builtin_hover(builtin_from_import),
+                ),
+            )
         if not matches:
             package_name = _matching_required_package(command_call.name, required_packages)
             if package_name is not None:
@@ -382,6 +492,19 @@ class Resolver:
             hover,
         )
 
+    def _resolve_imported_builtins(
+        self,
+        raw_name: str,
+        namespace: str,
+        workspace_index: WorkspaceIndex,
+    ) -> tuple[BuiltinCommand, ...]:
+        matches: dict[str, BuiltinCommand] = {}
+        for target_name in workspace_index.imported_command_candidates(raw_name, namespace):
+            normalized_target_name = _normalize_command_name(target_name)
+            for builtin in builtin_commands_any(normalized_target_name):
+                matches.setdefault(f'{builtin.package}:{builtin.name}', builtin)
+        return tuple(matches.values())
+
 
 def _proc_detail(proc: ProcDecl) -> str:
     parameters = ', '.join(parameter.name for parameter in proc.parameters)
@@ -408,6 +531,12 @@ def _builtin_hover(builtin: BuiltinCommand) -> str:
 
 def _builtin_signature_heading(signature: str) -> str:
     return signature.removesuffix(' {}')
+
+
+def _builtin_resolution_reason(builtin: BuiltinCommand) -> str:
+    if builtin.package == 'Tcl':
+        return 'Resolved to bundled Tcl metadata.'
+    return f'Resolved to bundled {builtin.package} metadata.'
 
 
 def _normalize_command_name(name: str) -> str:
