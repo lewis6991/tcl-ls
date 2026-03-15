@@ -435,13 +435,13 @@ class _Lowerer:
         return LoweredScriptBody(script=self._lower_embedded_script(text, word.content_span.start))
 
     def _lower_embedded_script(self, text: str, start_position: Position) -> LoweredScript:
-        parse_result = self._parser.parse_embedded_script_for_analysis(
+        script = self._parser.parse_embedded_script_for_analysis(
             source_id=self._source_id,
             text=text,
             start_position=start_position,
+            diagnostics=self.diagnostics,
         )
-        self.diagnostics.extend(parse_result.diagnostics)
-        return self.lower_script(parse_result.script)
+        return self.lower_script(script)
 
     def _lower_word_references(self, word: Word) -> LoweredWordReferences:
         if isinstance(word, BracedWord):

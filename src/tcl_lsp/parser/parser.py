@@ -69,13 +69,15 @@ class Parser:
         source_id: str,
         text: str,
         start_position: Position,
-    ) -> ParseResult:
+        *,
+        diagnostics: list[Diagnostic] | None = None,
+    ) -> Script:
         return _ParserImplementation(
             source_id=source_id,
             text=text,
             start_position=start_position,
             collect_tokens=False,
-        ).parse()
+        ).parse_for_analysis(diagnostics)
 
 
 class _ParserImplementation:
@@ -119,6 +121,12 @@ class _ParserImplementation:
             tokens=tuple(self._tokens),
             diagnostics=tuple(self._diagnostics),
         )
+
+    def parse_for_analysis(self, diagnostics: list[Diagnostic] | None = None) -> Script:
+        script = self._parse_script(stop_char=None)
+        if diagnostics is not None:
+            diagnostics.extend(self._diagnostics)
+        return script
 
     def _parse_script(self, stop_char: str | None) -> Script:
         start = self._current_position()
@@ -270,13 +278,14 @@ class _ParserImplementation:
             content_span=Span(start=start_position, end=end_position),
             parts=tuple(parts),
         )
-        self._append_token(
-            Token(
-                kind='bare_word',
-                span=word.span,
-                text=self._text[start_index : self._index],
+        if self._collect_tokens:
+            self._append_token(
+                Token(
+                    kind='bare_word',
+                    span=word.span,
+                    text=self._text[start_index : self._index],
+                )
             )
-        )
         return word
 
     def _parse_quoted_word(self) -> QuotedWord:
@@ -308,13 +317,14 @@ class _ParserImplementation:
                     content_span=Span(start=content_start, end=content_end),
                     parts=tuple(parts),
                 )
-                self._append_token(
-                    Token(
-                        kind='quoted_word',
-                        span=word.span,
-                        text=self._text[start_index : self._index],
+                if self._collect_tokens:
+                    self._append_token(
+                        Token(
+                            kind='quoted_word',
+                            span=word.span,
+                            text=self._text[start_index : self._index],
+                        )
                     )
-                )
                 return word
             if current_char == '[':
                 self._flush_buffer(buffer, parts)
@@ -343,13 +353,14 @@ class _ParserImplementation:
             content_span=Span(start=content_start, end=end_position),
             parts=tuple(parts),
         )
-        self._append_token(
-            Token(
-                kind='quoted_word',
-                span=word.span,
-                text=self._text[start_index : self._index],
+        if self._collect_tokens:
+            self._append_token(
+                Token(
+                    kind='quoted_word',
+                    span=word.span,
+                    text=self._text[start_index : self._index],
+                )
             )
-        )
         return word
 
     def _parse_braced_word(self) -> BracedWord:
@@ -402,13 +413,14 @@ class _ParserImplementation:
                         text=''.join(text_parts),
                         raw_text=self._text[start_index : self._index],
                     )
-                    self._append_token(
-                        Token(
-                            kind='braced_word',
-                            span=word.span,
-                            text=self._text[start_index : self._index],
+                    if self._collect_tokens:
+                        self._append_token(
+                            Token(
+                                kind='braced_word',
+                                span=word.span,
+                                text=self._text[start_index : self._index],
+                            )
                         )
-                    )
                     return word
                 text_parts.append(current_char)
                 self._advance_char()
@@ -430,13 +442,14 @@ class _ParserImplementation:
             text=''.join(text_parts),
             raw_text=self._text[start_index : self._index],
         )
-        self._append_token(
-            Token(
-                kind='braced_word',
-                span=word.span,
-                text=self._text[start_index : self._index],
+        if self._collect_tokens:
+            self._append_token(
+                Token(
+                    kind='braced_word',
+                    span=word.span,
+                    text=self._text[start_index : self._index],
+                )
             )
-        )
         return word
 
     def _parse_command_substitution(self) -> CommandSubstitution:
@@ -578,6 +591,8 @@ class _ParserImplementation:
             break
 
     def _record_token(self, kind: TokenKind, start_index: int, start_position: Position) -> None:
+        if not self._collect_tokens:
+            return
         current_char = self._peek()
         self._append_token(
             Token(
