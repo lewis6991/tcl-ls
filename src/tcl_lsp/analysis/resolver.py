@@ -252,6 +252,13 @@ class Resolver:
             )
 
         matches = workspace_index.resolve_procedure(command_call.name, command_call.namespace)
+        resolved_via_import = False
+        if not matches:
+            matches = workspace_index.resolve_imported_procedure(
+                command_call.name,
+                command_call.namespace,
+            )
+            resolved_via_import = bool(matches)
         if not matches:
             package_name = _matching_required_package(command_call.name, required_packages)
             if package_name is not None:
@@ -297,7 +304,11 @@ class Resolver:
                     reference=reference,
                     uncertainty=AnalysisUncertainty(
                         state='resolved',
-                        reason='Resolved to a unique procedure definition.',
+                        reason=(
+                            'Resolved via a static namespace import.'
+                            if resolved_via_import
+                            else 'Resolved to a unique procedure definition.'
+                        ),
                     ),
                     target_symbol_ids=(proc.symbol_id,),
                 ),

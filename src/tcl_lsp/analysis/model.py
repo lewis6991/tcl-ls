@@ -21,8 +21,10 @@ type BindingKind = Literal[
     'scan',
     'set',
     'switch',
+    'upvar',
     'variable',
 ]
+type CommandImportKind = Literal['exact', 'namespace-wildcard']
 type ReferenceKind = Literal['command', 'variable']
 type ResolutionState = Literal['resolved', 'unresolved', 'ambiguous', 'dynamic']
 
@@ -79,6 +81,16 @@ class PackageIndexEntry:
     name: str
     version: str | None
     source_uri: str | None
+    span: Span
+
+
+@dataclass(frozen=True, slots=True)
+class CommandImport:
+    uri: str
+    namespace: str
+    kind: CommandImportKind
+    imported_name: str | None
+    target_name: str
     span: Span
 
 
@@ -162,6 +174,7 @@ class DocumentFacts:
     parse_result: ParseResult
     namespaces: tuple[NamespaceScope, ...]
     procedures: tuple[ProcDecl, ...]
+    command_imports: tuple[CommandImport, ...]
     package_requires: tuple[PackageRequire, ...]
     package_provides: tuple[PackageProvide, ...]
     package_index_entries: tuple[PackageIndexEntry, ...]

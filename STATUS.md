@@ -54,11 +54,13 @@ This repository contains an early but working bootstrap of a Tcl language server
   - [x] `append` / `incr` / `lappend` variable writers
   - [x] `gets`, `lassign`, and `scan` output variable bindings
   - [x] `global` / `variable` namespace-variable links
+  - [x] conservative `upvar` alias bindings
   - [x] `vwait` global variable references
   - [x] `foreach` / `lmap` loop variable bindings
   - [x] `for` / `while` body analysis
   - [x] variable substitutions
   - [x] statically named command calls
+  - [x] static `namespace import` command imports
 - [x] Workspace procedure and package metadata indexes for cross-file navigation and package lookup
 - [x] Resolution states are explicit:
   - [x] `resolved`
@@ -81,12 +83,11 @@ This repository contains an early but working bootstrap of a Tcl language server
 - [ ] No modeling of:
   - [ ] `eval`
   - [ ] `uplevel`
-  - [ ] `upvar`
   - [ ] dynamically constructed command names
   - [ ] `source`-based project loading
   - [ ] full package resolution for external/interpreter-installed packages
   - [ ] TclOO/class systems
-- [ ] Global and namespace variable resolution is still conservative outside explicit links (`global` / `variable`) and statically qualified names
+- [ ] Global and namespace variable resolution is still conservative outside explicit links (`global` / `variable` / `upvar`) and statically qualified names
 - [ ] Workspace indexing is still narrow; beyond procedures and package metadata there is no rich global symbol database
 - [ ] Builtin coverage is limited to default Tcl commands; Tcl/Tk and extension-specific commands may still be reported as unresolved
 - [ ] Diagnostics are intentionally limited to high-confidence cases

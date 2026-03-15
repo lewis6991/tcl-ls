@@ -177,6 +177,102 @@ def test_analysis_variable_links_proc_references_to_namespace_bindings(parser: P
     assert analysis.diagnostics == ()
 
 
+def test_analysis_treats_upvar_aliases_as_local_bindings(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///upvar.tcl',
+        'proc helper {name} {\n'
+        '    upvar 1 $name state\n'
+        '    puts $state\n'
+        '}\n'
+        'proc run {} {\n'
+        '    set value ok\n'
+        '    helper value\n'
+        '}\n',
+    )
+    facts = snapshot.facts
+    analysis = snapshot.analysis
+
+    helper_proc = next(proc for proc in facts.procedures if proc.qualified_name == '::helper')
+    helper_bindings = [
+        binding for binding in facts.variable_bindings if binding.scope_id == helper_proc.symbol_id
+    ]
+    assert {(binding.name, binding.kind) for binding in helper_bindings} >= {
+        ('name', 'parameter'),
+        ('state', 'upvar'),
+    }
+
+    state_resolutions = [
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'variable' and resolution.reference.name == 'state'
+    ]
+    assert len(state_resolutions) == 1
+    assert state_resolutions[0].uncertainty.state == 'resolved'
+    assert analysis.diagnostics == ()
+
+
+def test_analysis_resolves_commands_via_namespace_import(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///namespace_import.tcl',
+        'namespace eval helpers {\n'
+        '    proc greet {} {return ok}\n'
+        '}\n'
+        'namespace eval app {\n'
+        '    namespace import ::helpers::*\n'
+        '    proc run {} {\n'
+        '        greet\n'
+        '    }\n'
+        '}\n',
+    )
+    facts = snapshot.facts
+    analysis = snapshot.analysis
+
+    assert len(facts.command_imports) == 1
+    assert facts.command_imports[0].kind == 'namespace-wildcard'
+    assert facts.command_imports[0].namespace == '::app'
+    assert facts.command_imports[0].target_name == '::helpers'
+
+    greet_resolution = next(
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command' and resolution.reference.name == 'greet'
+    )
+    assert greet_resolution.uncertainty.state == 'resolved'
+    assert analysis.diagnostics == ()
+
+
+def test_analysis_treats_dynamic_namespace_variable_links_as_bindings(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///dynamic_variable_link.tcl',
+        'namespace eval app {\n'
+        '    proc run {ns} {\n'
+        '        variable ${ns}::counter\n'
+        '        puts $counter\n'
+        '    }\n'
+        '}\n',
+    )
+    facts = snapshot.facts
+    analysis = snapshot.analysis
+
+    run_proc = next(proc for proc in facts.procedures if proc.qualified_name == '::app::run')
+    run_bindings = [binding for binding in facts.variable_bindings if binding.scope_id == run_proc.symbol_id]
+    assert {(binding.name, binding.kind) for binding in run_bindings} >= {
+        ('ns', 'parameter'),
+        ('counter', 'variable'),
+    }
+
+    counter_resolution = next(
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'variable' and resolution.reference.name == 'counter'
+    )
+    assert counter_resolution.uncertainty.state == 'resolved'
+    assert analysis.diagnostics == ()
+
+
 def test_analysis_resolves_variable_uses_inside_namespace_eval_blocks(parser: Parser) -> None:
     snapshot = _analyze(
         parser,

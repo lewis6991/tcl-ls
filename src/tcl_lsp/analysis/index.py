@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from tcl_lsp.analysis.model import DocumentFacts, PackageIndexEntry, PackageProvide, ProcDecl
+from tcl_lsp.analysis.model import (
+    CommandImport,
+    DocumentFacts,
+    PackageIndexEntry,
+    PackageProvide,
+    ProcDecl,
+)
 
 
 class WorkspaceIndex:
@@ -10,6 +16,7 @@ class WorkspaceIndex:
         self._documents: dict[str, DocumentFacts] = {}
         self._package_indexes_by_uri: dict[str, tuple[PackageIndexEntry, ...]] = {}
         self._procedures_by_qualified_name: dict[str, list[ProcDecl]] = defaultdict(list)
+        self._command_imports_by_namespace: dict[str, list[CommandImport]] = defaultdict(list)
         self._provided_packages_by_name: dict[str, list[PackageProvide]] = defaultdict(list)
         self._package_index_entries_by_name: dict[str, list[PackageIndexEntry]] = defaultdict(list)
 
@@ -18,6 +25,10 @@ class WorkspaceIndex:
         self._documents[uri] = facts
         for proc in facts.procedures:
             self._procedures_by_qualified_name.setdefault(proc.qualified_name, []).append(proc)
+        for command_import in facts.command_imports:
+            self._command_imports_by_namespace.setdefault(command_import.namespace, []).append(
+                command_import
+            )
         for package in facts.package_provides:
             self._provided_packages_by_name.setdefault(package.name, []).append(package)
 
@@ -41,6 +52,18 @@ class WorkspaceIndex:
             ]
             if not self._procedures_by_qualified_name[proc.qualified_name]:
                 del self._procedures_by_qualified_name[proc.qualified_name]
+
+        for command_import in existing.command_imports:
+            current = self._command_imports_by_namespace.get(command_import.namespace)
+            if current is None:
+                continue
+            self._command_imports_by_namespace[command_import.namespace] = [
+                candidate
+                for candidate in current
+                if candidate.uri != command_import.uri or candidate.span != command_import.span
+            ]
+            if not self._command_imports_by_namespace[command_import.namespace]:
+                del self._command_imports_by_namespace[command_import.namespace]
 
         for package in existing.package_provides:
             current = self._provided_packages_by_name.get(package.name)
@@ -85,6 +108,24 @@ class WorkspaceIndex:
     def procedures_for_name(self, qualified_name: str) -> tuple[ProcDecl, ...]:
         return tuple(self._procedures_by_qualified_name.get(qualified_name, []))
 
+    def resolve_imported_procedure(self, raw_name: str, namespace: str) -> tuple[ProcDecl, ...]:
+        if '::' in raw_name:
+            return ()
+
+        matches: list[ProcDecl] = []
+        seen: set[str] = set()
+        for candidate_namespace in _namespace_candidates(namespace):
+            for command_import in self._command_imports_by_namespace.get(candidate_namespace, ()):
+                target_name = _import_target_name(command_import, raw_name)
+                if target_name is None:
+                    continue
+                for proc in self._procedures_by_qualified_name.get(target_name, ()):
+                    if proc.symbol_id in seen:
+                        continue
+                    seen.add(proc.symbol_id)
+                    matches.append(proc)
+        return tuple(matches)
+
     def provided_packages_for_name(self, package_name: str) -> tuple[PackageProvide, ...]:
         return tuple(self._provided_packages_by_name.get(package_name, ()))
 
@@ -120,6 +161,30 @@ def _procedure_candidates(raw_name: str, namespace: str) -> list[str]:
         namespace_segments = namespace_segments[:-1]
     candidates.append(f'::{raw_name}')
     return candidates
+
+
+def _namespace_candidates(namespace: str) -> tuple[str, ...]:
+    if namespace == '::':
+        return ('::',)
+
+    namespace_segments = [segment for segment in namespace.split('::') if segment]
+    candidates: list[str] = []
+    while namespace_segments:
+        candidates.append('::' + '::'.join(namespace_segments))
+        namespace_segments = namespace_segments[:-1]
+    candidates.append('::')
+    return tuple(candidates)
+
+
+def _import_target_name(command_import: CommandImport, raw_name: str) -> str | None:
+    if command_import.kind == 'exact':
+        if command_import.imported_name != raw_name:
+            return None
+        return command_import.target_name
+
+    if command_import.target_name == '::':
+        return f'::{raw_name}'
+    return f'{command_import.target_name}::{raw_name}'
 
 
 def _normalize_qualified_name(name: str) -> str:

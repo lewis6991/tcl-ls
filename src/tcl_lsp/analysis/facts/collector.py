@@ -28,6 +28,7 @@ from tcl_lsp.analysis.facts.utils import (
 from tcl_lsp.analysis.model import (
     BindingKind,
     CommandCall,
+    CommandImport,
     DocumentFacts,
     NamespaceScope,
     PackageIndexEntry,
@@ -46,6 +47,7 @@ from tcl_lsp.parser.model import (
     CommandSubstitution,
     ParseResult,
     Script,
+    VariableSubstitution,
     Word,
 )
 
@@ -97,6 +99,7 @@ class _FactCollector:
         self._diagnostics: list[Diagnostic] = list(parse_result.diagnostics)
         self._namespaces: list[NamespaceScope] = []
         self._procedures: list[ProcDecl] = []
+        self._command_imports: list[CommandImport] = []
         self._package_requires: list[PackageRequire] = []
         self._package_provides: list[PackageProvide] = []
         self._package_index_entries: list[PackageIndexEntry] = []
@@ -109,7 +112,7 @@ class _FactCollector:
             'array': self._collect_array,
             'package': self._collect_package,
             'proc': self._collect_proc,
-            'namespace': self._collect_namespace_eval,
+            'namespace': self._collect_namespace,
             'set': self._collect_set,
             'global': self._collect_global,
             'gets': self._collect_gets,
@@ -124,6 +127,7 @@ class _FactCollector:
             'scan': self._collect_scan,
             'switch': self._collect_switch,
             'catch': self._collect_catch,
+            'upvar': self._collect_upvar,
             'variable': self._collect_variable,
             'vwait': self._collect_vwait,
             'while': self._collect_while,
@@ -137,6 +141,7 @@ class _FactCollector:
             parse_result=self._parse_result,
             namespaces=tuple(self._namespaces),
             procedures=tuple(self._procedures),
+            command_imports=tuple(self._command_imports),
             package_requires=tuple(self._package_requires),
             package_provides=tuple(self._package_provides),
             package_index_entries=tuple(self._package_index_entries),
@@ -308,6 +313,18 @@ class _FactCollector:
         self._record_parameter_bindings(proc_decl.parameters, body_context)
         self._collect_embedded_body(body_word, body_context)
 
+    def _collect_namespace(self, command: Command, context: _ExtractionContext) -> None:
+        if len(command.words) < 2:
+            return
+
+        subcommand = word_static_text(command.words[1])
+        if subcommand == 'eval':
+            self._collect_namespace_eval(command, context)
+            return
+
+        if subcommand == 'import':
+            self._collect_namespace_import(command, context)
+
     def _collect_namespace_eval(self, command: Command, context: _ExtractionContext) -> None:
         namespace_eval = self._namespace_eval_details(command, context)
         if namespace_eval is None:
@@ -323,6 +340,42 @@ class _FactCollector:
             body_word,
             self._namespace_context(context.uri, namespace_scope.qualified_name),
         )
+
+    def _collect_namespace_import(self, command: Command, context: _ExtractionContext) -> None:
+        for pattern_word in command.words[2:]:
+            pattern = word_static_text(pattern_word)
+            if pattern is None:
+                continue
+
+            exact_import = self._exact_command_import(pattern, context.namespace)
+            if exact_import is not None:
+                imported_name, target_name = exact_import
+                self._command_imports.append(
+                    CommandImport(
+                        uri=context.uri,
+                        namespace=context.namespace,
+                        kind='exact',
+                        imported_name=imported_name,
+                        target_name=target_name,
+                        span=pattern_word.span,
+                    )
+                )
+                continue
+
+            target_namespace = self._wildcard_import_namespace(pattern, context.namespace)
+            if target_namespace is None:
+                continue
+
+            self._command_imports.append(
+                CommandImport(
+                    uri=context.uri,
+                    namespace=context.namespace,
+                    kind='namespace-wildcard',
+                    imported_name=None,
+                    target_name=target_namespace,
+                    span=pattern_word.span,
+                )
+            )
 
     def _collect_set(self, command: Command, context: _ExtractionContext) -> None:
         if len(command.words) < 2:
@@ -493,6 +546,23 @@ class _FactCollector:
                 span=variable_word.span,
                 context=context,
             )
+            continue
+
+        for variable_word in command.words[1:]:
+            local_name = self._dynamic_link_local_name(variable_word)
+            if local_name is None:
+                continue
+            self._record_variable_binding(
+                name=local_name,
+                span=variable_word.span,
+                context=context,
+                kind='global',
+            )
+            self._record_variable_reference(
+                name=local_name,
+                span=variable_word.span,
+                context=context,
+            )
 
     def _collect_variable(self, command: Command, context: _ExtractionContext) -> None:
         if len(command.words) < 2:
@@ -528,6 +598,41 @@ class _FactCollector:
                 span=variable_word.span,
                 context=context,
             )
+            continue
+
+        if context.procedure_symbol_id is None:
+            return
+
+        for variable_word in command.words[1::2]:
+            local_name = self._dynamic_link_local_name(variable_word)
+            if local_name is None:
+                continue
+            self._record_variable_binding(
+                name=local_name,
+                span=variable_word.span,
+                context=context,
+                kind='variable',
+            )
+            self._record_variable_reference(
+                name=local_name,
+                span=variable_word.span,
+                context=context,
+            )
+
+    def _collect_upvar(self, command: Command, context: _ExtractionContext) -> None:
+        if context.procedure_symbol_id is None or len(command.words) < 3:
+            return
+
+        start_index = 1
+        level = word_static_text(command.words[start_index])
+        if level is not None and self._is_upvar_level(level):
+            start_index += 1
+
+        if start_index >= len(command.words) - 1:
+            return
+
+        for local_word in command.words[start_index + 1 :: 2]:
+            self._record_simple_binding_word(local_word, context, kind='upvar')
 
     def _collect_switch(self, command: Command, context: _ExtractionContext) -> None:
         layout = self._switch_layout(command)
@@ -953,6 +1058,60 @@ class _FactCollector:
             uri=context.uri,
             kind=kind,
         )
+
+    def _dynamic_link_local_name(self, word: Word) -> str | None:
+        if isinstance(word, BracedWord):
+            return None
+
+        saw_variable_substitution = False
+        literal_suffix: list[str] = []
+        for part in word.parts:
+            if isinstance(part, CommandSubstitution):
+                return None
+            if isinstance(part, VariableSubstitution):
+                saw_variable_substitution = True
+                continue
+            literal_suffix.append(part.text)
+
+        if not saw_variable_substitution:
+            return None
+
+        suffix = ''.join(literal_suffix)
+        if '::' not in suffix:
+            return None
+
+        local_name = suffix.rsplit('::', 1)[-1]
+        if not is_simple_name(local_name):
+            return None
+        return local_name
+
+    def _exact_command_import(
+        self,
+        pattern: str,
+        current_namespace: str,
+    ) -> tuple[str, str] | None:
+        if '*' in pattern:
+            return None
+
+        qualified_name = qualify_name(pattern, current_namespace)
+        return name_tail(qualified_name), qualified_name
+
+    def _wildcard_import_namespace(
+        self,
+        pattern: str,
+        current_namespace: str,
+    ) -> str | None:
+        if not pattern.endswith('::*') or pattern.count('*') != 1:
+            return None
+
+        namespace = pattern.removesuffix('::*')
+        if not namespace:
+            return None
+
+        return qualify_namespace(namespace, current_namespace)
+
+    def _is_upvar_level(self, value: str) -> bool:
+        return value.isdigit() or (value.startswith('#') and value[1:].isdigit())
 
     def _build_proc_declaration(
         self,
