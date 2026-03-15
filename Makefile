@@ -12,6 +12,10 @@ tcllib: $(TCLLIB_DIR)
 test: $(TCLLIB_DIR)
 	TCLLIB_DIR="$(TCLLIB_DIR)" uv run pytest
 
+.PHONY: generate-builtins
+generate-builtins:
+	python3 scripts/generate_builtin_commands.py
+
 $(TCLLIB_DIR): | $(CACHE)
 	git clone \
 		--depth 1 \

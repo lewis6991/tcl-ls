@@ -58,12 +58,13 @@ def builtin_commands() -> dict[str, BuiltinCommand]:
         if not documentation:
             raise RuntimeError(f'Builtin command `{builtin_name}` is missing documentation.')
 
+        name_span = command.words[2].content_span
         commands.setdefault(builtin_name, []).append(
             BuiltinOverload(
-                symbol_id=_builtin_symbol_id(builtin_name, command.words[2].span.start.offset),
+                symbol_id=_builtin_symbol_id(builtin_name, name_span.start.offset),
                 signature=_signature(builtin_name, parameter_list),
                 documentation=documentation,
-                location=Location(uri=_METADATA_URI, span=command.words[2].span),
+                location=Location(uri=_METADATA_URI, span=name_span),
             )
         )
 

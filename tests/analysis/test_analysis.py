@@ -190,6 +190,57 @@ def test_analysis_groups_builtin_overloads_in_hover_output(parser: Parser) -> No
     assert len(command_resolution.target_symbol_ids) == len(builtin.overloads)
 
 
+def test_analysis_supports_builtin_subcommand_hovers(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///builtin_namespace_subcommands.tcl',
+        'namespace current\n'
+        'namespace eval app {}\n'
+        'namespace code {puts hi}\n'
+        'namespace ensemble create\n'
+        'dict get {a 1} a\n'
+        'trace add command foo delete cb\n'
+        'binary encode base64 data\n',
+    )
+    facts = snapshot.facts
+    analysis = snapshot.analysis
+
+    target_names = {
+        'namespace current',
+        'namespace eval',
+        'namespace code',
+        'namespace ensemble create',
+        'dict get',
+        'trace add command',
+        'binary encode base64',
+    }
+    resolution_by_name = {
+        resolution.reference.name: resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command'
+        and resolution.reference.name in target_names
+    }
+    assert resolution_by_name == {name: 'resolved' for name in target_names}
+
+    hover_by_offset = {hover.span.start.offset: hover.contents for hover in analysis.hovers}
+    subcommands = {
+        command.name: command
+        for command in facts.command_calls
+        if command.name in target_names
+    }
+    assert subcommands.keys() == target_names
+
+    for name in target_names:
+        builtin = builtin_command(name)
+        assert builtin is not None
+        assert len(builtin.overloads) == 1
+        overload = builtin.overloads[0]
+        heading = overload.signature.removesuffix(' {}')
+        assert hover_by_offset[subcommands[name].name_span.start.offset] == (
+            f'builtin command {heading}\n\n{overload.documentation}'
+        )
+
+
 def test_analysis_tracks_catch_bodies_and_result_variables(parser: Parser) -> None:
     snapshot = _analyze(
         parser,

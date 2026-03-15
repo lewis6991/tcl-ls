@@ -188,6 +188,62 @@ def test_language_server_hover_formats_builtin_commands(
         assert fragment in hover_value
 
 
+@pytest.mark.parametrize(
+    ('text', 'character', 'builtin_name'),
+    [
+        ('namespace current\n', 11, 'namespace current'),
+        ('dict get {a 1} a\n', 6, 'dict get'),
+        ('trace add command foo delete cb\n', 12, 'trace add command'),
+        ('binary encode base64 data\n', 15, 'binary encode base64'),
+    ],
+)
+def test_language_service_definition_resolves_builtin_subcommand_metadata(
+    service: LanguageService,
+    text: str,
+    character: int,
+    builtin_name: str,
+) -> None:
+    service.open_document(_MAIN_URI, text, 1)
+
+    builtin = builtin_command(builtin_name)
+    assert builtin is not None
+    assert len(builtin.overloads) == 1
+
+    definition_locations = service.definition(_MAIN_URI, 0, character)
+    assert len(definition_locations) == 1
+    assert definition_locations[0] == builtin.overloads[0].location
+
+
+@pytest.mark.parametrize(
+    ('text', 'character', 'builtin_name'),
+    [
+        ('namespace current\n', 11, 'namespace current'),
+        ('namespace eval app {}\n', 11, 'namespace eval'),
+        ('namespace code {puts hi}\n', 11, 'namespace code'),
+        ('namespace ensemble create\n', 20, 'namespace ensemble create'),
+        ('dict get {a 1} a\n', 6, 'dict get'),
+        ('trace add command foo delete cb\n', 12, 'trace add command'),
+        ('binary encode base64 data\n', 15, 'binary encode base64'),
+    ],
+)
+def test_language_server_hover_formats_builtin_subcommands(
+    server: LanguageServer,
+    text: str,
+    character: int,
+    builtin_name: str,
+) -> None:
+    _open_server_document(server, text)
+
+    builtin = builtin_command(builtin_name)
+    assert builtin is not None
+    assert len(builtin.overloads) == 1
+    overload = builtin.overloads[0]
+    heading = overload.signature.removesuffix(' {}')
+
+    hover_value = _hover_markdown_value(server, line=0, character=character)
+    assert hover_value == f'```tcl\n{heading}\n```\n\n{overload.documentation}'
+
+
 def test_language_service_infers_packages_from_pkgindex(
     service: LanguageService,
     tmp_path: Path,

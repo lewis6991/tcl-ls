@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+from tcl_lsp.analysis.builtins import builtin_command
 from tcl_lsp.analysis.model import (
     BindingKind,
     CommandCall,
@@ -123,21 +124,17 @@ class _FactCollector:
 
         command_name_word = command.words[0]
         command_name = word_static_text(command_name_word)
-        self._command_calls.append(
-            CommandCall(
-                uri=context.uri,
-                name=command_name,
-                namespace=context.namespace,
-                scope_id=context.scope_id,
-                procedure_symbol_id=context.procedure_symbol_id,
-                span=command.span,
-                name_span=command_name_word.span,
-                dynamic=command_name is None,
-            )
+        self._record_command_call(
+            command_name=command_name,
+            command_span=command.span,
+            name_span=command_name_word.span,
+            context=context,
         )
 
         for word in command.words:
             self._collect_word_references(word, context)
+
+        self._collect_builtin_subcommands(command, context)
 
         if command_name == 'package':
             self._collect_package(command, context)
@@ -164,6 +161,50 @@ class _FactCollector:
 
         if command_name == 'catch':
             self._collect_catch(command, context)
+
+    def _record_command_call(
+        self,
+        command_name: str | None,
+        command_span: Span,
+        name_span: Span,
+        context: _ExtractionContext,
+    ) -> None:
+        self._command_calls.append(
+            CommandCall(
+                uri=context.uri,
+                name=command_name,
+                namespace=context.namespace,
+                scope_id=context.scope_id,
+                procedure_symbol_id=context.procedure_symbol_id,
+                span=command_span,
+                name_span=name_span,
+                dynamic=command_name is None,
+            )
+        )
+
+    def _collect_builtin_subcommands(self, command: Command, context: _ExtractionContext) -> None:
+        static_prefix_parts: list[str] = []
+        for index, word in enumerate(command.words):
+            static_text = word_static_text(word)
+            if static_text is None:
+                return
+            if index == 0:
+                static_text = _normalize_command_name(static_text)
+
+            static_prefix_parts.append(static_text)
+            if index == 0:
+                continue
+
+            builtin_name = ' '.join(static_prefix_parts)
+            if builtin_command(builtin_name) is None:
+                continue
+
+            self._record_command_call(
+                command_name=builtin_name,
+                command_span=command.span,
+                name_span=word.content_span,
+                context=context,
+            )
 
     def _collect_package(self, command: Command, context: _ExtractionContext) -> None:
         if len(command.words) < 2:
@@ -885,6 +926,10 @@ def _qualify_namespace(name: str, current_namespace: str) -> str:
     if name == '::':
         return '::'
     return _qualify_name(name, current_namespace)
+
+
+def _normalize_command_name(name: str) -> str:
+    return name[2:] if name.startswith('::') else name
 
 
 def _normalize_qualified_name(name: str) -> str:
