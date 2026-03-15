@@ -258,6 +258,45 @@ def test_analysis_tracks_catch_bodies_and_result_variables() -> None:
     assert analysis.diagnostics == ()
 
 
+def test_analysis_resolves_references_inside_braced_if_conditions() -> None:
+    parser = Parser()
+    extractor = FactExtractor(parser)
+    resolver = Resolver()
+    workspace = WorkspaceIndex()
+
+    parse_result = parser.parse_document(
+        'file:///if_condition.tcl',
+        'proc helper {} {return 1}\n'
+        'proc run {flag} {\n'
+        '    if {$flag && [helper]} {\n'
+        '        return ok\n'
+        '    } elseif {[helper]} then {\n'
+        '        return alt\n'
+        '    }\n'
+        '}\n',
+    )
+    facts = extractor.extract(parse_result)
+    workspace.update(facts.uri, facts)
+    analysis = resolver.analyze(facts.uri, facts, workspace)
+
+    helper_calls = [
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command' and resolution.reference.name == 'helper'
+    ]
+    assert len(helper_calls) == 2
+    assert all(resolution.uncertainty.state == 'resolved' for resolution in helper_calls)
+
+    flag_references = [
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'variable' and resolution.reference.name == 'flag'
+    ]
+    assert len(flag_references) == 1
+    assert flag_references[0].uncertainty.state == 'resolved'
+    assert analysis.diagnostics == ()
+
+
 def test_analysis_tracks_static_if_bodies_for_metadata_guards() -> None:
     parser = Parser()
     extractor = FactExtractor(parser)

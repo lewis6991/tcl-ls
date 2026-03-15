@@ -47,6 +47,19 @@ class _ListItem:
     content_start: Position
 
 
+@dataclass(frozen=True, slots=True)
+class _ConditionVariableSubstitution:
+    name: str
+    span: Span
+
+
+@dataclass(frozen=True, slots=True)
+class _ConditionCommandSubstitution:
+    text: str
+    span: Span
+    content_span: Span
+
+
 class FactExtractor:
     def __init__(self, parser: Parser | None = None) -> None:
         self._parser = Parser() if parser is None else parser
@@ -60,6 +73,8 @@ class _FactCollector:
     def __init__(self, parser: Parser, parse_result: ParseResult) -> None:
         self._parser = parser
         self._parse_result = parse_result
+        self._braced_token_text_by_span: dict[Span, str] = {}
+        self._remember_braced_tokens(parse_result)
         self._diagnostics: list[Diagnostic] = list(parse_result.diagnostics)
         self._namespaces: list[NamespaceScope] = []
         self._procedures: list[ProcDecl] = []
@@ -92,6 +107,11 @@ class _FactCollector:
             document_symbols=tuple(self._build_document_symbols()),
             diagnostics=tuple(self._diagnostics),
         )
+
+    def _remember_braced_tokens(self, parse_result: ParseResult) -> None:
+        for token in parse_result.tokens:
+            if token.kind == 'braced_word':
+                self._braced_token_text_by_span[token.span] = token.text
 
     def _collect_script(self, script: Script, context: _ExtractionContext) -> None:
         for command in script.commands:
@@ -288,6 +308,7 @@ class _FactCollector:
             text=embedded_body[0],
             start_position=embedded_body[1],
         )
+        self._remember_braced_tokens(body_result)
         self._diagnostics.extend(body_result.diagnostics)
         body_context = _ExtractionContext(
             uri=context.uri,
@@ -328,6 +349,7 @@ class _FactCollector:
             text=embedded_body[0],
             start_position=embedded_body[1],
         )
+        self._remember_braced_tokens(body_result)
         self._diagnostics.extend(body_result.diagnostics)
         self._collect_script(
             body_result.script,
@@ -386,6 +408,7 @@ class _FactCollector:
         if len(command.words) < 3:
             return
 
+        self._collect_if_condition(command.words[1], context)
         index = 2
         if word_static_text(command.words[index]) == 'then':
             index += 1
@@ -402,6 +425,7 @@ class _FactCollector:
                 index += 1
                 if index >= len(command.words):
                     return
+                self._collect_if_condition(command.words[index], context)
                 index += 1
                 if index < len(command.words) and word_static_text(command.words[index]) == 'then':
                     index += 1
@@ -446,8 +470,43 @@ class _FactCollector:
             text=embedded_body[0],
             start_position=embedded_body[1],
         )
+        self._remember_braced_tokens(body_result)
         self._diagnostics.extend(body_result.diagnostics)
         self._collect_script(body_result.script, context)
+
+    def _collect_if_condition(self, word: Word, context: _ExtractionContext) -> None:
+        if not isinstance(word, BracedWord):
+            return
+
+        source_text = self._braced_token_text_by_span.get(word.span)
+        if source_text is None:
+            return
+
+        condition_text = source_text[1:]
+        if condition_text.endswith('}'):
+            condition_text = condition_text[:-1]
+
+        for substitution in _scan_static_tcl_substitutions(condition_text, word.content_span.start):
+            if isinstance(substitution, _ConditionVariableSubstitution):
+                self._variable_references.append(
+                    VariableReference(
+                        uri=context.uri,
+                        name=substitution.name,
+                        namespace=context.namespace,
+                        scope_id=context.scope_id,
+                        procedure_symbol_id=context.procedure_symbol_id,
+                        span=substitution.span,
+                    )
+                )
+                continue
+
+            nested_result = self._parser.parse_embedded_script(
+                source_id=context.uri,
+                text=substitution.text,
+                start_position=substitution.content_span.start,
+            )
+            self._diagnostics.extend(nested_result.diagnostics)
+            self._collect_script(nested_result.script, context)
 
     def _record_variable_binding(
         self,
@@ -541,6 +600,137 @@ def _body_start(word: Word) -> Position:
 
 def _body_span(word: Word) -> Span:
     return word.content_span
+
+
+def _scan_static_tcl_substitutions(
+    text: str,
+    start_position: Position,
+) -> list[_ConditionVariableSubstitution | _ConditionCommandSubstitution]:
+    substitutions: list[_ConditionVariableSubstitution | _ConditionCommandSubstitution] = []
+    index = 0
+    position = start_position
+
+    while index < len(text):
+        current_char = text[index]
+        if current_char == '\\':
+            position = position.advance(current_char)
+            index += 1
+            if index < len(text):
+                position = position.advance(text[index])
+                index += 1
+            continue
+        if current_char == '$':
+            variable = _consume_static_variable_substitution(text, index, position)
+            if variable is not None:
+                substitutions.append(variable)
+                index += variable.span.end.offset - variable.span.start.offset
+                position = variable.span.end
+                continue
+            position = position.advance(current_char)
+            index += 1
+            continue
+        if current_char == '[':
+            command_substitution = _consume_static_command_substitution(text[index:], position)
+            if command_substitution is not None:
+                substitutions.append(command_substitution)
+                consumed = (
+                    command_substitution.span.end.offset
+                    - command_substitution.span.start.offset
+                )
+                index += consumed
+                position = command_substitution.span.end
+                continue
+        position = position.advance(current_char)
+        index += 1
+
+    return substitutions
+
+
+def _consume_static_variable_substitution(
+    text: str,
+    start_index: int,
+    start_position: Position,
+) -> _ConditionVariableSubstitution | None:
+    index = start_index + 1
+    position = start_position.advance('$')
+
+    if index >= len(text):
+        return None
+
+    current_char = text[index]
+    if current_char == '{':
+        position = position.advance(current_char)
+        index += 1
+        name_start = index
+        while index < len(text) and text[index] not in {'}', '\n'}:
+            position = position.advance(text[index])
+            index += 1
+        if index >= len(text) or text[index] != '}':
+            return None
+        name = text[name_start:index].strip()
+        position = position.advance('}')
+        if not name:
+            return None
+        return _ConditionVariableSubstitution(
+            name=name,
+            span=Span(start=start_position, end=position),
+        )
+
+    if current_char not in _SIMPLE_NAME_CHARS:
+        return None
+
+    while index < len(text) and text[index] in _SIMPLE_NAME_CHARS:
+        position = position.advance(text[index])
+        index += 1
+    return _ConditionVariableSubstitution(
+        name=text[start_index + 1 : index],
+        span=Span(start=start_position, end=position),
+    )
+
+
+def _consume_static_command_substitution(
+    text: str,
+    start_position: Position,
+) -> _ConditionCommandSubstitution | None:
+    index = 1
+    position = start_position.advance('[')
+    content_start = position
+
+    while index < len(text):
+        current_char = text[index]
+        if current_char == '\\':
+            position = position.advance(current_char)
+            index += 1
+            if index < len(text):
+                position = position.advance(text[index])
+                index += 1
+            continue
+        if current_char == '{':
+            _, consumed, position, _ = _consume_braced_item(text[index:], position)
+            index += consumed
+            continue
+        if current_char == '"':
+            _, consumed, position, _ = _consume_quoted_item(text[index:], position)
+            index += consumed
+            continue
+        if current_char == '[':
+            nested = _consume_static_command_substitution(text[index:], position)
+            if nested is None:
+                return None
+            index += nested.span.end.offset - nested.span.start.offset
+            position = nested.span.end
+            continue
+        if current_char == ']':
+            end_position = position.advance(']')
+            return _ConditionCommandSubstitution(
+                text=text[1:index],
+                span=Span(start=start_position, end=end_position),
+                content_span=Span(start=content_start, end=position),
+            )
+        position = position.advance(current_char)
+        index += 1
+
+    return None
 
 
 def _split_tcl_list(text: str, start_position: Position) -> list[_ListItem]:

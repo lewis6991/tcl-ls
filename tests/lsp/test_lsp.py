@@ -277,6 +277,32 @@ def test_language_service_analyzes_catch_bodies_and_result_variables() -> None:
     assert diagnostics == ()
 
 
+def test_language_service_resolves_references_inside_braced_if_conditions() -> None:
+    service = LanguageService()
+    diagnostics = service.open_document(
+        'file:///main.tcl',
+        'proc helper {} {return 1}\n'
+        'proc run {flag} {\n'
+        '    if {$flag && [helper]} {\n'
+        '        return ok\n'
+        '    }\n'
+        '}\n',
+        1,
+    )
+
+    assert diagnostics == ()
+
+    hover = service.hover('file:///main.tcl', 2, 9)
+    assert hover is not None
+    assert hover.contents == 'parameter flag'
+
+    definition_locations = service.definition('file:///main.tcl', 2, 18)
+    assert len(definition_locations) == 1
+    assert definition_locations[0].uri == 'file:///main.tcl'
+    assert definition_locations[0].span.start.line == 0
+    assert definition_locations[0].span.start.character == 5
+
+
 def test_language_service_reports_unresolved_packages(tmp_path: Path) -> None:
     service = LanguageService()
     main_uri = (tmp_path / 'missing.tcl').as_uri()
