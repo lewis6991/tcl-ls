@@ -97,6 +97,8 @@ class _UnitAnalysisReport:
 
 
 class _DocumentCache:
+    __slots__ = ('_documents', '_extractor', '_parser')
+
     def __init__(self, *, parser: Parser, extractor: FactExtractor) -> None:
         self._parser = parser
         self._extractor = extractor
@@ -118,6 +120,8 @@ class _DocumentCache:
 
 
 class _Palette:
+    __slots__ = ('enabled',)
+
     def __init__(self, enabled: bool) -> None:
         self.enabled = enabled
 
@@ -152,6 +156,20 @@ class _Palette:
 
 
 class _StreamReporter:
+    __slots__ = (
+        '_background_sources',
+        '_context_lines',
+        '_diagnostics_seen',
+        '_err',
+        '_last_status_update',
+        '_out',
+        '_palette',
+        '_progress_enabled',
+        '_rendered_files',
+        '_root',
+        '_status_visible',
+    )
+
     def __init__(
         self,
         *,

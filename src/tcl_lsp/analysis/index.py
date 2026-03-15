@@ -12,6 +12,15 @@ from tcl_lsp.analysis.model import (
 
 
 class WorkspaceIndex:
+    __slots__ = (
+        '_command_imports_by_namespace',
+        '_documents',
+        '_package_index_entries_by_name',
+        '_package_indexes_by_uri',
+        '_procedures_by_qualified_name',
+        '_provided_packages_by_name',
+    )
+
     def __init__(self) -> None:
         self._documents: dict[str, DocumentFacts] = {}
         self._package_indexes_by_uri: dict[str, tuple[PackageIndexEntry, ...]] = {}

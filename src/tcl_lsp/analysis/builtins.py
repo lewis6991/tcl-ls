@@ -89,7 +89,7 @@ def builtin_commands_for_packages(
 
 def builtin_commands_any(name: str) -> tuple[BuiltinCommand, ...]:
     matches: list[BuiltinCommand] = []
-    for package_name, package_commands in builtin_commands_by_package().items():
+    for package_commands in builtin_commands_by_package().values():
         command = package_commands.get(name)
         if command is None:
             continue

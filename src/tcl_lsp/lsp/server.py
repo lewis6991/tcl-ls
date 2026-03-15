@@ -37,6 +37,14 @@ _INVALID_PARAMS = -32602
 
 
 class LanguageServer:
+    __slots__ = (
+        '_exit_requested',
+        '_input_stream',
+        '_output_stream',
+        '_service',
+        '_shutdown_requested',
+    )
+
     def __init__(
         self,
         service: LanguageService | None = None,

@@ -23,6 +23,16 @@ class ManagedDocument:
 
 
 class LanguageService:
+    __slots__ = (
+        '_documents',
+        '_extractor',
+        '_failed_background_documents',
+        '_parser',
+        '_resolver',
+        '_scanned_package_roots',
+        '_workspace_index',
+    )
+
     def __init__(
         self,
         parser: Parser | None = None,

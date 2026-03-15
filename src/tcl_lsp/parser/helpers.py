@@ -23,6 +23,12 @@ def word_static_text(word: Word) -> str | None:
     if isinstance(word, BracedWord):
         return word.text
 
+    if len(word.parts) == 1:
+        part = word.parts[0]
+        if isinstance(part, LiteralText):
+            return part.text
+        return None
+
     parts: list[str] = []
     for part in word.parts:
         if isinstance(part, LiteralText):
@@ -33,10 +39,17 @@ def word_static_text(word: Word) -> str | None:
 
 
 def collect_variable_substitutions(word: Word) -> tuple[VariableSubstitution, ...]:
-    substitutions: list[VariableSubstitution] = []
     if isinstance(word, BracedWord):
-        return tuple(substitutions)
+        return ()
 
+    if len(word.parts) == 1:
+        part = word.parts[0]
+        if isinstance(part, VariableSubstitution):
+            return (part,)
+        if isinstance(part, LiteralText):
+            return ()
+
+    substitutions: list[VariableSubstitution] = []
     for part in word.parts:
         if isinstance(part, VariableSubstitution):
             substitutions.append(part)

@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-from tcl_lsp.common import Position, Span
+from tcl_lsp.common import Span
 from tcl_lsp.parser import word_static_text
 from tcl_lsp.parser.model import (
     BracedWord,
@@ -14,13 +14,6 @@ from tcl_lsp.parser.model import (
     VariableSubstitution,
     Word,
 )
-
-
-def extract_static_script(word: Word) -> tuple[str, Position] | None:
-    text = word_static_text(word)
-    if text is None:
-        return None
-    return text, _body_start(word)
 
 
 def command_documentation(command: Command) -> str | None:
@@ -37,10 +30,6 @@ def _comment_text(text: str) -> str:
         return text
     text = text[1:]
     return text[1:] if text.startswith(' ') else text
-
-
-def _body_start(word: Word) -> Position:
-    return word.content_span.start
 
 
 def body_span(word: Word) -> Span:

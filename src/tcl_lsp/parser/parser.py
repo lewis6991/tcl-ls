@@ -30,6 +30,8 @@ _BARE_WORD_PLAIN_TEXT_WITH_BRACKET_STOP_RUN = re.compile(r'[^ \t\r\f\n;\[$\\\]]+
 _COMMENT_TEXT_RUN = re.compile(r'[^\\\n]+')
 _HORIZONTAL_WHITESPACE_RUN = re.compile(r'[ \t\r\f]+')
 _QUOTED_WORD_PLAIN_TEXT_RUN = re.compile(r'[^"[$\\]+')
+_ESCAPE_MAP = {'n': '\n', 't': '\t', 'r': '\r'}
+_DOCUMENT_START_POSITION = Position(offset=0, line=0, character=0)
 
 
 @dataclass(slots=True)
@@ -39,14 +41,15 @@ class _TextBuffer:
 
 
 class Parser:
+    __slots__ = ()
+
     def parse_document(self, path: str, text: str) -> ParseResult:
-        implementation = _ParserImplementation(
+        return _ParserImplementation(
             source_id=path,
             text=text,
-            start_position=Position(offset=0, line=0, character=0),
+            start_position=_DOCUMENT_START_POSITION,
             collect_tokens=True,
-        )
-        return implementation.parse()
+        ).parse()
 
     def parse_embedded_script(
         self,
@@ -54,13 +57,12 @@ class Parser:
         text: str,
         start_position: Position,
     ) -> ParseResult:
-        implementation = _ParserImplementation(
+        return _ParserImplementation(
             source_id=source_id,
             text=text,
             start_position=start_position,
             collect_tokens=True,
-        )
-        return implementation.parse()
+        ).parse()
 
     def parse_embedded_script_for_analysis(
         self,
@@ -68,16 +70,28 @@ class Parser:
         text: str,
         start_position: Position,
     ) -> ParseResult:
-        implementation = _ParserImplementation(
+        return _ParserImplementation(
             source_id=source_id,
             text=text,
             start_position=start_position,
             collect_tokens=False,
-        )
-        return implementation.parse()
+        ).parse()
 
 
 class _ParserImplementation:
+    __slots__ = (
+        '_character',
+        '_collect_tokens',
+        '_diagnostics',
+        '_index',
+        '_line',
+        '_offset',
+        '_source_id',
+        '_text',
+        '_text_length',
+        '_tokens',
+    )
+
     def __init__(
         self,
         source_id: str,
@@ -189,8 +203,9 @@ class _ParserImplementation:
         start_index = self._index
         start_position = self._current_position()
         text = self._text
+        comment_text_match = _COMMENT_TEXT_RUN.match
         while not self._is_eof():
-            comment_text_run = _COMMENT_TEXT_RUN.match(text, self._index)
+            comment_text_run = comment_text_match(text, self._index)
             if comment_text_run is not None:
                 self._advance_plain_run(comment_text_run.end())
                 continue
@@ -272,9 +287,10 @@ class _ParserImplementation:
         buffer = _TextBuffer(start=None, pieces=[])
         parts: list[WordPart] = []
         text = self._text
+        quoted_text_match = _QUOTED_WORD_PLAIN_TEXT_RUN.match
 
         while not self._is_eof():
-            quoted_text_run = _QUOTED_WORD_PLAIN_TEXT_RUN.match(text, self._index)
+            quoted_text_run = quoted_text_match(text, self._index)
             if quoted_text_run is not None:
                 plain_text = quoted_text_run.group(0)
                 self._append_text(buffer, plain_text)
@@ -531,8 +547,7 @@ class _ParserImplementation:
             buffer.pieces.append('\\')
             return
         escaped_char = self._peek()
-        escape_map = {'n': '\n', 't': '\t', 'r': '\r'}
-        buffer.pieces.append(escape_map.get(escaped_char, escaped_char))
+        buffer.pieces.append(_ESCAPE_MAP.get(escaped_char, escaped_char))
         self._advance_char()
 
     def _flush_buffer(self, buffer: _TextBuffer, parts: list[WordPart]) -> None:
@@ -550,8 +565,10 @@ class _ParserImplementation:
         buffer.pieces.clear()
 
     def _consume_horizontal_whitespace(self) -> None:
+        whitespace_match = _HORIZONTAL_WHITESPACE_RUN.match
+        text = self._text
         while not self._is_eof():
-            whitespace_run = _HORIZONTAL_WHITESPACE_RUN.match(self._text, self._index)
+            whitespace_run = whitespace_match(text, self._index)
             if whitespace_run is not None:
                 self._advance_plain_run(whitespace_run.end())
                 continue
@@ -652,9 +669,11 @@ class _ParserImplementation:
         return Position(offset=self._offset + 1, line=self._line, character=self._character + 1)
 
     def _next_braced_special_index(self) -> int:
-        backslash_index = self._text.find('\\', self._index)
-        open_brace_index = self._text.find('{', self._index)
-        close_brace_index = self._text.find('}', self._index)
+        text = self._text
+        index = self._index
+        backslash_index = text.find('\\', index)
+        open_brace_index = text.find('{', index)
+        close_brace_index = text.find('}', index)
 
         next_index = self._text_length
         for candidate in (backslash_index, open_brace_index, close_brace_index):

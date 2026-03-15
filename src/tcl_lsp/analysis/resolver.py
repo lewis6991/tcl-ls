@@ -4,8 +4,6 @@ from dataclasses import dataclass
 
 from tcl_lsp.analysis.builtins import (
     BuiltinCommand,
-    builtin_command,
-    builtin_command_for_packages,
     builtin_commands_any,
     builtin_commands_for_packages,
 )
@@ -35,6 +33,8 @@ class _BindingSummary:
 
 
 class Resolver:
+    __slots__ = ()
+
     def analyze(
         self, uri: str, facts: DocumentFacts, workspace_index: WorkspaceIndex
     ) -> AnalysisResult:

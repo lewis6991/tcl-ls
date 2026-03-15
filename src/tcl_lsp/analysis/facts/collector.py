@@ -78,6 +78,8 @@ class _VariableTarget:
 
 
 class FactExtractor:
+    __slots__ = ('_parser',)
+
     def __init__(self, parser: Parser | None = None) -> None:
         self._parser = Parser() if parser is None else parser
 
@@ -94,6 +96,26 @@ class FactExtractor:
 
 
 class _FactCollector:
+    __slots__ = (
+        '_command_calls',
+        '_command_handlers',
+        '_command_imports',
+        '_diagnostics',
+        '_include_parse_result',
+        '_linked_variables_by_scope',
+        '_lowered_script',
+        '_namespaces',
+        '_package_index_entries',
+        '_package_provides',
+        '_package_requires',
+        '_parse_result',
+        '_parser',
+        '_procedures',
+        '_source_directives',
+        '_variable_bindings',
+        '_variable_references',
+    )
+
     def __init__(
         self,
         parser: Parser,

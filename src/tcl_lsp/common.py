@@ -14,6 +14,13 @@ class Position:
     character: int
 
     def advance(self, text: str) -> Position:
+        if not text:
+            return self
+        if len(text) == 1:
+            offset = self.offset + 1
+            if text == '\n':
+                return Position(offset=offset, line=self.line + 1, character=0)
+            return Position(offset=offset, line=self.line, character=self.character + 1)
         offset = self.offset
         line = self.line
         character = self.character
