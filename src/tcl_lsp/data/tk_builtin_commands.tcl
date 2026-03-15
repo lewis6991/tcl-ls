@@ -4,6 +4,9 @@
 # Create a button widget.
 meta command button {pathName ?options?}
 
+# Create or query event bindings.
+meta command bind {window ?sequence? ?script?}
+
 # Create a canvas widget.
 meta command canvas {pathName ?options?}
 
@@ -18,6 +21,9 @@ meta command entry {pathName ?options?}
 
 # Generate or inspect Tk events.
 meta command event {subcommand args}
+
+# Create, configure, or inspect named fonts.
+meta command font {subcommand args}
 
 # Query or change keyboard focus.
 meta command focus {args}
@@ -90,6 +96,9 @@ meta command tk_chooseDirectory {?option value ...?}
 
 # Open a message box dialog.
 meta command tk_messageBox {?option value ...?}
+
+# Wait for a Tk variable, visibility change, or window to complete.
+meta command tkwait {variable|visibility|window name}
 
 # Set the current application palette.
 meta command tk_setPalette {?background? ?option value ...?}

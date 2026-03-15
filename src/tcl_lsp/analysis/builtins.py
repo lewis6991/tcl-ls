@@ -17,6 +17,12 @@ _METADATA_PATHS: tuple[tuple[str, Path], ...] = (
     ('tcltest', _DATA_DIR / 'tcltest_builtin_commands.tcl'),
     ('msgcat', _DATA_DIR / 'msgcat_builtin_commands.tcl'),
     ('TclOO', _DATA_DIR / 'tcloo_builtin_commands.tcl'),
+    ('clay', _DATA_DIR / 'clay_builtin_commands.tcl'),
+    ('fileutil', _DATA_DIR / 'fileutil_builtin_commands.tcl'),
+    ('cmdline', _DATA_DIR / 'cmdline_builtin_commands.tcl'),
+    ('log', _DATA_DIR / 'log_builtin_commands.tcl'),
+    ('doctools::text', _DATA_DIR / 'doctools_text_builtin_commands.tcl'),
+    ('oo::meta', _DATA_DIR / 'oometa_builtin_commands.tcl'),
 )
 _PACKAGE_ALIASES = {'tcl::oo': 'TclOO'}
 

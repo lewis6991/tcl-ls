@@ -544,6 +544,77 @@ def test_analysis_resolves_required_tcloo_commands(parser: Parser) -> None:
     assert analysis.diagnostics == ()
 
 
+def test_analysis_resolves_common_tcllib_builtin_metadata(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///tcllib_builtin_metadata.tcl',
+        'package require clay\n'
+        'package require fileutil\n'
+        'package require cmdline\n'
+        'package require log\n'
+        'package require doctools::text\n'
+        'package require oo::meta\n'
+        'clay::define ::demo {}\n'
+        'fileutil::cat ./README\n'
+        'fileutil::findByPattern . -glob *.tcl\n'
+        'fileutil::writeFile ./out.txt contents\n'
+        'fileutil::tempfile tmp\n'
+        'fileutil::stripN /tmp/work/file.tcl 2\n'
+        'cmdline::getArgv0\n'
+        'log::log info hello\n'
+        'log::debug trace\n'
+        'text::begin\n'
+        'text::+ hello\n'
+        'text::newline\n'
+        'text::indented 2 {text::+ world}\n'
+        'text::done\n'
+        '::oo::meta::info ::demo getnull method_ensemble\n',
+    )
+    analysis = snapshot.analysis
+
+    resolution_by_name = {
+        resolution.reference.name: resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command'
+        and resolution.reference.name
+        in {
+            'clay::define',
+            'fileutil::cat',
+            'fileutil::findByPattern',
+            'fileutil::writeFile',
+            'fileutil::tempfile',
+            'fileutil::stripN',
+            'cmdline::getArgv0',
+            'log::log',
+            'log::debug',
+            'text::begin',
+            'text::+',
+            'text::newline',
+            'text::indented',
+            'text::done',
+            '::oo::meta::info',
+        }
+    }
+    assert resolution_by_name == {
+        'clay::define': 'resolved',
+        'fileutil::cat': 'resolved',
+        'fileutil::findByPattern': 'resolved',
+        'fileutil::writeFile': 'resolved',
+        'fileutil::tempfile': 'resolved',
+        'fileutil::stripN': 'resolved',
+        'cmdline::getArgv0': 'resolved',
+        'log::log': 'resolved',
+        'log::debug': 'resolved',
+        'text::begin': 'resolved',
+        'text::+': 'resolved',
+        'text::newline': 'resolved',
+        'text::indented': 'resolved',
+        'text::done': 'resolved',
+        '::oo::meta::info': 'resolved',
+    }
+    assert analysis.diagnostics == ()
+
+
 def test_analysis_treats_tcl_oo_alias_as_builtin_package(parser: Parser) -> None:
     snapshot = _analyze(
         parser,
@@ -596,6 +667,28 @@ def test_analysis_resolves_tcltest_commands_in_test_tcl_files_without_explicit_i
         if resolution.reference.kind == 'command' and resolution.reference.name == 'test'
     )
     assert resolution.uncertainty.state == 'resolved'
+    assert analysis.diagnostics == ()
+
+
+def test_analysis_resolves_additional_required_tk_commands(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///tk_more.tcl',
+        'package require Tk\n'
+        'bind . <Escape> {destroy .}\n'
+        'font families\n'
+        'tkwait visibility .\n',
+    )
+    analysis = snapshot.analysis
+
+    resolution_by_name = {
+        resolution.reference.name: resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command'
+    }
+    assert resolution_by_name['bind'] == 'resolved'
+    assert resolution_by_name['font'] == 'resolved'
+    assert resolution_by_name['tkwait'] == 'resolved'
     assert analysis.diagnostics == ()
 
 
