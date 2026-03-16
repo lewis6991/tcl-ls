@@ -69,6 +69,7 @@ This repository contains an early but working bootstrap of a Tcl language server
   - [x] `dynamic`
 - [x] Semantic diagnostics currently implemented:
   - [x] duplicate procedure declarations
+  - [x] wrong argument counts for statically resolved commands with simple arity metadata
   - [x] unresolved commands
   - [x] unresolved packages
   - [x] unresolved variables in procedure scope

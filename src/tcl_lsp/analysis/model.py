@@ -69,6 +69,19 @@ class ParameterDecl:
 
 
 @dataclass(frozen=True, slots=True)
+class CommandArity:
+    min_args: int
+    max_args: int | None
+
+    def accepts(self, arg_count: int) -> bool:
+        if arg_count < self.min_args:
+            return False
+        if self.max_args is not None and arg_count > self.max_args:
+            return False
+        return True
+
+
+@dataclass(frozen=True, slots=True)
 class ProcDecl:
     symbol_id: str
     uri: str
@@ -78,6 +91,7 @@ class ProcDecl:
     span: Span
     name_span: Span
     parameters: tuple[ParameterDecl, ...]
+    arity: CommandArity | None
     documentation: str | None
     body_span: Span | None
 

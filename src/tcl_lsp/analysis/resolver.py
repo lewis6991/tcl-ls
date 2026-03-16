@@ -13,6 +13,7 @@ from tcl_lsp.analysis.model import (
     AnalysisResult,
     AnalysisUncertainty,
     CommandCall,
+    CommandArity,
     DefinitionTarget,
     DocumentFacts,
     ProcDecl,
@@ -24,10 +25,14 @@ from tcl_lsp.analysis.model import (
 )
 from tcl_lsp.common import Diagnostic, HoverInfo, Location
 
+
 @dataclass(frozen=True, slots=True)
 class _BindingSummary:
     binding: VarBinding
     detail: str
+
+
+type _ResolvedCommandTarget = BuiltinCommand | ProcDecl
 
 
 class Resolver:
@@ -51,6 +56,7 @@ class Resolver:
 
         resolutions: list[ResolutionResult] = []
         resolved_references: list[ResolvedReference] = []
+        command_targets: dict[tuple[str, int, int, int, int], _ResolvedCommandTarget] = {}
 
         for proc in facts.procedures:
             duplicates = workspace_index.procedures_for_name(proc.qualified_name)
@@ -81,12 +87,14 @@ class Resolver:
             )
 
         for command_call in facts.command_calls:
-            resolution, command_hover = self._resolve_command(
+            resolution, command_hover, command_target = self._resolve_command(
                 command_call,
                 workspace_index,
                 required_packages,
             )
             resolutions.append(resolution)
+            if command_target is not None:
+                command_targets[_command_call_key(command_call)] = command_target
             if command_hover is not None:
                 hovers.append(command_hover)
             if resolution.uncertainty.state == 'resolved':
@@ -117,6 +125,13 @@ class Resolver:
                         code='ambiguous-command',
                     )
                 )
+
+        diagnostics.extend(
+            self._command_argument_diagnostics(
+                facts.command_calls,
+                command_targets,
+            )
+        )
 
         for variable_reference in facts.variable_references:
             resolution, variable_hover = self._resolve_variable(
@@ -218,7 +233,7 @@ class Resolver:
         command_call: CommandCall,
         workspace_index: WorkspaceIndex,
         required_packages: frozenset[str],
-    ) -> tuple[ResolutionResult, HoverInfo | None]:
+    ) -> tuple[ResolutionResult, HoverInfo | None, _ResolvedCommandTarget | None]:
         reference = ReferenceSite(
             uri=command_call.uri,
             kind='command',
@@ -241,6 +256,7 @@ class Resolver:
                     target_symbol_ids=(),
                 ),
                 None,
+                None,
             )
 
         builtin_name = _normalize_command_name(command_call.name)
@@ -260,6 +276,7 @@ class Resolver:
                     span=command_call.name_span,
                     contents=_builtin_hover(builtin),
                 ),
+                builtin,
             )
         if len(builtin_matches) > 1:
             return (
@@ -275,6 +292,7 @@ class Resolver:
                         for overload in builtin.overloads
                     ),
                 ),
+                None,
                 None,
             )
         if '::' in builtin_name:
@@ -299,6 +317,7 @@ class Resolver:
                         span=command_call.name_span,
                         contents=_builtin_hover(builtin),
                     ),
+                    builtin,
                 )
             if len(qualified_builtin_matches) > 1:
                 return (
@@ -317,6 +336,7 @@ class Resolver:
                             for overload in builtin.overloads
                         ),
                     ),
+                    None,
                     None,
                 )
 
@@ -352,6 +372,7 @@ class Resolver:
                         ),
                     ),
                     None,
+                    None,
                 )
         if builtin_from_import is not None:
             return (
@@ -372,6 +393,7 @@ class Resolver:
                     span=command_call.name_span,
                     contents=_builtin_hover(builtin_from_import),
                 ),
+                builtin_from_import,
             )
         if not matches:
             implicit_test_builtins = self._resolve_implicit_test_builtins(command_call)
@@ -392,6 +414,7 @@ class Resolver:
                         span=command_call.name_span,
                         contents=_builtin_hover(builtin),
                     ),
+                    builtin,
                 )
             if len(implicit_test_builtins) > 1:
                 return (
@@ -408,6 +431,7 @@ class Resolver:
                         ),
                     ),
                     None,
+                    None,
                 )
 
             package_name = _matching_required_package(command_call.name, required_packages)
@@ -422,6 +446,7 @@ class Resolver:
                         target_symbol_ids=(),
                     ),
                     None,
+                    None,
                 )
             return (
                 ResolutionResult(
@@ -433,6 +458,7 @@ class Resolver:
                     target_symbol_ids=(),
                 ),
                 None,
+                None,
             )
         if len(matches) > 1:
             return (
@@ -442,8 +468,9 @@ class Resolver:
                         state='ambiguous',
                         reason='Multiple procedures match this command name.',
                     ),
-                    target_symbol_ids=tuple(match.symbol_id for match in matches),
+                        target_symbol_ids=tuple(match.symbol_id for match in matches),
                 ),
+                None,
                 None,
             )
         if len(matches) == 1:
@@ -463,6 +490,7 @@ class Resolver:
                     target_symbol_ids=(proc.symbol_id,),
                 ),
                 HoverInfo(span=command_call.name_span, contents=detail),
+                proc,
             )
 
         return (
@@ -475,7 +503,24 @@ class Resolver:
                 target_symbol_ids=(),
             ),
             None,
+            None,
         )
+
+    def _command_argument_diagnostics(
+        self,
+        command_calls: tuple[CommandCall, ...],
+        command_targets: dict[tuple[str, int, int, int, int], _ResolvedCommandTarget],
+    ) -> tuple[Diagnostic, ...]:
+        diagnostics: list[Diagnostic] = []
+        for command_call in _most_specific_command_calls(command_calls):
+            command_target = command_targets.get(_command_call_key(command_call))
+            if command_target is None:
+                continue
+
+            diagnostic = _command_argument_diagnostic(command_call, command_target)
+            if diagnostic is not None:
+                diagnostics.append(diagnostic)
+        return tuple(diagnostics)
 
     def _resolve_variable(
         self,
@@ -555,6 +600,110 @@ class Resolver:
             return ()
 
         return builtin_commands_any(f'tcltest::{_normalize_command_name(command_call.name)}')
+
+
+def _command_argument_diagnostic(
+    command_call: CommandCall,
+    command_target: _ResolvedCommandTarget,
+) -> Diagnostic | None:
+    arg_count = len(command_call.arg_texts)
+    command_name = command_call.name or '<dynamic>'
+
+    if isinstance(command_target, ProcDecl):
+        if command_target.arity is None or command_target.arity.accepts(arg_count):
+            return None
+        expected = _arity_descriptions((command_target.arity,))
+    else:
+        overload_arities = tuple(overload.arity for overload in command_target.overloads)
+        if not overload_arities or any(arity is None for arity in overload_arities):
+            return None
+
+        supported_arities = tuple(arity for arity in overload_arities if arity is not None)
+        if any(arity.accepts(arg_count) for arity in supported_arities):
+            return None
+        expected = _arity_descriptions(supported_arities)
+
+    return Diagnostic(
+        span=command_call.span,
+        severity='error',
+        message=(
+            f'Wrong number of arguments for command `{command_name}`; '
+            f'expected {expected}, got {arg_count}.'
+        ),
+        source='analysis',
+        code='wrong-argument-count',
+    )
+
+
+def _arity_descriptions(arities: tuple[CommandArity, ...]) -> str:
+    unique_descriptions: dict[str, None] = {}
+    sorted_arities = sorted(
+        arities,
+        key=lambda arity: (
+            arity.min_args,
+            arity.max_args is None,
+            -1 if arity.max_args is None else arity.max_args,
+        ),
+    )
+    for arity in sorted_arities:
+        unique_descriptions.setdefault(_arity_description(arity), None)
+
+    descriptions = tuple(unique_descriptions)
+    if len(descriptions) == 1:
+        return descriptions[0]
+    if len(descriptions) == 2:
+        return f'{descriptions[0]} or {descriptions[1]}'
+    return ', '.join(descriptions[:-1]) + f', or {descriptions[-1]}'
+
+
+def _arity_description(arity: CommandArity) -> str:
+    min_args = arity.min_args
+    max_args = arity.max_args
+    if max_args is None:
+        return f'at least {min_args}'
+    if min_args == max_args:
+        return str(min_args)
+    return f'{min_args}..{max_args}'
+
+
+def _most_specific_command_calls(command_calls: tuple[CommandCall, ...]) -> tuple[CommandCall, ...]:
+    most_specific_by_span: dict[tuple[str, int, int], CommandCall] = {}
+    for command_call in command_calls:
+        key = (
+            command_call.uri,
+            command_call.span.start.offset,
+            command_call.span.end.offset,
+        )
+        current = most_specific_by_span.get(key)
+        if current is None or _command_call_specificity(command_call) > _command_call_specificity(
+            current
+        ):
+            most_specific_by_span[key] = command_call
+
+    return tuple(
+        sorted(
+            most_specific_by_span.values(),
+            key=lambda command_call: command_call.span.start.offset,
+        )
+    )
+
+
+def _command_call_specificity(command_call: CommandCall) -> tuple[int, int]:
+    static_segments = 0 if command_call.name is None else command_call.name.count(' ') + 1
+    return (
+        static_segments,
+        command_call.name_span.end.offset - command_call.name_span.start.offset,
+    )
+
+
+def _command_call_key(command_call: CommandCall) -> tuple[str, int, int, int, int]:
+    return (
+        command_call.uri,
+        command_call.span.start.offset,
+        command_call.span.end.offset,
+        command_call.name_span.start.offset,
+        command_call.name_span.end.offset,
+    )
 
 
 def _proc_detail(proc: ProcDecl) -> str:

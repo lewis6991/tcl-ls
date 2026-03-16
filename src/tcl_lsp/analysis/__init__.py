@@ -3,6 +3,7 @@ from tcl_lsp.analysis.index import WorkspaceIndex
 from tcl_lsp.analysis.model import (
     AnalysisResult,
     AnalysisUncertainty,
+    CommandArity,
     CommandCall,
     CommandImport,
     DefinitionTarget,
@@ -25,6 +26,7 @@ from tcl_lsp.analysis.resolver import Resolver
 __all__ = [
     'AnalysisResult',
     'AnalysisUncertainty',
+    'CommandArity',
     'CommandCall',
     'CommandImport',
     'DefinitionTarget',

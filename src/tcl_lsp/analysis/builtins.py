@@ -4,8 +4,9 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
+from tcl_lsp.analysis.arity import metadata_signature_arity
 from tcl_lsp.analysis.metadata_commands import MetadataCommand, load_metadata_commands
-from tcl_lsp.analysis.model import DefinitionTarget
+from tcl_lsp.analysis.model import CommandArity, DefinitionTarget
 from tcl_lsp.common import Location
 from tcl_lsp.metadata_paths import metadata_dir
 
@@ -32,6 +33,7 @@ _PACKAGE_ALIASES = {'tcl::oo': 'TclOO'}
 class BuiltinOverload:
     symbol_id: str
     signature: str
+    arity: CommandArity | None
     documentation: str
     location: Location
 
@@ -168,6 +170,7 @@ def _load_metadata_file(
                     metadata_command.name_span.start.offset,
                 ),
                 signature=_signature(metadata_command.name, metadata_command.signature),
+                arity=metadata_signature_arity(metadata_command.signature),
                 documentation=documentation,
                 location=Location(uri=metadata_command.uri, span=metadata_command.name_span),
             )

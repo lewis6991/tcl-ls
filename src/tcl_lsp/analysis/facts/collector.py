@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+
+from tcl_lsp.analysis.arity import proc_parameter_arity
 from tcl_lsp.analysis.builtins import builtin_command, core_annotated_metadata_commands
 from tcl_lsp.analysis.facts.lowering import (
     LoweredCatchCommand,
@@ -571,6 +573,7 @@ class _FactCollector:
                 uri=context.uri,
                 proc_symbol_id=proc_id,
             ),
+            arity=proc_parameter_arity(command.parameter_items),
             documentation=command.documentation,
             body_span=command.body_span,
         )
