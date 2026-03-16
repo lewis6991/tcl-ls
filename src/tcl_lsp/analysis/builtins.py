@@ -12,12 +12,13 @@ from tcl_lsp.parser.model import Token
 
 _META_DIR = metadata_dir()
 _CORE_PACKAGE = 'Tcl'
+_TCL_86_DIR = Path('tcl8.6')
 _BUILTIN_METADATA_PATHS: tuple[tuple[str, Path], ...] = (
-    (_CORE_PACKAGE, Path('tcl.tcl')),
-    ('Tk', Path('tk.tcl')),
-    ('tcltest', Path('tcltest.tcl')),
-    ('msgcat', Path('msgcat.tcl')),
-    ('TclOO', Path('tcloo.tcl')),
+    (_CORE_PACKAGE, _TCL_86_DIR / 'tcl.tcl'),
+    ('Tk', _TCL_86_DIR / 'tk.tcl'),
+    ('tcltest', _TCL_86_DIR / 'tcltest.tcl'),
+    ('msgcat', _TCL_86_DIR / 'msgcat.tcl'),
+    ('TclOO', _TCL_86_DIR / 'tcloo.tcl'),
     ('clay', Path('tcllib/clay.tcl')),
     ('fileutil', Path('tcllib/fileutil.tcl')),
     ('cmdline', Path('tcllib/cmdline.tcl')),

@@ -10,7 +10,7 @@ Refresh builtin subcommand metadata with:
 python3 scripts/generate_builtin_commands.py
 ```
 
-The generator updates `meta/tcl.tcl` in place and
+The generator updates `meta/tcl8.6/tcl.tcl` in place and
 supports `--input`, `--output`, `--doc-root`, `--tcl-doc-series`, and
 `--version-label` for versioned metadata workflows.
 
