@@ -1,28 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-from tcl_lsp.analysis import AnalysisResult, DocumentFacts, FactExtractor, Resolver, WorkspaceIndex
+from tcl_lsp.analysis import FactExtractor, Resolver, WorkspaceIndex
 from tcl_lsp.analysis.builtins import builtin_command
 from tcl_lsp.parser import Parser
 
-
-@dataclass(frozen=True, slots=True)
-class AnalysisSnapshot:
-    facts: DocumentFacts
-    analysis: AnalysisResult
-
-
-def _analyze(parser: Parser, uri: str, text: str) -> AnalysisSnapshot:
-    extractor = FactExtractor(parser)
-    resolver = Resolver()
-    workspace = WorkspaceIndex()
-
-    parse_result = parser.parse_document(uri, text)
-    facts = extractor.extract(parse_result)
-    workspace.update(facts.uri, facts)
-    analysis = resolver.analyze(facts.uri, facts, workspace)
-    return AnalysisSnapshot(facts=facts, analysis=analysis)
+from .support import analyze_document as _analyze
 
 
 def test_analysis_resolves_proc_calls_and_parameters(parser: Parser) -> None:
@@ -51,119 +33,6 @@ def test_analysis_resolves_proc_calls_and_parameters(parser: Parser) -> None:
     }
     assert variable_resolutions['name'] == 'resolved'
     assert analysis.diagnostics == ()
-
-
-def test_analysis_prefers_last_same_file_proc_definition(parser: Parser) -> None:
-    snapshot = _analyze(
-        parser,
-        'file:///broken.tcl',
-        'proc greet {} {puts $name}\nmissing_command\nproc greet {} {return ok}\ngreet\n',
-    )
-    analysis = snapshot.analysis
-
-    diagnostic_codes = [diagnostic.code for diagnostic in analysis.diagnostics]
-    assert 'unresolved-command' in diagnostic_codes
-    assert 'unresolved-variable' in diagnostic_codes
-    assert 'duplicate-proc' not in diagnostic_codes
-    assert 'ambiguous-command' not in diagnostic_codes
-
-    greet_resolution = next(
-        resolution
-        for resolution in analysis.resolutions
-        if resolution.reference.kind == 'command' and resolution.reference.name == 'greet'
-    )
-    assert greet_resolution.uncertainty.state == 'resolved'
-
-
-def test_analysis_reports_duplicate_procs_across_documents(parser: Parser) -> None:
-    extractor = FactExtractor(parser)
-    resolver = Resolver()
-    workspace = WorkspaceIndex()
-
-    first_parse = parser.parse_document('file:///first.tcl', 'proc greet {} {return ok}\n')
-    first_facts = extractor.extract(first_parse)
-    workspace.update(first_facts.uri, first_facts)
-
-    second_parse = parser.parse_document('file:///second.tcl', 'proc greet {} {return ok}\n')
-    second_facts = extractor.extract(second_parse)
-    workspace.update(second_facts.uri, second_facts)
-
-    analysis = resolver.analyze(first_facts.uri, first_facts, workspace)
-    assert [diagnostic.code for diagnostic in analysis.diagnostics] == ['duplicate-proc']
-
-
-def test_analysis_reports_wrong_builtin_argument_count(parser: Parser) -> None:
-    snapshot = _analyze(parser, 'file:///pwd_args.tcl', 'pwd extra\n')
-    analysis = snapshot.analysis
-
-    assert [diagnostic.code for diagnostic in analysis.diagnostics] == ['wrong-argument-count']
-    assert analysis.diagnostics[0].message == (
-        'Wrong number of arguments for command `pwd`; expected 0, got 1.'
-    )
-
-
-def test_analysis_reports_wrong_proc_argument_count(parser: Parser) -> None:
-    snapshot = _analyze(parser, 'file:///greet_args.tcl', 'proc greet {name} {}\ngreet\n')
-    analysis = snapshot.analysis
-
-    assert [diagnostic.code for diagnostic in analysis.diagnostics] == ['wrong-argument-count']
-    assert analysis.diagnostics[0].message == (
-        'Wrong number of arguments for command `greet`; expected 1, got 0.'
-    )
-
-
-def test_analysis_uses_proc_default_parameters_for_argument_checks(parser: Parser) -> None:
-    snapshot = _analyze(
-        parser,
-        'file:///greet_defaults.tcl',
-        'proc greet {name {title friend}} {}\ngreet Ada Dr Extra\n',
-    )
-    analysis = snapshot.analysis
-
-    assert [diagnostic.code for diagnostic in analysis.diagnostics] == ['wrong-argument-count']
-    assert analysis.diagnostics[0].message == (
-        'Wrong number of arguments for command `greet`; expected 1..2, got 3.'
-    )
-
-
-def test_analysis_checks_most_specific_builtin_subcommand_arguments(parser: Parser) -> None:
-    snapshot = _analyze(parser, 'file:///binary_encode_hex.tcl', 'binary encode hex\n')
-    analysis = snapshot.analysis
-
-    assert [diagnostic.code for diagnostic in analysis.diagnostics] == ['wrong-argument-count']
-    assert analysis.diagnostics[0].message == (
-        'Wrong number of arguments for command `binary encode hex`; expected 1, got 0.'
-    )
-
-
-def test_analysis_skips_unsupported_builtin_argument_signatures(parser: Parser) -> None:
-    snapshot = _analyze(parser, 'file:///binary_encode.tcl', 'binary encode\n')
-    assert snapshot.analysis.diagnostics == ()
-
-
-def test_analysis_reports_unknown_builtin_option(parser: Parser) -> None:
-    snapshot = _analyze(parser, 'file:///regexp_option.tcl', 'regexp -bogus pat text\n')
-    analysis = snapshot.analysis
-
-    assert [diagnostic.code for diagnostic in analysis.diagnostics] == ['unknown-option']
-    diagnostic = analysis.diagnostics[0]
-    assert diagnostic.message == 'Unknown option `-bogus` for command `regexp`.'
-    assert diagnostic.span.start.character == 7
-
-
-def test_analysis_reports_missing_builtin_option_value(parser: Parser) -> None:
-    snapshot = _analyze(parser, 'file:///regexp_missing_value.tcl', 'regexp -start\n')
-    analysis = snapshot.analysis
-
-    assert [diagnostic.code for diagnostic in analysis.diagnostics] == ['missing-option-value']
-    diagnostic = analysis.diagnostics[0]
-    assert diagnostic.message == 'Option `-start` for command `regexp` requires a value.'
-    assert diagnostic.span.start.character == 7
-
-
-def test_analysis_respects_option_stop_marker(parser: Parser) -> None:
-    snapshot = _analyze(parser, 'file:///return_stop.tcl', 'return -- -code error\n')
-    assert snapshot.analysis.diagnostics == ()
 
 
 def test_analysis_tracks_namespace_resolution(parser: Parser) -> None:
@@ -274,39 +143,6 @@ def test_analysis_variable_links_proc_references_to_namespace_bindings(parser: P
     assert len(counter_resolutions) == 2
     assert all(resolution.uncertainty.state == 'resolved' for resolution in counter_resolutions)
     assert analysis.diagnostics == ()
-
-
-def test_analysis_reports_ambiguous_proc_variable_bindings(parser: Parser) -> None:
-    snapshot = _analyze(
-        parser,
-        'file:///ambiguous_variable.tcl',
-        'set shared 0\n'
-        'proc run {shared} {\n'
-        '    global shared\n'
-        '    puts $shared\n'
-        '}\n',
-    )
-    analysis = snapshot.analysis
-
-    shared_resolutions = [
-        resolution
-        for resolution in analysis.resolutions
-        if resolution.reference.kind == 'variable'
-        and resolution.reference.name == 'shared'
-        and resolution.reference.procedure_symbol_id is not None
-    ]
-    assert len(shared_resolutions) == 2
-    assert all(resolution.uncertainty.state == 'ambiguous' for resolution in shared_resolutions)
-
-    ambiguous_variables = [
-        diagnostic for diagnostic in analysis.diagnostics if diagnostic.code == 'ambiguous-variable'
-    ]
-    assert len(ambiguous_variables) == 2
-    assert all(
-        diagnostic.message == 'Variable `shared` resolves to multiple bindings.'
-        for diagnostic in ambiguous_variables
-    )
-    assert [diagnostic.span.start.line for diagnostic in ambiguous_variables] == [2, 3]
 
 
 def test_analysis_treats_upvar_aliases_as_local_bindings(parser: Parser) -> None:
@@ -1261,44 +1097,6 @@ def test_analysis_resolves_references_inside_braced_if_conditions() -> None:
     assert len(flag_references) == 1
     assert flag_references[0].uncertainty.state == 'resolved'
     assert analysis.diagnostics == ()
-
-
-def test_analysis_preserves_diagnostic_spans_across_braced_line_continuations(
-    parser: Parser,
-) -> None:
-    source = (
-        'namespace eval Markdown {\n'
-        '    proc collect_references {line} {\n'
-        '        if {[regexp \\\n'
-        '                 {^foo$} \\\n'
-        '                 $line \\\n'
-        '                 match]\n'
-        '        } {\n'
-        '            return ok\n'
-        '        }\n'
-        '    }\n'
-        '    proc parse_inline {} {\n'
-        '        regexp {^\\s*#+} $line m\n'
-        '    }\n'
-        '}\n'
-    )
-    snapshot = _analyze(
-        parser,
-        'file:///markdown_like.tcl',
-        source,
-    )
-
-    unresolved_variables = [
-        diagnostic
-        for diagnostic in snapshot.analysis.diagnostics
-        if diagnostic.code == 'unresolved-variable'
-    ]
-    assert len(unresolved_variables) == 1
-
-    diagnostic = unresolved_variables[0]
-    assert diagnostic.message == 'Unresolved variable `line`.'
-    assert diagnostic.span.start.line == 11
-    assert source[diagnostic.span.start.offset : diagnostic.span.end.offset] == '$line'
 
 
 def test_analysis_tracks_nested_if_conditions_inside_command_substitutions() -> None:
