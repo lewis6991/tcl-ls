@@ -64,6 +64,7 @@ from tcl_lsp.parser.model import (
     BracedWord,
     Command,
     CommandSubstitution,
+    LiteralText,
     ParseResult,
     VariableSubstitution,
     Word,
@@ -1114,10 +1115,9 @@ class _FactCollector:
         )
 
     def _simple_variable_name(self, word: Word) -> str | None:
-        variable_name = word_static_text(word)
+        variable_name = _word_variable_name(word)
         if variable_name is None:
             return None
-        variable_name = _normalize_variable_name(variable_name)
         if not is_simple_name(variable_name):
             return None
         return variable_name
@@ -1381,3 +1381,32 @@ def _normalize_variable_name(name: str) -> str:
     if not is_simple_name(base_name):
         return name
     return base_name
+
+
+def _word_variable_name(word: Word) -> str | None:
+    variable_name = word_static_text(word)
+    if variable_name is not None:
+        return _normalize_variable_name(variable_name)
+
+    if isinstance(word, BracedWord):
+        return None
+
+    saw_open_paren = False
+    pieces: list[str] = []
+    for part in word.parts:
+        if isinstance(part, LiteralText):
+            if '(' in part.text:
+                saw_open_paren = True
+            pieces.append(part.text)
+            continue
+        if not saw_open_paren:
+            return None
+        pieces.append('x')
+
+    if not saw_open_paren:
+        return None
+
+    variable_name = _normalize_variable_name(''.join(pieces))
+    if not is_simple_name(variable_name):
+        return None
+    return variable_name

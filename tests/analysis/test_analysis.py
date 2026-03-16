@@ -850,6 +850,60 @@ def test_analysis_normalizes_punctuated_and_array_variable_names(parser: Parser)
     assert analysis.diagnostics == ()
 
 
+def test_analysis_resolves_dynamic_array_element_bindings(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///dynamic_array_bindings.tcl',
+        'proc run {n} {\n'
+        '    set p($n) ok\n'
+        '    puts $p($n)\n'
+        '}\n',
+    )
+    facts = snapshot.facts
+    analysis = snapshot.analysis
+
+    run_proc = next(proc for proc in facts.procedures if proc.qualified_name == '::run')
+    run_bindings = [
+        binding for binding in facts.variable_bindings if binding.scope_id == run_proc.symbol_id
+    ]
+    assert {(binding.name, binding.kind) for binding in run_bindings} >= {
+        ('n', 'parameter'),
+        ('p', 'set'),
+    }
+
+    variable_resolutions = [
+        resolution for resolution in analysis.resolutions if resolution.reference.kind == 'variable'
+    ]
+    assert {resolution.reference.name for resolution in variable_resolutions} == {'n', 'p'}
+    assert all(resolution.uncertainty.state == 'resolved' for resolution in variable_resolutions)
+    assert analysis.diagnostics == ()
+
+
+def test_analysis_does_not_normalize_dynamic_scalar_suffix_names(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///dynamic_scalar_suffix.tcl',
+        'proc run {n} {\n'
+        '    set p($n)suffix ok\n'
+        '    puts $p\n'
+        '}\n',
+    )
+    analysis = snapshot.analysis
+
+    variable_states = {
+        resolution.reference.name: resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'variable'
+    }
+    assert variable_states['n'] == 'resolved'
+    assert variable_states['p'] == 'unresolved'
+
+    diagnostics = [
+        diagnostic.code for diagnostic in analysis.diagnostics if diagnostic.code == 'unresolved-variable'
+    ]
+    assert diagnostics == ['unresolved-variable']
+
+
 def test_analysis_tracks_switch_branch_bodies_from_list_form(parser: Parser) -> None:
     snapshot = _analyze(
         parser,
