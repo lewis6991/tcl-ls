@@ -4,6 +4,8 @@ import json
 import sys
 from typing import BinaryIO, cast
 
+from pydantic import BaseModel, ValidationError
+
 from tcl_lsp.common import Diagnostic
 from tcl_lsp.lsp.conversion import (
     diagnostic_to_lsp,
@@ -15,18 +17,19 @@ from tcl_lsp.lsp.model import (
     DidChangeTextDocumentParams,
     DidCloseTextDocumentParams,
     DidOpenTextDocumentParams,
+    ErrorResponseMessage,
+    IncomingMessageEnvelope,
     InitializeResult,
+    JsonObject,
     JsonRpcError,
     JsonValue,
     NotificationMessage,
     OutgoingMessage,
-    PositionDict,
     PublishDiagnosticsParams,
     ReferenceParams,
-    ResponseMessage,
     ServerCapabilities,
-    TextDocumentContentChangeEvent,
-    TextDocumentIdentifier,
+    SuccessResponseMessage,
+    TextDocumentIdentifierParams,
     TextDocumentPositionParams,
 )
 from tcl_lsp.lsp.service import LanguageService
@@ -65,25 +68,29 @@ class LanguageServer:
             for response in self.process_message(message):
                 self._write_message(self._output_stream, response)
 
-    def process_message(self, raw_message: object) -> list[OutgoingMessage]:
-        message = _as_object(raw_message)
+    def process_message(self, raw_message: object) -> list[JsonObject]:
+        message = _validate_model(IncomingMessageEnvelope, raw_message)
         if message is None:
             return [
-                self._error_response(
-                    request_id=None, code=_INVALID_REQUEST, message='Invalid request.'
+                self._serialize_message(
+                    self._error_response(
+                        request_id=None, code=_INVALID_REQUEST, message='Invalid request.'
+                    )
                 )
             ]
 
-        method = message.get('method')
-        request_id = _message_id(message.get('id'))
-        params = message.get('params')
+        method = message.method
+        request_id = message.id
+        params = message.params
 
         if not isinstance(method, str):
             if request_id is None:
                 return []
             return [
-                self._error_response(
-                    request_id=request_id, code=_INVALID_REQUEST, message='Invalid request.'
+                self._serialize_message(
+                    self._error_response(
+                        request_id=request_id, code=_INVALID_REQUEST, message='Invalid request.'
+                    )
                 )
             ]
 
@@ -91,7 +98,11 @@ class LanguageServer:
             result = self._initialize_result()
             if request_id is None:
                 return []
-            return [self._success_response(request_id=request_id, result=result)]
+            return [
+                self._serialize_message(
+                    self._success_response(request_id=request_id, result=result)
+                )
+            ]
 
         if method == 'initialized':
             return []
@@ -100,144 +111,164 @@ class LanguageServer:
             self._shutdown_requested = True
             if request_id is None:
                 return []
-            return [self._success_response(request_id=request_id, result=None)]
+            return [
+                self._serialize_message(self._success_response(request_id=request_id, result=None))
+            ]
 
         if method == 'exit':
             self._exit_requested = True
             return []
 
         if method == 'textDocument/didOpen':
-            parsed = _parse_did_open_params(params)
+            parsed = _validate_model(DidOpenTextDocumentParams, params)
             if parsed is None:
                 return self._invalid_params(request_id)
             diagnostics = self._service.open_document(
-                uri=parsed['textDocument']['uri'],
-                text=parsed['textDocument']['text'],
-                version=parsed['textDocument']['version'],
+                uri=parsed.text_document.uri,
+                text=parsed.text_document.text,
+                version=parsed.text_document.version,
             )
-            return [self._publish_diagnostics(parsed['textDocument']['uri'], diagnostics)]
+            return [
+                self._serialize_message(
+                    self._publish_diagnostics(parsed.text_document.uri, diagnostics)
+                )
+            ]
 
         if method == 'textDocument/didChange':
-            parsed = _parse_did_change_params(params)
+            parsed = _validate_model(DidChangeTextDocumentParams, params)
             if parsed is None:
                 return self._invalid_params(request_id)
-            latest_change = parsed['contentChanges'][-1]
+            latest_change = parsed.content_changes[-1]
             diagnostics = self._service.change_document(
-                uri=parsed['textDocument']['uri'],
-                text=latest_change['text'],
-                version=parsed['textDocument']['version'],
+                uri=parsed.text_document.uri,
+                text=latest_change.text,
+                version=parsed.text_document.version,
             )
-            return [self._publish_diagnostics(parsed['textDocument']['uri'], diagnostics)]
+            return [
+                self._serialize_message(
+                    self._publish_diagnostics(parsed.text_document.uri, diagnostics)
+                )
+            ]
 
         if method == 'textDocument/didClose':
-            parsed = _parse_did_close_params(params)
+            parsed = _validate_model(DidCloseTextDocumentParams, params)
             if parsed is None:
                 return self._invalid_params(request_id)
-            uri = parsed['textDocument']['uri']
+            uri = parsed.text_document.uri
             self._service.close_document(uri)
-            return [self._publish_diagnostics(uri, ())]
+            return [self._serialize_message(self._publish_diagnostics(uri, ()))]
 
         if method == 'textDocument/definition':
-            parsed = _parse_text_document_position_params(params)
+            parsed = _validate_model(TextDocumentPositionParams, params)
             if parsed is None or request_id is None:
                 return self._invalid_params(request_id)
             locations = self._service.definition(
-                uri=parsed['textDocument']['uri'],
-                line=parsed['position']['line'],
-                character=parsed['position']['character'],
+                uri=parsed.text_document.uri,
+                line=parsed.position.line,
+                character=parsed.position.character,
             )
             result: JsonValue | None = [location_to_lsp(location) for location in locations] or None
-            return [self._success_response(request_id=request_id, result=result)]
+            return [
+                self._serialize_message(
+                    self._success_response(request_id=request_id, result=result)
+                )
+            ]
 
         if method == 'textDocument/references':
-            parsed = _parse_reference_params(params)
+            parsed = _validate_model(ReferenceParams, params)
             if parsed is None or request_id is None:
                 return self._invalid_params(request_id)
             locations = self._service.references(
-                uri=parsed['textDocument']['uri'],
-                line=parsed['position']['line'],
-                character=parsed['position']['character'],
-                include_declaration=parsed['context']['includeDeclaration'],
+                uri=parsed.text_document.uri,
+                line=parsed.position.line,
+                character=parsed.position.character,
+                include_declaration=parsed.context.include_declaration,
             )
             result = [location_to_lsp(location) for location in locations]
-            return [self._success_response(request_id=request_id, result=result)]
+            return [
+                self._serialize_message(
+                    self._success_response(request_id=request_id, result=result)
+                )
+            ]
 
         if method == 'textDocument/hover':
-            parsed = _parse_text_document_position_params(params)
+            parsed = _validate_model(TextDocumentPositionParams, params)
             if parsed is None or request_id is None:
                 return self._invalid_params(request_id)
             hover = self._service.hover(
-                uri=parsed['textDocument']['uri'],
-                line=parsed['position']['line'],
-                character=parsed['position']['character'],
+                uri=parsed.text_document.uri,
+                line=parsed.position.line,
+                character=parsed.position.character,
             )
             result = hover_to_lsp(hover) if hover is not None else None
-            return [self._success_response(request_id=request_id, result=result)]
+            return [
+                self._serialize_message(
+                    self._success_response(request_id=request_id, result=result)
+                )
+            ]
 
         if method == 'textDocument/documentSymbol':
-            parsed = _parse_text_document_identifier(params)
+            parsed = _validate_model(TextDocumentIdentifierParams, params)
             if parsed is None or request_id is None:
                 return self._invalid_params(request_id)
-            symbols = self._service.document_symbols(parsed['uri'])
+            symbols = self._service.document_symbols(parsed.text_document.uri)
             result = [document_symbol_to_lsp(symbol) for symbol in symbols]
-            return [self._success_response(request_id=request_id, result=result)]
+            return [
+                self._serialize_message(
+                    self._success_response(request_id=request_id, result=result)
+                )
+            ]
 
         if request_id is None:
             return []
         return [
-            self._error_response(
-                request_id=request_id, code=_METHOD_NOT_FOUND, message='Method not found.'
+            self._serialize_message(
+                self._error_response(
+                    request_id=request_id, code=_METHOD_NOT_FOUND, message='Method not found.'
+                )
             )
         ]
 
     def _initialize_result(self) -> InitializeResult:
-        capabilities: ServerCapabilities = {
-            'textDocumentSync': 1,
-            'definitionProvider': True,
-            'referencesProvider': True,
-            'hoverProvider': True,
-            'documentSymbolProvider': True,
-        }
-        return {'capabilities': capabilities}
+        capabilities = ServerCapabilities(
+            text_document_sync=1,
+            definition_provider=True,
+            references_provider=True,
+            hover_provider=True,
+            document_symbol_provider=True,
+        )
+        return InitializeResult(capabilities=capabilities)
 
     def _publish_diagnostics(
         self,
         uri: str,
         diagnostics: tuple[Diagnostic, ...],
     ) -> NotificationMessage:
-        params: PublishDiagnosticsParams = {
-            'uri': uri,
-            'diagnostics': [diagnostic_to_lsp(diagnostic) for diagnostic in diagnostics],
-        }
-        return {
-            'jsonrpc': '2.0',
-            'method': 'textDocument/publishDiagnostics',
-            'params': params,
-        }
+        params = PublishDiagnosticsParams(
+            uri=uri,
+            diagnostics=[diagnostic_to_lsp(diagnostic) for diagnostic in diagnostics],
+        )
+        return NotificationMessage(method='textDocument/publishDiagnostics', params=params)
 
-    def _success_response(self, request_id: int | str, result: JsonValue | None) -> ResponseMessage:
-        return {
-            'jsonrpc': '2.0',
-            'id': request_id,
-            'result': result,
-        }
+    def _success_response(
+        self, request_id: int | str, result: JsonValue | None
+    ) -> SuccessResponseMessage:
+        return SuccessResponseMessage(id=request_id, result=result)
 
     def _error_response(
         self, request_id: int | str | None, code: int, message: str
-    ) -> ResponseMessage:
-        error: JsonRpcError = {'code': code, 'message': message}
-        return {
-            'jsonrpc': '2.0',
-            'id': request_id,
-            'error': error,
-        }
+    ) -> ErrorResponseMessage:
+        error = JsonRpcError(code=code, message=message)
+        return ErrorResponseMessage(id=request_id, error=error)
 
-    def _invalid_params(self, request_id: int | str | None) -> list[OutgoingMessage]:
+    def _invalid_params(self, request_id: int | str | None) -> list[JsonObject]:
         if request_id is None:
             return []
         return [
-            self._error_response(
-                request_id=request_id, code=_INVALID_PARAMS, message='Invalid params.'
+            self._serialize_message(
+                self._error_response(
+                    request_id=request_id, code=_INVALID_PARAMS, message='Invalid params.'
+                )
             )
         ]
 
@@ -262,154 +293,19 @@ class LanguageServer:
         payload = stream.read(content_length)
         return cast(JsonValue, json.loads(payload.decode('utf-8')))
 
-    def _write_message(self, stream: BinaryIO, message: OutgoingMessage) -> None:
+    def _write_message(self, stream: BinaryIO, message: JsonObject) -> None:
         payload = json.dumps(message, separators=(',', ':'), ensure_ascii=False).encode('utf-8')
         header = f'Content-Length: {len(payload)}\r\n\r\n'.encode('ascii')
         stream.write(header)
         stream.write(payload)
         stream.flush()
 
+    def _serialize_message(self, message: OutgoingMessage) -> JsonObject:
+        return cast(JsonObject, message.model_dump())
 
-def _as_object(value: object) -> dict[str, object] | None:
-    if not isinstance(value, dict):
+
+def _validate_model[ModelT: BaseModel](model_type: type[ModelT], value: object) -> ModelT | None:
+    try:
+        return model_type.model_validate(value)
+    except ValidationError:
         return None
-    items = cast(dict[object, object], value).items()
-    result: dict[str, object] = {}
-    for key, item in items:
-        if not isinstance(key, str):
-            return None
-        result[key] = item
-    return result
-
-
-def _message_id(value: object) -> int | str | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int | str):
-        return value
-    return None
-
-
-def _parse_did_open_params(value: object) -> DidOpenTextDocumentParams | None:
-    payload = _as_object(value)
-    if payload is None:
-        return None
-    text_document = _as_object(payload.get('textDocument'))
-    if text_document is None:
-        return None
-    uri = text_document.get('uri')
-    language_id = text_document.get('languageId')
-    version = text_document.get('version')
-    text = text_document.get('text')
-    if (
-        not isinstance(uri, str)
-        or not isinstance(language_id, str)
-        or not _is_int(version)
-        or not isinstance(text, str)
-    ):
-        return None
-    return cast(
-        DidOpenTextDocumentParams,
-        {'textDocument': {'uri': uri, 'languageId': language_id, 'version': version, 'text': text}},
-    )
-
-
-def _parse_did_change_params(value: object) -> DidChangeTextDocumentParams | None:
-    payload = _as_object(value)
-    if payload is None:
-        return None
-    text_document = _as_object(payload.get('textDocument'))
-    changes = _as_list(payload.get('contentChanges'))
-    if text_document is None or changes is None or not changes:
-        return None
-    uri = text_document.get('uri')
-    version = text_document.get('version')
-    if not isinstance(uri, str) or not _is_int(version):
-        return None
-    parsed_changes: list[TextDocumentContentChangeEvent] = []
-    for change in changes:
-        change_object = _as_object(change)
-        if change_object is None:
-            return None
-        text = change_object.get('text')
-        if not isinstance(text, str):
-            return None
-        parsed_changes.append({'text': text})
-    return cast(
-        DidChangeTextDocumentParams,
-        {'textDocument': {'uri': uri, 'version': version}, 'contentChanges': parsed_changes},
-    )
-
-
-def _parse_did_close_params(value: object) -> DidCloseTextDocumentParams | None:
-    identifier = _parse_text_document_identifier(value)
-    if identifier is None:
-        return None
-    return cast(DidCloseTextDocumentParams, {'textDocument': identifier})
-
-
-def _parse_text_document_identifier(value: object) -> TextDocumentIdentifier | None:
-    payload = _as_object(value)
-    if payload is None:
-        return None
-    text_document = _as_object(payload.get('textDocument'))
-    if text_document is None:
-        return None
-    uri = text_document.get('uri')
-    if not isinstance(uri, str):
-        return None
-    return {'uri': uri}
-
-
-def _parse_text_document_position_params(value: object) -> TextDocumentPositionParams | None:
-    payload = _as_object(value)
-    if payload is None:
-        return None
-    identifier = _parse_text_document_identifier(payload)
-    position = _parse_position(payload.get('position'))
-    if identifier is None or position is None:
-        return None
-    return cast(TextDocumentPositionParams, {'textDocument': identifier, 'position': position})
-
-
-def _parse_reference_params(value: object) -> ReferenceParams | None:
-    payload = _as_object(value)
-    if payload is None:
-        return None
-    identifier = _parse_text_document_identifier(payload)
-    position = _parse_position(payload.get('position'))
-    context = _as_object(payload.get('context'))
-    if identifier is None or position is None or context is None:
-        return None
-    include_declaration = context.get('includeDeclaration')
-    if not isinstance(include_declaration, bool):
-        return None
-    return cast(
-        ReferenceParams,
-        {
-            'textDocument': identifier,
-            'position': position,
-            'context': {'includeDeclaration': include_declaration},
-        },
-    )
-
-
-def _parse_position(value: object) -> PositionDict | None:
-    payload = _as_object(value)
-    if payload is None:
-        return None
-    line = payload.get('line')
-    character = payload.get('character')
-    if not _is_int(line) or not _is_int(character):
-        return None
-    return cast('PositionDict', {'line': line, 'character': character})
-
-
-def _as_list(value: object) -> list[object] | None:
-    if isinstance(value, list):
-        return cast(list[object], value)
-    return None
-
-
-def _is_int(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool)

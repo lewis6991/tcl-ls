@@ -9,7 +9,7 @@ This repository contains an early but working bootstrap of a Tcl language server
   - `parser`
   - `analysis`
   - `lsp`
-- Structured data is modeled with dataclasses and `TypedDict`s.
+- Structured data is modeled with dataclasses and Pydantic protocol models at the LSP boundary.
 
 ## Status
 
