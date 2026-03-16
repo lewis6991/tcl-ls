@@ -9,6 +9,7 @@ from tcl_lsp.analysis.builtins import (
     is_builtin_package,
 )
 from tcl_lsp.analysis.index import WorkspaceIndex
+from tcl_lsp.analysis.metadata_commands import scan_command_options
 from tcl_lsp.analysis.model import (
     AnalysisResult,
     AnalysisUncertainty,
@@ -128,6 +129,12 @@ class Resolver:
 
         diagnostics.extend(
             self._command_argument_diagnostics(
+                facts.command_calls,
+                command_targets,
+            )
+        )
+        diagnostics.extend(
+            self._command_option_diagnostics(
                 facts.command_calls,
                 command_targets,
             )
@@ -522,6 +529,22 @@ class Resolver:
                 diagnostics.append(diagnostic)
         return tuple(diagnostics)
 
+    def _command_option_diagnostics(
+        self,
+        command_calls: tuple[CommandCall, ...],
+        command_targets: dict[tuple[str, int, int, int, int], _ResolvedCommandTarget],
+    ) -> tuple[Diagnostic, ...]:
+        diagnostics: list[Diagnostic] = []
+        for command_call in _most_specific_command_calls(command_calls):
+            command_target = command_targets.get(_command_call_key(command_call))
+            if command_target is None:
+                continue
+
+            diagnostic = _command_option_diagnostic(command_call, command_target)
+            if diagnostic is not None:
+                diagnostics.append(diagnostic)
+        return tuple(diagnostics)
+
     def _resolve_variable(
         self,
         variable_reference: VariableReference,
@@ -635,6 +658,49 @@ def _command_argument_diagnostic(
     )
 
 
+def _command_option_diagnostic(
+    command_call: CommandCall,
+    command_target: _ResolvedCommandTarget,
+) -> Diagnostic | None:
+    if isinstance(command_target, ProcDecl):
+        return None
+
+    options = _builtin_option_specs(command_target)
+    if options is None:
+        return None
+
+    scan_result = scan_command_options(command_call.arg_texts, options)
+    if scan_result.state in {'ok', 'dynamic'}:
+        return None
+
+    if scan_result.option_index is None or scan_result.option_name is None:
+        return None
+
+    span = _command_arg_span(command_call, scan_result.option_index) or command_call.span
+    if scan_result.state == 'unknown-option':
+        return Diagnostic(
+            span=span,
+            severity='error',
+            message=(
+                f'Unknown option `{scan_result.option_name}` '
+                f'for command `{command_call.name}`.'
+            ),
+            source='analysis',
+            code='unknown-option',
+        )
+
+    return Diagnostic(
+        span=span,
+        severity='error',
+        message=(
+            f'Option `{scan_result.option_name}` for command '
+            f'`{command_call.name}` requires a value.'
+        ),
+        source='analysis',
+        code='missing-option-value',
+    )
+
+
 def _arity_descriptions(arities: tuple[CommandArity, ...]) -> str:
     unique_descriptions: dict[str, None] = {}
     sorted_arities = sorted(
@@ -704,6 +770,24 @@ def _command_call_key(command_call: CommandCall) -> tuple[str, int, int, int, in
         command_call.name_span.start.offset,
         command_call.name_span.end.offset,
     )
+
+
+def _builtin_option_specs(builtin: BuiltinCommand):
+    if not builtin.overloads:
+        return None
+    if any(not overload.options for overload in builtin.overloads):
+        return None
+
+    first_options = builtin.overloads[0].options
+    if any(overload.options != first_options for overload in builtin.overloads[1:]):
+        return None
+    return first_options
+
+
+def _command_arg_span(command_call: CommandCall, index: int):
+    if index < 0 or index >= len(command_call.arg_spans):
+        return None
+    return command_call.arg_spans[index]
 
 
 def _proc_detail(proc: ProcDecl) -> str:

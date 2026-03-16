@@ -5,7 +5,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from tcl_lsp.analysis.arity import metadata_signature_arity
-from tcl_lsp.analysis.metadata_commands import MetadataCommand, load_metadata_commands
+from tcl_lsp.analysis.metadata_commands import MetadataCommand, MetadataOption, load_metadata_commands
 from tcl_lsp.analysis.model import CommandArity, DefinitionTarget
 from tcl_lsp.common import Location
 from tcl_lsp.metadata_paths import metadata_dir
@@ -34,6 +34,7 @@ class BuiltinOverload:
     symbol_id: str
     signature: str
     arity: CommandArity | None
+    options: tuple[MetadataOption, ...]
     documentation: str
     location: Location
 
@@ -171,6 +172,7 @@ def _load_metadata_file(
                 ),
                 signature=_signature(metadata_command.name, metadata_command.signature),
                 arity=metadata_signature_arity(metadata_command.signature),
+                options=metadata_command.options,
                 documentation=documentation,
                 location=Location(uri=metadata_command.uri, span=metadata_command.name_span),
             )

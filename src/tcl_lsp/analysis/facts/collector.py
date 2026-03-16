@@ -245,6 +245,7 @@ class _FactCollector:
             command_span=syntax_command.span,
             name_span=command_name_word.span,
             arg_texts=tuple(word_static_text(word) for word in syntax_command.words[1:]),
+            arg_spans=tuple(word.span for word in syntax_command.words[1:]),
             context=context,
         )
 
@@ -261,6 +262,7 @@ class _FactCollector:
         command_span: Span,
         name_span: Span,
         arg_texts: tuple[str | None, ...],
+        arg_spans: tuple[Span, ...],
         context: _ExtractionContext,
     ) -> None:
         self._command_calls.append(
@@ -268,6 +270,7 @@ class _FactCollector:
                 uri=context.uri,
                 name=command_name,
                 arg_texts=arg_texts,
+                arg_spans=arg_spans,
                 namespace=context.namespace,
                 scope_id=context.scope_id,
                 procedure_symbol_id=context.procedure_symbol_id,
@@ -299,6 +302,7 @@ class _FactCollector:
                 command_span=command.span,
                 name_span=word.content_span,
                 arg_texts=tuple(word_static_text(argument) for argument in command.words[index + 1 :]),
+                arg_spans=tuple(argument.span for argument in command.words[index + 1 :]),
                 context=context,
             )
 

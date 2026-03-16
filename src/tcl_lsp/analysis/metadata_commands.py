@@ -15,6 +15,7 @@ _META_DIR = metadata_dir()
 
 type SourceBase = Literal['call-source-directory', 'proc-source-parent']
 type MetadataOptionKind = Literal['flag', 'value', 'stop']
+type OptionScanState = Literal['ok', 'dynamic', 'unknown-option', 'missing-option-value']
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +30,14 @@ class MetadataSelector:
 class MetadataOption:
     name: str
     kind: MetadataOptionKind
+
+
+@dataclass(frozen=True, slots=True)
+class OptionScanResult:
+    state: OptionScanState
+    positional_indices: tuple[int, ...]
+    option_index: int | None = None
+    option_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,9 +154,10 @@ def select_argument_indices(
     options: tuple[MetadataOption, ...],
 ) -> tuple[int, ...] | None:
     if selector.after_options:
-        positional_indices = _positional_argument_indices(arg_texts, options)
-        if positional_indices is None:
+        scan_result = scan_command_options(arg_texts, options)
+        if scan_result.state not in {'ok', 'dynamic'}:
             return None
+        positional_indices = scan_result.positional_indices
         if selector.start_index >= len(positional_indices):
             return ()
         if selector.all_remaining:
@@ -161,12 +171,15 @@ def select_argument_indices(
     return (selector.start_index,)
 
 
-def _positional_argument_indices(
+def scan_command_options(
     arg_texts: tuple[str | None, ...],
     options: tuple[MetadataOption, ...],
-) -> tuple[int, ...] | None:
+) -> OptionScanResult:
     if not options:
-        return tuple(range(len(arg_texts)))
+        return OptionScanResult(
+            state='ok',
+            positional_indices=tuple(range(len(arg_texts))),
+        )
 
     option_specs = {option.name: option for option in options}
     positional_indices: list[int] = []
@@ -175,27 +188,49 @@ def _positional_argument_indices(
         arg_text = arg_texts[index]
         if arg_text is None:
             positional_indices.extend(range(index, len(arg_texts)))
-            break
+            return OptionScanResult(
+                state='dynamic',
+                positional_indices=tuple(positional_indices),
+            )
 
         option = option_specs.get(arg_text)
         if option is None:
             if arg_text.startswith('-') and arg_text != '-':
-                return None
+                return OptionScanResult(
+                    state='unknown-option',
+                    positional_indices=tuple(positional_indices),
+                    option_index=index,
+                    option_name=arg_text,
+                )
             positional_indices.extend(range(index, len(arg_texts)))
-            break
+            return OptionScanResult(
+                state='ok',
+                positional_indices=tuple(positional_indices),
+            )
 
         if option.kind == 'flag':
             index += 1
             continue
         if option.kind == 'value':
             if index + 1 >= len(arg_texts):
-                return None
+                return OptionScanResult(
+                    state='missing-option-value',
+                    positional_indices=tuple(positional_indices),
+                    option_index=index,
+                    option_name=arg_text,
+                )
             index += 2
             continue
         positional_indices.extend(range(index + 1, len(arg_texts)))
-        break
+        return OptionScanResult(
+            state='ok',
+            positional_indices=tuple(positional_indices),
+        )
 
-    return tuple(positional_indices)
+    return OptionScanResult(
+        state='ok',
+        positional_indices=tuple(positional_indices),
+    )
 
 
 def _parse_annotation_body(

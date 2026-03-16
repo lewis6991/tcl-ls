@@ -141,6 +141,31 @@ def test_analysis_skips_unsupported_builtin_argument_signatures(parser: Parser) 
     assert snapshot.analysis.diagnostics == ()
 
 
+def test_analysis_reports_unknown_builtin_option(parser: Parser) -> None:
+    snapshot = _analyze(parser, 'file:///regexp_option.tcl', 'regexp -bogus pat text\n')
+    analysis = snapshot.analysis
+
+    assert [diagnostic.code for diagnostic in analysis.diagnostics] == ['unknown-option']
+    diagnostic = analysis.diagnostics[0]
+    assert diagnostic.message == 'Unknown option `-bogus` for command `regexp`.'
+    assert diagnostic.span.start.character == 7
+
+
+def test_analysis_reports_missing_builtin_option_value(parser: Parser) -> None:
+    snapshot = _analyze(parser, 'file:///regexp_missing_value.tcl', 'regexp -start\n')
+    analysis = snapshot.analysis
+
+    assert [diagnostic.code for diagnostic in analysis.diagnostics] == ['missing-option-value']
+    diagnostic = analysis.diagnostics[0]
+    assert diagnostic.message == 'Option `-start` for command `regexp` requires a value.'
+    assert diagnostic.span.start.character == 7
+
+
+def test_analysis_respects_option_stop_marker(parser: Parser) -> None:
+    snapshot = _analyze(parser, 'file:///return_stop.tcl', 'return -- -code error\n')
+    assert snapshot.analysis.diagnostics == ()
+
+
 def test_analysis_tracks_namespace_resolution(parser: Parser) -> None:
     snapshot = _analyze(
         parser,

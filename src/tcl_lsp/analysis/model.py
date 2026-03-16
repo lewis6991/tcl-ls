@@ -155,6 +155,7 @@ class CommandCall:
     uri: str
     name: str | None
     arg_texts: tuple[str | None, ...]
+    arg_spans: tuple[Span, ...]
     namespace: str
     scope_id: str
     procedure_symbol_id: str | None
