@@ -19,6 +19,7 @@ from .missing_option_value import MissingOptionValueChecker
 from .unknown_option import UnknownOptionChecker
 from .unresolved_command import UnresolvedCommandChecker
 from .unresolved_package import UnresolvedPackageChecker
+from .unknown_subcommand import UnknownSubcommandChecker
 from .unresolved_variable import UnresolvedVariableChecker
 from .wrong_argument_count import WrongArgumentCountChecker
 
@@ -28,6 +29,7 @@ DIAGNOSTIC_CHECKERS: Final[tuple[DiagnosticChecker, ...]] = (
     UnresolvedCommandChecker(),
     AmbiguousCommandChecker(),
     WrongArgumentCountChecker(),
+    UnknownSubcommandChecker(),
     UnknownOptionChecker(),
     MissingOptionValueChecker(),
     AmbiguousVariableChecker(),
