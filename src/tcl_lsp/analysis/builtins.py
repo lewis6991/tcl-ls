@@ -49,6 +49,7 @@ class BuiltinOverload:
 class BuiltinCommand:
     name: str
     package: str
+    metadata_path_name: str
     overloads: tuple[BuiltinOverload, ...]
 
 
@@ -194,7 +195,12 @@ def _load_metadata_file(
         raise RuntimeError('No builtin command metadata entries were loaded.')
 
     return {
-        name: BuiltinCommand(name=name, package=package_name, overloads=tuple(overloads))
+        name: BuiltinCommand(
+            name=name,
+            package=package_name,
+            metadata_path_name=metadata_path.name,
+            overloads=tuple(overloads),
+        )
         for name, overloads in commands.items()
     }
 

@@ -13,6 +13,15 @@ meta command fileutil::stripN {path n}
 # Make a path relative to a prefix when possible.
 meta command fileutil::stripPath {prefix path}
 
+# Split file-writing options from output variable names.
+# Stores the parsed option list, filename, and trailing named outputs in the
+# caller variables passed by name.
+meta command fileutil::Spec {check alist ov fv args} {
+    bind 3 set
+    bind 4 set
+    bind 5.. set
+}
+
 # Write data to a file with optional encoding and translation control.
 meta command fileutil::writeFile {args}
 

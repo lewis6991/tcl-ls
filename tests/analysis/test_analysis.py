@@ -5,6 +5,7 @@ from tcl_lsp.analysis.builtins import builtin_command
 from tcl_lsp.parser import Parser
 
 from .support import analyze_document as _analyze
+from .support import analyze_workspace as _analyze_workspace
 
 
 def test_analysis_resolves_proc_calls_and_parameters(parser: Parser) -> None:
@@ -208,6 +209,91 @@ def test_analysis_resolves_commands_via_namespace_import(parser: Parser) -> None
         if resolution.reference.kind == 'command' and resolution.reference.name == 'greet'
     )
     assert greet_resolution.uncertainty.state == 'resolved'
+    assert analysis.diagnostics == ()
+
+
+def test_analysis_resolves_builtin_package_metadata_bindings(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///cmdline_bindings.tcl',
+        'package require cmdline\n'
+        'proc run {args} {\n'
+        '    while {[cmdline::getopt args {verbose output.arg} opt arg]} {\n'
+        '        puts $opt\n'
+        '        puts $arg\n'
+        '    }\n'
+        '}\n',
+    )
+    analysis = snapshot.analysis
+
+    variable_states = {
+        resolution.reference.name: resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'variable'
+    }
+    assert variable_states['opt'] == 'resolved'
+    assert variable_states['arg'] == 'resolved'
+    assert analysis.diagnostics == ()
+
+
+def test_analysis_resolves_workspace_package_helper_metadata_bindings(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///tmp/fileutil.tcl',
+        'namespace eval fileutil {\n'
+        '    proc Spec {check alist ov fv args} {}\n'
+        '    proc run {args} {\n'
+        '        Spec Writable $args opts fname data\n'
+        '        puts $opts\n'
+        '        puts $fname\n'
+        '        puts $data\n'
+        '    }\n'
+        '}\n',
+    )
+    analysis = snapshot.analysis
+
+    variable_states = {
+        resolution.reference.name: resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'variable'
+    }
+    assert variable_states['opts'] == 'resolved'
+    assert variable_states['fname'] == 'resolved'
+    assert variable_states['data'] == 'resolved'
+    assert analysis.diagnostics == ()
+
+
+def test_analysis_resolves_imported_package_helper_metadata_bindings(parser: Parser) -> None:
+    snapshot = _analyze_workspace(
+        parser,
+        documents=(
+            (
+                'file:///tmp/asn.tcl',
+                'namespace eval asn {\n'
+                '    proc asnGetApplication {data_var appNumber_var {content_var {}} {encodingType_var {}}} {}\n'
+                '}\n',
+            ),
+            (
+                'file:///tmp/ldap.tcl',
+                'namespace eval ldap {\n'
+                '    namespace import ::asn::*\n'
+                '    proc run {response} {\n'
+                '        asnGetApplication response appNum\n'
+                '        puts $appNum\n'
+                '    }\n'
+                '}\n',
+            ),
+        ),
+        target_uri='file:///tmp/ldap.tcl',
+    )
+    analysis = snapshot.analysis
+
+    appnum_resolution = next(
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'variable' and resolution.reference.name == 'appNum'
+    )
+    assert appnum_resolution.uncertainty.state == 'resolved'
     assert analysis.diagnostics == ()
 
 

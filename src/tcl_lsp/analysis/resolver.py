@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 
 from tcl_lsp.analysis.builtins import (
     BuiltinCommand,
@@ -15,10 +16,20 @@ from tcl_lsp.analysis.diagnostics import (
     collect_diagnostics,
 )
 from tcl_lsp.analysis.diagnostics.helpers import command_call_key
+from tcl_lsp.analysis.facts.parsing import is_simple_name, split_tcl_list
+from tcl_lsp.analysis.facts.utils import name_tail, variable_symbol_id
 from tcl_lsp.analysis.index import WorkspaceIndex
+from tcl_lsp.analysis.metadata_commands import (
+    MetadataBind,
+    MetadataCommand,
+    all_metadata_commands,
+    select_argument_indices,
+)
 from tcl_lsp.analysis.model import (
     AnalysisResult,
     AnalysisUncertainty,
+    BINDING_KINDS,
+    BindingKind,
     CommandCall,
     DefinitionTarget,
     DocumentFacts,
@@ -30,6 +41,7 @@ from tcl_lsp.analysis.model import (
     VariableReference,
 )
 from tcl_lsp.common import HoverInfo, Location
+from tcl_lsp.workspace import source_id_to_path
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,10 +62,6 @@ class Resolver:
         additional_required_packages: frozenset[str] = frozenset(),
     ) -> AnalysisResult:
         diagnostics = list(facts.diagnostics)
-        definitions = self._build_definitions(facts)
-        definition_by_symbol = {definition.symbol_id: definition for definition in definitions}
-        binding_lookup = self._build_binding_lookup(facts.variable_bindings)
-        hovers = self._build_definition_hovers(definitions)
         required_packages = frozenset(requirement.name for requirement in facts.package_requires)
         required_packages |= additional_required_packages
 
@@ -61,6 +69,8 @@ class Resolver:
         resolved_references: list[ResolvedReference] = []
         command_targets: dict[tuple[str, int, int, int, int], ResolvedCommandTarget] = {}
         command_resolutions: list[ResolvedCommand] = []
+        resolved_command_targets: list[tuple[CommandCall, ResolvedCommandTarget]] = []
+        command_hovers: list[HoverInfo] = []
 
         for command_call in facts.command_calls:
             resolution, command_hover, command_target = self._resolve_command(
@@ -77,8 +87,9 @@ class Resolver:
             )
             if command_target is not None:
                 command_targets[command_call_key(command_call)] = command_target
+                resolved_command_targets.append((command_call, command_target))
             if command_hover is not None:
-                hovers.append(command_hover)
+                command_hovers.append(command_hover)
             if resolution.uncertainty.state == 'resolved':
                 for symbol_id in resolution.target_symbol_ids:
                     resolved_references.append(
@@ -87,6 +98,18 @@ class Resolver:
                             reference=resolution.reference,
                         )
                     )
+
+        metadata_bindings = self._metadata_bindings(
+            facts.variable_bindings,
+            resolved_command_targets,
+        )
+        all_bindings = facts.variable_bindings + metadata_bindings
+        definitions = self._build_definitions(facts, all_bindings)
+        definition_by_symbol = {definition.symbol_id: definition for definition in definitions}
+        binding_lookup = self._build_binding_lookup(all_bindings)
+        hovers = self._build_definition_hovers(definitions)
+        hovers.extend(command_hovers)
+
         variable_resolutions: list[ResolvedVariable] = []
 
         for variable_reference in facts.variable_references:
@@ -136,7 +159,11 @@ class Resolver:
             hovers=tuple(hovers),
         )
 
-    def _build_definitions(self, facts: DocumentFacts) -> list[DefinitionTarget]:
+    def _build_definitions(
+        self,
+        facts: DocumentFacts,
+        bindings: tuple[VarBinding, ...],
+    ) -> list[DefinitionTarget]:
         definitions: list[DefinitionTarget] = []
         for proc in facts.procedures:
             definitions.append(
@@ -150,7 +177,7 @@ class Resolver:
             )
 
         first_binding_by_symbol: dict[str, VarBinding] = {}
-        for binding in sorted(facts.variable_bindings, key=lambda item: item.span.start.offset):
+        for binding in sorted(bindings, key=lambda item: item.span.start.offset):
             first_binding_by_symbol.setdefault(binding.symbol_id, binding)
 
         for binding in first_binding_by_symbol.values():
@@ -189,6 +216,71 @@ class Resolver:
             HoverInfo(span=definition.location.span, contents=definition.detail)
             for definition in definitions
         ]
+
+    def _metadata_bindings(
+        self,
+        existing_bindings: tuple[VarBinding, ...],
+        resolved_command_targets: list[tuple[CommandCall, ResolvedCommandTarget]],
+    ) -> tuple[VarBinding, ...]:
+        symbol_ids_by_key: dict[tuple[str, str], str] = {}
+        for binding in existing_bindings:
+            symbol_ids_by_key.setdefault((binding.scope_id, binding.name), binding.symbol_id)
+
+        metadata_bindings: list[VarBinding] = []
+        for command_call, target in resolved_command_targets:
+            metadata_command = _metadata_command_for_target(target)
+            if metadata_command is None:
+                continue
+
+            for annotation in metadata_command.annotations:
+                if not isinstance(annotation, MetadataBind):
+                    continue
+
+                selected_indices = select_argument_indices(
+                    annotation.selector,
+                    command_call.arg_texts,
+                    metadata_command.options,
+                    command_call.arg_expanded,
+                )
+                if selected_indices is None:
+                    continue
+
+                binding_kind = _metadata_binding_kind(metadata_command, annotation)
+                for index in selected_indices:
+                    if index >= len(command_call.arg_texts):
+                        continue
+
+                    argument_text = command_call.arg_texts[index]
+                    if argument_text is None:
+                        continue
+
+                    argument_span = command_call.arg_spans[index]
+                    if annotation.selector.list_mode:
+                        for item in split_tcl_list(argument_text, argument_span.start):
+                            binding = _metadata_var_binding(
+                                command_call,
+                                item.text,
+                                item.span,
+                                binding_kind,
+                                symbol_ids_by_key,
+                            )
+                            if binding is None:
+                                continue
+                            metadata_bindings.append(binding)
+                        continue
+
+                    binding = _metadata_var_binding(
+                        command_call,
+                        argument_text,
+                        argument_span,
+                        binding_kind,
+                        symbol_ids_by_key,
+                    )
+                    if binding is None:
+                        continue
+                    metadata_bindings.append(binding)
+
+        return tuple(metadata_bindings)
 
     def _resolve_command(
         self,
@@ -546,6 +638,97 @@ class Resolver:
             return ()
 
         return builtin_commands_any(f'tcltest::{_normalize_command_name(command_call.name)}')
+
+
+def _metadata_var_binding(
+    command_call: CommandCall,
+    argument_text: str,
+    span,
+    kind: BindingKind,
+    symbol_ids_by_key: dict[tuple[str, str], str],
+) -> VarBinding | None:
+    variable_name = _metadata_variable_name(argument_text)
+    if variable_name is None:
+        return None
+
+    key = (command_call.scope_id, variable_name)
+    symbol_id = symbol_ids_by_key.setdefault(
+        key,
+        variable_symbol_id(command_call.uri, command_call.scope_id, variable_name),
+    )
+    return VarBinding(
+        symbol_id=symbol_id,
+        uri=command_call.uri,
+        name=variable_name,
+        scope_id=command_call.scope_id,
+        namespace=command_call.namespace,
+        procedure_symbol_id=command_call.procedure_symbol_id,
+        kind=kind,
+        span=span,
+    )
+
+
+@lru_cache(maxsize=1)
+def _annotated_metadata_commands() -> dict[tuple[str, str], MetadataCommand]:
+    commands_by_key: dict[tuple[str, str], MetadataCommand] = {}
+    for metadata_command in all_metadata_commands():
+        if not any(isinstance(annotation, MetadataBind) for annotation in metadata_command.annotations):
+            continue
+
+        key = (metadata_command.metadata_path.name, metadata_command.name)
+        existing = commands_by_key.get(key)
+        if existing is not None and (
+            existing.options != metadata_command.options
+            or existing.annotations != metadata_command.annotations
+        ):
+            raise RuntimeError(
+                f'Conflicting metadata binding annotations for `{metadata_command.name}` in '
+                f'`{metadata_command.metadata_path.name}`.'
+            )
+        commands_by_key[key] = metadata_command
+    return commands_by_key
+
+
+def _metadata_command_for_target(target: ResolvedCommandTarget) -> MetadataCommand | None:
+    if isinstance(target, BuiltinCommand):
+        return _annotated_metadata_commands().get((target.metadata_path_name, target.name))
+
+    source_path = source_id_to_path(target.uri)
+    if source_path is None:
+        return None
+    return _annotated_metadata_commands().get(
+        (source_path.name, _normalize_command_name(target.qualified_name))
+    )
+
+
+def _metadata_binding_kind(
+    metadata_command: MetadataCommand,
+    annotation: MetadataBind,
+) -> BindingKind:
+    if annotation.kind is not None:
+        return annotation.kind
+
+    inferred_kind = name_tail(metadata_command.name.rsplit(' ', 1)[-1])
+    if inferred_kind not in BINDING_KINDS:
+        raise RuntimeError(
+            f'Metadata command `{metadata_command.name}` requires an explicit binding kind.'
+        )
+    return inferred_kind
+
+
+def _metadata_variable_name(name: str) -> str | None:
+    while name.endswith(':') and not name.endswith('::'):
+        name = name[:-1]
+
+    open_paren = name.find('(')
+    if open_paren > 0 and name.endswith(')'):
+        base_name = name[:open_paren]
+        if is_simple_name(base_name):
+            name = base_name
+
+    if not is_simple_name(name):
+        return None
+    return name
 
 
 def _proc_detail(proc: ProcDecl) -> str:
