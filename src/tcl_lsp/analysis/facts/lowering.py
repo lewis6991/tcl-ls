@@ -135,6 +135,15 @@ _EMPTY_LOWERED_WORD_REFERENCES = LoweredWordReferences(
 )
 
 
+def _braced_word_raw_content(word: BracedWord) -> str:
+    raw_text = word.raw_text
+    if raw_text.startswith('{'):
+        raw_text = raw_text[1:]
+    if raw_text.endswith('}'):
+        raw_text = raw_text[:-1]
+    return raw_text
+
+
 @dataclass(frozen=True, slots=True)
 class LoweringResult:
     script: LoweredScript
@@ -403,13 +412,12 @@ class _Lowerer:
         if not isinstance(word, BracedWord):
             return None
 
-        condition_text = word.raw_text[1:]
-        if condition_text.endswith('}'):
-            condition_text = condition_text[:-1]
-
         variable_substitutions: list[ConditionVariableSubstitution] = []
         command_substitutions: list[LoweredScript] = []
-        for substitution in scan_static_tcl_substitutions(condition_text, word.content_span.start):
+        for substitution in scan_static_tcl_substitutions(
+            _braced_word_raw_content(word),
+            word.content_span.start,
+        ):
             if isinstance(substitution, ConditionVariableSubstitution):
                 variable_substitutions.append(substitution)
                 continue
@@ -427,7 +435,10 @@ class _Lowerer:
             return None
         if isinstance(word, BracedWord):
             return LoweredScriptBody(
-                script=self._lower_embedded_script(word.text, word.content_span.start)
+                script=self._lower_embedded_script(
+                    _braced_word_raw_content(word),
+                    word.content_span.start,
+                )
             )
         text = word_static_text(word)
         if text is None:

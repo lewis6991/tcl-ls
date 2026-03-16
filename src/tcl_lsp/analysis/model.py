@@ -18,6 +18,8 @@ type BindingKind = Literal[
     'lassign',
     'lmap',
     'parameter',
+    'regexp',
+    'regsub',
     'scan',
     'set',
     'switch',

@@ -844,6 +844,46 @@ def test_analysis_tracks_additional_builtin_variable_writers_and_outputs(parser:
     assert analysis.diagnostics == ()
 
 
+def test_analysis_tracks_regexp_and_regsub_output_variables(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///regexp_outputs.tcl',
+        'proc run {text} {\n'
+        '    regexp -start 1 -indices {(..)(..)} $text match left right\n'
+        '    regsub -all -start 1 {foo} $text bar replaced\n'
+        '    puts $match\n'
+        '    puts $left\n'
+        '    puts $right\n'
+        '    puts $replaced\n'
+        '}\n',
+    )
+    facts = snapshot.facts
+    analysis = snapshot.analysis
+
+    run_proc = next(proc for proc in facts.procedures if proc.qualified_name == '::run')
+    bindings_by_name = {
+        binding.name: binding.kind
+        for binding in facts.variable_bindings
+        if binding.scope_id == run_proc.symbol_id
+    }
+    assert bindings_by_name['match'] == 'regexp'
+    assert bindings_by_name['left'] == 'regexp'
+    assert bindings_by_name['right'] == 'regexp'
+    assert bindings_by_name['replaced'] == 'regsub'
+
+    variable_resolutions = {
+        resolution.reference.name: resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'variable'
+    }
+    assert variable_resolutions['text'] == 'resolved'
+    assert variable_resolutions['match'] == 'resolved'
+    assert variable_resolutions['left'] == 'resolved'
+    assert variable_resolutions['right'] == 'resolved'
+    assert variable_resolutions['replaced'] == 'resolved'
+    assert analysis.diagnostics == ()
+
+
 def test_analysis_normalizes_punctuated_and_array_variable_names(parser: Parser) -> None:
     snapshot = _analyze(
         parser,
@@ -1114,6 +1154,44 @@ def test_analysis_resolves_references_inside_braced_if_conditions() -> None:
     assert len(flag_references) == 1
     assert flag_references[0].uncertainty.state == 'resolved'
     assert analysis.diagnostics == ()
+
+
+def test_analysis_preserves_diagnostic_spans_across_braced_line_continuations(
+    parser: Parser,
+) -> None:
+    source = (
+        'namespace eval Markdown {\n'
+        '    proc collect_references {line} {\n'
+        '        if {[regexp \\\n'
+        '                 {^foo$} \\\n'
+        '                 $line \\\n'
+        '                 match]\n'
+        '        } {\n'
+        '            return ok\n'
+        '        }\n'
+        '    }\n'
+        '    proc parse_inline {} {\n'
+        '        regexp {^\\s*#+} $line m\n'
+        '    }\n'
+        '}\n'
+    )
+    snapshot = _analyze(
+        parser,
+        'file:///markdown_like.tcl',
+        source,
+    )
+
+    unresolved_variables = [
+        diagnostic
+        for diagnostic in snapshot.analysis.diagnostics
+        if diagnostic.code == 'unresolved-variable'
+    ]
+    assert len(unresolved_variables) == 1
+
+    diagnostic = unresolved_variables[0]
+    assert diagnostic.message == 'Unresolved variable `line`.'
+    assert diagnostic.span.start.line == 11
+    assert source[diagnostic.span.start.offset : diagnostic.span.end.offset] == '$line'
 
 
 def test_analysis_tracks_nested_if_conditions_inside_command_substitutions() -> None:

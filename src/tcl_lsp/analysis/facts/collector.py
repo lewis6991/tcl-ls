@@ -154,6 +154,8 @@ class _FactCollector:
             'incr': self._collect_incr,
             'lappend': self._collect_lappend,
             'lassign': self._collect_lassign,
+            'regexp': self._collect_regexp,
+            'regsub': self._collect_regsub,
             'scan': self._collect_scan,
             'source': self._collect_source,
             'upvar': self._collect_upvar,
@@ -560,6 +562,19 @@ class _FactCollector:
             return
         for variable_word in command.words[4:]:
             self._record_simple_binding_word(variable_word, context, kind='scan')
+
+    def _collect_regexp(self, command: Command, context: _ExtractionContext) -> None:
+        value_start = self._regex_value_start_index(command)
+        if value_start is None or len(command.words) < value_start + 3:
+            return
+        for variable_word in command.words[value_start + 2 :]:
+            self._record_simple_binding_word(variable_word, context, kind='regexp')
+
+    def _collect_regsub(self, command: Command, context: _ExtractionContext) -> None:
+        value_start = self._regex_value_start_index(command)
+        if value_start is None or len(command.words) <= value_start + 3:
+            return
+        self._record_simple_binding_word(command.words[value_start + 3], context, kind='regsub')
 
     def _collect_lowered_foreach(
         self,
@@ -997,6 +1012,37 @@ class _FactCollector:
             context=context,
             kind=kind,
         )
+
+    def _regex_value_start_index(self, command: Command) -> int | None:
+        index = 1
+        while index < len(command.words):
+            option = word_static_text(command.words[index])
+            if option is None:
+                return index
+            if option == '--':
+                return index + 1 if index + 1 < len(command.words) else None
+            if option in {
+                '-all',
+                '-about',
+                '-expanded',
+                '-indices',
+                '-inline',
+                '-line',
+                '-lineanchor',
+                '-linestop',
+                '-nocase',
+            }:
+                index += 1
+                continue
+            if option == '-start':
+                if index + 1 >= len(command.words):
+                    return None
+                index += 2
+                continue
+            if option.startswith('-'):
+                return None
+            return index
+        return None
 
     def _record_simple_reference_word(self, word: Word, context: _ExtractionContext) -> None:
         variable_name = self._simple_variable_name(word)
