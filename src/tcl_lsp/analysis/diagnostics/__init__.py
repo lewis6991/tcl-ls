@@ -6,6 +6,7 @@ from typing import Final
 from tcl_lsp.common import Diagnostic
 
 from .ambiguous_command import AmbiguousCommandChecker
+from .ambiguous_variable import AmbiguousVariableChecker
 from .base import (
     DiagnosticChecker,
     DiagnosticContext,
@@ -29,8 +30,10 @@ DIAGNOSTIC_CHECKERS: Final[tuple[DiagnosticChecker, ...]] = (
     WrongArgumentCountChecker(),
     UnknownOptionChecker(),
     MissingOptionValueChecker(),
+    AmbiguousVariableChecker(),
     UnresolvedVariableChecker(),
 )
+
 
 def collect_diagnostics(context: DiagnosticContext) -> Iterable[Diagnostic]:
     for checker in DIAGNOSTIC_CHECKERS:

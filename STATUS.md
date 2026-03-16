@@ -68,6 +68,7 @@ This repository contains an early but working bootstrap of a Tcl language server
   - [x] `ambiguous`
   - [x] `dynamic`
 - [x] Semantic diagnostics currently implemented:
+  - [x] ambiguous variable bindings in procedure scope
   - [x] duplicate procedure declarations
   - [x] missing option values for commands with metadata option specs
   - [x] unknown options for commands with metadata option specs
