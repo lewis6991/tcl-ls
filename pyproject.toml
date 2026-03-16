@@ -24,6 +24,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/tcl_lsp"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"meta" = "tcl_lsp/meta"
+
 [tool.ruff]
 target-version = "py314"
 line-length = 100

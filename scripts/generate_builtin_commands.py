@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-_DEFAULT_METADATA_PATH = _REPO_ROOT / 'src' / 'tcl_lsp' / 'data' / 'tcl_builtin_commands.tcl'
+_DEFAULT_METADATA_PATH = _REPO_ROOT / 'meta' / 'tcl.tcl'
 _DEFAULT_DOC_ROOT_TEMPLATE = 'https://www.tcl-lang.org/man/tcl{series}/TclCmd'
 _GENERATOR_NOTE = (
     '# Generated subcommand sections are maintained by '

@@ -6,23 +6,24 @@ from pathlib import Path
 
 from tcl_lsp.analysis.model import DefinitionTarget
 from tcl_lsp.common import Location
+from tcl_lsp.metadata_paths import metadata_dir
 from tcl_lsp.parser import Parser, word_static_text
 from tcl_lsp.parser.model import Token
 
-_DATA_DIR = Path(__file__).resolve().parents[1] / 'data'
+_META_DIR = metadata_dir()
 _CORE_PACKAGE = 'Tcl'
-_METADATA_PATHS: tuple[tuple[str, Path], ...] = (
-    (_CORE_PACKAGE, _DATA_DIR / 'tcl_builtin_commands.tcl'),
-    ('Tk', _DATA_DIR / 'tk_builtin_commands.tcl'),
-    ('tcltest', _DATA_DIR / 'tcltest_builtin_commands.tcl'),
-    ('msgcat', _DATA_DIR / 'msgcat_builtin_commands.tcl'),
-    ('TclOO', _DATA_DIR / 'tcloo_builtin_commands.tcl'),
-    ('clay', _DATA_DIR / 'clay_builtin_commands.tcl'),
-    ('fileutil', _DATA_DIR / 'fileutil_builtin_commands.tcl'),
-    ('cmdline', _DATA_DIR / 'cmdline_builtin_commands.tcl'),
-    ('log', _DATA_DIR / 'log_builtin_commands.tcl'),
-    ('doctools::text', _DATA_DIR / 'doctools_text_builtin_commands.tcl'),
-    ('oo::meta', _DATA_DIR / 'oometa_builtin_commands.tcl'),
+_BUILTIN_METADATA_PATHS: tuple[tuple[str, Path], ...] = (
+    (_CORE_PACKAGE, Path('tcl.tcl')),
+    ('Tk', Path('tk.tcl')),
+    ('tcltest', Path('tcltest.tcl')),
+    ('msgcat', Path('msgcat.tcl')),
+    ('TclOO', Path('tcloo.tcl')),
+    ('clay', Path('tcllib/clay.tcl')),
+    ('fileutil', Path('tcllib/fileutil.tcl')),
+    ('cmdline', Path('tcllib/cmdline.tcl')),
+    ('log', Path('tcllib/log.tcl')),
+    ('doctools::text', Path('tcllib/doctools_text.tcl')),
+    ('oo::meta', Path('tcllib/oo_meta.tcl')),
 )
 _PACKAGE_ALIASES = {'tcl::oo': 'TclOO'}
 
@@ -50,10 +51,10 @@ def builtin_commands() -> dict[str, BuiltinCommand]:
 @lru_cache(maxsize=1)
 def builtin_commands_by_package() -> dict[str, dict[str, BuiltinCommand]]:
     commands_by_package: dict[str, dict[str, BuiltinCommand]] = {}
-    for package_name, metadata_path in _METADATA_PATHS:
+    for package_name, metadata_relpath in _BUILTIN_METADATA_PATHS:
         commands_by_package[package_name] = _load_metadata_file(
             package_name=package_name,
-            metadata_path=metadata_path,
+            metadata_path=_META_DIR / metadata_relpath,
         )
     return commands_by_package
 
@@ -182,7 +183,6 @@ def _load_metadata_file(
         name: BuiltinCommand(name=name, package=package_name, overloads=tuple(overloads))
         for name, overloads in commands.items()
     }
-
 
 def _command_documentation(comments: tuple[Token, ...]) -> str | None:
     if not comments:

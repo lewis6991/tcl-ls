@@ -1,1 +1,0 @@
-"""Bundled Tcl metadata files."""

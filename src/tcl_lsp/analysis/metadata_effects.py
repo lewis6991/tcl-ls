@@ -10,11 +10,12 @@ from tcl_lsp.analysis.facts.parsing import split_tcl_list
 from tcl_lsp.analysis.index import WorkspaceIndex
 from tcl_lsp.analysis.model import CommandCall, DocumentFacts, ProcDecl
 from tcl_lsp.common import Position
+from tcl_lsp.metadata_paths import metadata_dir
 from tcl_lsp.parser import Parser, word_static_text
 from tcl_lsp.workspace import source_id_to_path
 
-_DATA_DIR = Path(__file__).resolve().parents[1] / 'data'
-_EFFECTS_METADATA_PATH = _DATA_DIR / 'helper_command_effects.tcl'
+_META_DIR = metadata_dir()
+_EFFECTS_METADATA_PATH = _META_DIR / 'tcllib' / 'helper_command_effects.tcl'
 
 type SourceBase = Literal['call-source-directory', 'proc-source-parent']
 
