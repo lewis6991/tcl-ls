@@ -27,7 +27,8 @@ meta command regexp {args} {
 ```
 
 The optional body is declarative analysis metadata. Current annotations are:
-`option`, `bind`, `ref`, `script-body`, `source`, and `package`.
+`option`, `keyword`, `subcommand`, `bind`, `ref`, `script-body`,
+`source`, and `package`.
 
 ## Diagnostics
 

@@ -16,6 +16,7 @@ _META_DIR = metadata_dir()
 type SourceBase = Literal['call-source-directory', 'proc-source-parent']
 type MetadataOptionKind = Literal['flag', 'value', 'stop']
 type OptionScanState = Literal['ok', 'dynamic', 'unknown-option', 'missing-option-value']
+type MetadataValueSetKind = Literal['keyword', 'subcommand']
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +31,13 @@ class MetadataSelector:
 class MetadataOption:
     name: str
     kind: MetadataOptionKind
+
+
+@dataclass(frozen=True, slots=True)
+class MetadataValueSet:
+    selector: MetadataSelector
+    kind: MetadataValueSetKind
+    values: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +90,7 @@ class MetadataCommand:
     documentation: str | None
     name_span: Span
     options: tuple[MetadataOption, ...]
+    value_sets: tuple[MetadataValueSet, ...]
     annotations: tuple[MetadataAnnotation, ...]
 
 
@@ -116,9 +125,10 @@ def load_metadata_commands(metadata_path: Path) -> tuple[MetadataCommand, ...]:
             )
 
         options: tuple[MetadataOption, ...] = ()
+        value_sets: tuple[MetadataValueSet, ...] = ()
         annotations: tuple[MetadataAnnotation, ...] = ()
         if len(command.words) == 5:
-            options, annotations = _parse_annotation_body(
+            options, value_sets, annotations = _parse_annotation_body(
                 metadata_uri=metadata_uri,
                 command_name=command_name,
                 body_text=_metadata_body_text(command.words[4]),
@@ -133,11 +143,14 @@ def load_metadata_commands(metadata_path: Path) -> tuple[MetadataCommand, ...]:
                 documentation=_command_documentation(command.leading_comments),
                 name_span=command.words[2].content_span,
                 options=options,
+                value_sets=value_sets,
                 annotations=annotations,
             )
         )
 
-    return tuple(commands)
+    if not commands:
+        return ()
+    return _commands_with_derived_subcommands(tuple(commands))
 
 
 @lru_cache(maxsize=1)
@@ -238,7 +251,7 @@ def _parse_annotation_body(
     metadata_uri: str,
     command_name: str,
     body_text: str,
-) -> tuple[tuple[MetadataOption, ...], tuple[MetadataAnnotation, ...]]:
+) -> tuple[tuple[MetadataOption, ...], tuple[MetadataValueSet, ...], tuple[MetadataAnnotation, ...]]:
     annotation_uri = f'{metadata_uri}#{command_name}'
     parse_result = Parser().parse_document(path=annotation_uri, text=body_text)
     if parse_result.diagnostics:
@@ -246,6 +259,7 @@ def _parse_annotation_body(
         raise RuntimeError(f'Invalid metadata command annotations for `{command_name}`: {message}')
 
     options: list[MetadataOption] = []
+    value_sets: list[MetadataValueSet] = []
     annotations: list[MetadataAnnotation] = []
     for command in parse_result.script.commands:
         annotation_name = word_static_text(command.words[0])
@@ -256,6 +270,12 @@ def _parse_annotation_body(
 
         if annotation_name == 'option':
             options.append(_parse_option_annotation(command, command_name))
+            continue
+        if annotation_name == 'keyword':
+            value_sets.append(_parse_value_set_annotation(command, command_name, kind='keyword'))
+            continue
+        if annotation_name == 'subcommand':
+            value_sets.append(_parse_value_set_annotation(command, command_name, kind='subcommand'))
             continue
         if annotation_name == 'bind':
             annotations.append(_parse_bind_annotation(command, command_name))
@@ -276,7 +296,7 @@ def _parse_annotation_body(
             f'Unknown metadata command annotation `{annotation_name}` for `{command_name}`.'
         )
 
-    return tuple(options), tuple(annotations)
+    return tuple(options), tuple(value_sets), tuple(annotations)
 
 
 def _parse_option_annotation(command: Command, command_name: str) -> MetadataOption:
@@ -290,6 +310,28 @@ def _parse_option_annotation(command: Command, command_name: str) -> MetadataOpt
     raise RuntimeError(
         f'Option annotations for `{command_name}` must be `option name`, '
         '`option name value`, or `option -- stop`.'
+    )
+
+
+def _parse_value_set_annotation(
+    command: Command,
+    command_name: str,
+    *,
+    kind: MetadataValueSetKind,
+) -> MetadataValueSet:
+    words = _annotation_words(command, command_name)
+    selector, consumed = _parse_selector_tokens(words[1:], command_name=command_name)
+    values = tuple(words[consumed + 1 :])
+    if consumed >= len(words) - 1 or not values:
+        raise RuntimeError(
+            f'{kind.title()} annotations for `{command_name}` must be '
+            f'`{kind} selector value ...`.'
+        )
+    _validate_single_argument_selector(selector, command_name, kind=kind)
+    return MetadataValueSet(
+        selector=selector,
+        kind=kind,
+        values=values,
     )
 
 
@@ -368,6 +410,18 @@ def _validate_package_selector(selector: MetadataSelector, command_name: str) ->
         )
 
 
+def _validate_single_argument_selector(
+    selector: MetadataSelector,
+    command_name: str,
+    *,
+    kind: MetadataValueSetKind,
+) -> None:
+    if selector.list_mode or selector.all_remaining:
+        raise RuntimeError(
+            f'{kind.title()} annotations for `{command_name}` must select a single argument.'
+        )
+
+
 def _parse_selector_tokens(
     words: list[str] | tuple[str, ...],
     *,
@@ -429,6 +483,87 @@ def _annotation_words(command: Command, command_name: str) -> list[str]:
             )
         words.append(static_text)
     return words
+
+
+def _commands_with_derived_subcommands(
+    commands: tuple[MetadataCommand, ...],
+) -> tuple[MetadataCommand, ...]:
+    child_values_by_name: dict[str, tuple[str, ...]] = {}
+    command_names = tuple(command.name for command in commands)
+
+    for command_name in command_names:
+        prefix = command_name + ' '
+        values: dict[str, None] = {}
+        for candidate_name in command_names:
+            if not candidate_name.startswith(prefix):
+                continue
+            remainder = candidate_name[len(prefix) :]
+            if not remainder:
+                continue
+            values.setdefault(remainder.split(' ', maxsplit=1)[0], None)
+        if values:
+            child_values_by_name[command_name] = tuple(values)
+
+    if not child_values_by_name:
+        return commands
+
+    derived_selector = MetadataSelector(
+        start_index=0,
+        all_remaining=False,
+        list_mode=False,
+        after_options=False,
+    )
+    derived_commands: list[MetadataCommand] = []
+    for command in commands:
+        derived_values = child_values_by_name.get(command.name)
+        if derived_values is None:
+            derived_commands.append(command)
+            continue
+
+        existing = next(
+            (
+                value_set
+                for value_set in command.value_sets
+                if value_set.kind == 'subcommand' and value_set.selector == derived_selector
+            ),
+            None,
+        )
+        if existing is None:
+            value_sets = command.value_sets + (
+                MetadataValueSet(
+                    selector=derived_selector,
+                    kind='subcommand',
+                    values=derived_values,
+                ),
+            )
+        else:
+            merged_values = tuple(dict.fromkeys(existing.values + derived_values))
+            value_sets = tuple(
+                MetadataValueSet(
+                    selector=value_set.selector,
+                    kind=value_set.kind,
+                    values=merged_values,
+                )
+                if value_set is existing
+                else value_set
+                for value_set in command.value_sets
+            )
+
+        derived_commands.append(
+            MetadataCommand(
+                metadata_path=command.metadata_path,
+                uri=command.uri,
+                name=command.name,
+                signature=command.signature,
+                documentation=command.documentation,
+                name_span=command.name_span,
+                options=command.options,
+                value_sets=value_sets,
+                annotations=command.annotations,
+            )
+        )
+
+    return tuple(derived_commands)
 
 
 def _metadata_body_text(word: Word) -> str:

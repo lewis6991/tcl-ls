@@ -5,7 +5,12 @@ from functools import lru_cache
 from pathlib import Path
 
 from tcl_lsp.analysis.arity import metadata_signature_arity
-from tcl_lsp.analysis.metadata_commands import MetadataCommand, MetadataOption, load_metadata_commands
+from tcl_lsp.analysis.metadata_commands import (
+    MetadataCommand,
+    MetadataOption,
+    MetadataValueSet,
+    load_metadata_commands,
+)
 from tcl_lsp.analysis.model import CommandArity, DefinitionTarget
 from tcl_lsp.common import Location
 from tcl_lsp.metadata_paths import metadata_dir
@@ -35,6 +40,7 @@ class BuiltinOverload:
     signature: str
     arity: CommandArity | None
     options: tuple[MetadataOption, ...]
+    value_sets: tuple[MetadataValueSet, ...]
     documentation: str
     location: Location
 
@@ -55,11 +61,16 @@ def builtin_commands() -> dict[str, BuiltinCommand]:
 def core_annotated_metadata_commands() -> dict[str, MetadataCommand]:
     annotated: dict[str, MetadataCommand] = {}
     for metadata_command in load_metadata_commands(_META_DIR / _TCL_86_DIR / 'tcl.tcl'):
-        if not metadata_command.options and not metadata_command.annotations:
+        if (
+            not metadata_command.options
+            and not metadata_command.value_sets
+            and not metadata_command.annotations
+        ):
             continue
         existing = annotated.get(metadata_command.name)
         if existing is not None and (
             existing.options != metadata_command.options
+            or existing.value_sets != metadata_command.value_sets
             or existing.annotations != metadata_command.annotations
         ):
             raise RuntimeError(
@@ -173,6 +184,7 @@ def _load_metadata_file(
                 signature=_signature(metadata_command.name, metadata_command.signature),
                 arity=metadata_signature_arity(metadata_command.signature),
                 options=metadata_command.options,
+                value_sets=metadata_command.value_sets,
                 documentation=documentation,
                 location=Location(uri=metadata_command.uri, span=metadata_command.name_span),
             )
