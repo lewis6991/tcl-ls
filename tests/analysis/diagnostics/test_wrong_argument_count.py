@@ -49,6 +49,20 @@ def test_analysis_checks_most_specific_builtin_subcommand_arguments(parser: Pars
     )
 
 
+def test_analysis_checks_required_package_builtin_subcommand_arguments(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///json_write_string.tcl',
+        'package require json::write\njson::write string\n',
+    )
+    analysis = snapshot.analysis
+
+    assert [diagnostic.code for diagnostic in analysis.diagnostics] == ['wrong-argument-count']
+    assert analysis.diagnostics[0].message == (
+        'Wrong number of arguments for command `json::write string`; expected 1, got 0.'
+    )
+
+
 def test_analysis_skips_unsupported_builtin_argument_signatures(parser: Parser) -> None:
     snapshot = _analyze(parser, 'file:///binary_encode.tcl', 'binary encode\n')
     assert snapshot.analysis.diagnostics == ()

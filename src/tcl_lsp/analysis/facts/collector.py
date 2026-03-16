@@ -7,6 +7,7 @@ from tcl_lsp.analysis.arity import proc_parameter_arity
 from tcl_lsp.analysis.builtins import (
     annotated_metadata_commands_for_packages,
     builtin_command,
+    builtin_command_for_packages,
     canonical_builtin_package_name,
     is_builtin_package,
 )
@@ -326,6 +327,7 @@ class _FactCollector:
         )
 
     def _collect_builtin_subcommands(self, command: Command, context: _ExtractionContext) -> None:
+        required_packages = frozenset(self._active_builtin_packages)
         static_prefix_parts: list[str] = []
         for index, word in enumerate(command.words):
             static_text = word_static_text(word)
@@ -339,7 +341,7 @@ class _FactCollector:
                 continue
 
             builtin_name = ' '.join(static_prefix_parts)
-            if builtin_command(builtin_name) is None:
+            if builtin_command_for_packages(builtin_name, required_packages) is None:
                 continue
 
             argument_words = command.words[index + 1 :]

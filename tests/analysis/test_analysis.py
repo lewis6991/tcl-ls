@@ -755,6 +755,122 @@ def test_analysis_resolves_common_tcllib_builtin_metadata(parser: Parser) -> Non
     assert analysis.diagnostics == ()
 
 
+def test_analysis_resolves_additional_tcllib_builtin_metadata(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///tcllib_additional_builtin_metadata.tcl',
+        'package require asn\n'
+        'package require json::write\n'
+        'package require logger\n'
+        'package require struct::set\n'
+        'package require textutil\n'
+        'package require textutil::adjust\n'
+        'package require textutil::repeat\n'
+        'package require textutil::split\n'
+        'package require textutil::string\n'
+        'package require textutil::tabify\n'
+        'package require textutil::trim\n'
+        'package require textutil::wcswidth\n'
+        'proc run {payload} {\n'
+        '    asn::asnGetApplication payload appNum content encoding\n'
+        '    struct::set include seen alpha\n'
+        '    puts $appNum\n'
+        '    puts $content\n'
+        '    puts $encoding\n'
+        '    puts $seen\n'
+        '}\n'
+        'json::write object name [json::write string Demo]\n'
+        'json::write array 1 2 3\n'
+        'logger::setlevel debug\n'
+        'logger::import -force demo\n'
+        'logger::servicecmd demo\n'
+        'struct::set equal {a b} {b a}\n'
+        'struct::set intersect3 {a b} {b c}\n'
+        'textutil::cap hello\n'
+        'textutil::adjust {one two three} -length 8\n'
+        'textutil::strRepeat . 3\n'
+        'textutil::splitx {a b}\n'
+        'textutil::trim { hello }\n'
+        'textutil::tabify {a   b}\n'
+        'textutil::adjust::indent {x} {  }\n'
+        'textutil::repeat::blank 2\n'
+        'textutil::split::splitn hello 2\n'
+        'textutil::string::uncap Demo\n'
+        'textutil::tabify::untabify {a\tb}\n'
+        'textutil::trim::trimleft { hello }\n'
+        'textutil::wcswidth hello\n',
+    )
+    analysis = snapshot.analysis
+
+    resolution_by_name = {
+        resolution.reference.name: resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command'
+        and resolution.reference.name
+        in {
+            'asn::asnGetApplication',
+            'json::write object',
+            'json::write string',
+            'json::write array',
+            'logger::setlevel',
+            'logger::import',
+            'logger::servicecmd',
+            'struct::set include',
+            'struct::set equal',
+            'struct::set intersect3',
+            'textutil::cap',
+            'textutil::adjust',
+            'textutil::strRepeat',
+            'textutil::splitx',
+            'textutil::trim',
+            'textutil::tabify',
+            'textutil::adjust::indent',
+            'textutil::repeat::blank',
+            'textutil::split::splitn',
+            'textutil::string::uncap',
+            'textutil::tabify::untabify',
+            'textutil::trim::trimleft',
+            'textutil::wcswidth',
+        }
+    }
+    assert resolution_by_name == {
+        'asn::asnGetApplication': 'resolved',
+        'json::write object': 'resolved',
+        'json::write string': 'resolved',
+        'json::write array': 'resolved',
+        'logger::setlevel': 'resolved',
+        'logger::import': 'resolved',
+        'logger::servicecmd': 'resolved',
+        'struct::set include': 'resolved',
+        'struct::set equal': 'resolved',
+        'struct::set intersect3': 'resolved',
+        'textutil::cap': 'resolved',
+        'textutil::adjust': 'resolved',
+        'textutil::strRepeat': 'resolved',
+        'textutil::splitx': 'resolved',
+        'textutil::trim': 'resolved',
+        'textutil::tabify': 'resolved',
+        'textutil::adjust::indent': 'resolved',
+        'textutil::repeat::blank': 'resolved',
+        'textutil::split::splitn': 'resolved',
+        'textutil::string::uncap': 'resolved',
+        'textutil::tabify::untabify': 'resolved',
+        'textutil::trim::trimleft': 'resolved',
+        'textutil::wcswidth': 'resolved',
+    }
+
+    variable_states = {
+        resolution.reference.name: resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'variable'
+    }
+    assert variable_states['appNum'] == 'resolved'
+    assert variable_states['content'] == 'resolved'
+    assert variable_states['encoding'] == 'resolved'
+    assert variable_states['seen'] == 'resolved'
+    assert analysis.diagnostics == ()
+
+
 def test_analysis_resolves_clay_definition_commands(parser: Parser) -> None:
     snapshot = _analyze(
         parser,
