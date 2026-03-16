@@ -1,5 +1,6 @@
 # Tk package command metadata for tcl-ls.
 # This file is parsed as Tcl source so docs live in leading comments.
+meta module Tk
 
 # Create a button widget.
 meta command button {pathName ?options?}

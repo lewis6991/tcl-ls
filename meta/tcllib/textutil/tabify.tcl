@@ -1,5 +1,6 @@
 # Textutil::tabify package command metadata for tcl-ls.
 # This file is parsed as Tcl source so docs live in leading comments.
+meta module textutil::tabify
 
 # Convert runs of spaces to tabs.
 meta command textutil::tabify::tabify {text {?tabWidth?}}

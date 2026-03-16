@@ -13,36 +13,10 @@ from tcl_lsp.analysis.metadata_commands import (
 from tcl_lsp.analysis.model import CommandArity, DefinitionTarget
 from tcl_lsp.common import Location
 from tcl_lsp.metadata_paths import metadata_dir
+from tcl_lsp.parser import Parser, word_static_text
 
 _META_DIR = metadata_dir()
 _CORE_PACKAGE = 'Tcl'
-_TCL_86_DIR = Path('tcl8.6')
-_BUILTIN_METADATA_PATHS: tuple[tuple[str, tuple[Path, ...]], ...] = (
-    (_CORE_PACKAGE, (Path('meta.tcl'), _TCL_86_DIR / 'tcl.tcl')),
-    ('Tk', (_TCL_86_DIR / 'tk.tcl',)),
-    ('tcltest', (_TCL_86_DIR / 'tcltest.tcl',)),
-    ('msgcat', (_TCL_86_DIR / 'msgcat.tcl',)),
-    ('TclOO', (_TCL_86_DIR / 'tcloo.tcl',)),
-    ('asn', (Path('tcllib/asn.tcl'),)),
-    ('clay', (Path('tcllib/clay.tcl'),)),
-    ('fileutil', (Path('tcllib/fileutil.tcl'),)),
-    ('cmdline', (Path('tcllib/cmdline.tcl'),)),
-    ('log', (Path('tcllib/log.tcl'),)),
-    ('logger', (Path('tcllib/logger.tcl'),)),
-    ('tepam', (Path('tcllib/tepam.tcl'),)),
-    ('doctools::text', (Path('tcllib/doctools_text.tcl'),)),
-    ('json::write', (Path('tcllib/json_write.tcl'),)),
-    ('oo::meta', (Path('tcllib/oo_meta.tcl'),)),
-    ('struct::set', (Path('tcllib/struct_set.tcl'),)),
-    ('textutil', (Path('tcllib/textutil/textutil.tcl'),)),
-    ('textutil::adjust', (Path('tcllib/textutil/adjust.tcl'),)),
-    ('textutil::repeat', (Path('tcllib/textutil/repeat.tcl'),)),
-    ('textutil::split', (Path('tcllib/textutil/split.tcl'),)),
-    ('textutil::string', (Path('tcllib/textutil/string.tcl'),)),
-    ('textutil::tabify', (Path('tcllib/textutil/tabify.tcl'),)),
-    ('textutil::trim', (Path('tcllib/textutil/trim.tcl'),)),
-    ('textutil::wcswidth', (Path('tcllib/textutil/wcswidth.tcl'),)),
-)
 _PACKAGE_ALIASES = {'tcl::oo': 'TclOO'}
 
 
@@ -78,8 +52,11 @@ def core_annotated_metadata_commands() -> dict[str, MetadataCommand]:
 @lru_cache(maxsize=1)
 def annotated_metadata_commands_by_package() -> dict[str, dict[str, MetadataCommand]]:
     commands_by_package: dict[str, dict[str, MetadataCommand]] = {}
-    for package_name, _ in _BUILTIN_METADATA_PATHS:
-        commands_by_package[package_name] = _load_annotated_metadata_package(package_name)
+    for package_name, metadata_paths in _builtin_metadata_paths_by_package().items():
+        commands_by_package[package_name] = _load_annotated_metadata_package(
+            package_name=package_name,
+            metadata_paths=metadata_paths,
+        )
     return commands_by_package
 
 
@@ -105,10 +82,10 @@ def annotated_metadata_commands_for_packages(
 @lru_cache(maxsize=1)
 def builtin_commands_by_package() -> dict[str, dict[str, BuiltinCommand]]:
     commands_by_package: dict[str, dict[str, BuiltinCommand]] = {}
-    for package_name, _ in _BUILTIN_METADATA_PATHS:
+    for package_name, metadata_paths in _builtin_metadata_paths_by_package().items():
         commands_by_package[package_name] = _load_metadata_package(
             package_name=package_name,
-            metadata_paths=_package_metadata_paths(package_name),
+            metadata_paths=metadata_paths,
         )
     return commands_by_package
 
@@ -232,14 +209,6 @@ def _load_metadata_file(
     }
 
 
-def _package_metadata_paths(package_name: str) -> tuple[Path, ...]:
-    for candidate_package_name, metadata_relpaths in _BUILTIN_METADATA_PATHS:
-        if candidate_package_name != package_name:
-            continue
-        return tuple(_META_DIR / metadata_relpath for metadata_relpath in metadata_relpaths)
-    raise KeyError(package_name)
-
-
 def _load_metadata_package(
     *,
     package_name: str,
@@ -272,9 +241,13 @@ def _load_metadata_package(
     return package_commands
 
 
-def _load_annotated_metadata_package(package_name: str) -> dict[str, MetadataCommand]:
+def _load_annotated_metadata_package(
+    *,
+    package_name: str,
+    metadata_paths: tuple[Path, ...],
+) -> dict[str, MetadataCommand]:
     annotated: dict[str, MetadataCommand] = {}
-    for metadata_path in _package_metadata_paths(package_name):
+    for metadata_path in metadata_paths:
         for metadata_command in load_metadata_commands(metadata_path):
             if metadata_command.context_name is not None:
                 continue
@@ -296,6 +269,62 @@ def _load_annotated_metadata_package(package_name: str) -> dict[str, MetadataCom
                 )
             annotated[metadata_command.name] = metadata_command
     return annotated
+
+
+@lru_cache(maxsize=1)
+def _builtin_metadata_paths_by_package() -> dict[str, tuple[Path, ...]]:
+    paths_by_package: dict[str, list[Path]] = {}
+    for metadata_path in sorted(_META_DIR.rglob('*.tcl')):
+        package_name = _declared_builtin_module_name(metadata_path)
+        if package_name is None:
+            continue
+        paths_by_package.setdefault(package_name, []).append(metadata_path)
+
+    if not paths_by_package:
+        raise RuntimeError('No builtin metadata files were declared.')
+
+    return {
+        package_name: tuple(metadata_paths)
+        for package_name, metadata_paths in paths_by_package.items()
+    }
+
+
+@lru_cache(maxsize=None)
+def _declared_builtin_module_name(metadata_path: Path) -> str | None:
+    parse_result = Parser().parse_document(
+        path=metadata_path.as_uri(),
+        text=metadata_path.read_text(encoding='utf-8'),
+    )
+    if parse_result.diagnostics:
+        message = '; '.join(diagnostic.message for diagnostic in parse_result.diagnostics)
+        raise RuntimeError(f'Invalid metadata file `{metadata_path.name}`: {message}')
+
+    declared_name: str | None = None
+    for command in parse_result.script.commands:
+        if len(command.words) < 2:
+            continue
+        if word_static_text(command.words[0]) != 'meta':
+            continue
+        if word_static_text(command.words[1]) != 'module':
+            continue
+        if len(command.words) != 3:
+            raise RuntimeError(
+                f'Builtin metadata file `{metadata_path.name}` must declare modules as '
+                '`meta module name`.'
+            )
+
+        module_name = word_static_text(command.words[2])
+        if module_name is None:
+            raise RuntimeError(
+                f'Builtin metadata file `{metadata_path.name}` must declare a static module name.'
+            )
+        if declared_name is not None:
+            raise RuntimeError(
+                f'Builtin metadata file `{metadata_path.name}` declares multiple module names.'
+            )
+        declared_name = module_name
+
+    return declared_name
 
 
 def _signature(name: str, parameter_list: str) -> str:

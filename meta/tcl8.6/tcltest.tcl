@@ -1,5 +1,6 @@
 # Tcltest package command metadata for tcl-ls.
 # This file is parsed as Tcl source so docs live in leading comments.
+meta module tcltest
 
 # Define and run a named test case.
 meta command tcltest::test {name description args}

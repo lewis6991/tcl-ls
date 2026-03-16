@@ -2,8 +2,10 @@
 #
 # Metadata files use the `meta` ensemble for structured declarations instead of
 # executable behavior.
+meta module Tcl
 #
 # Top-level declarations:
+#   meta module name
 #   meta command name {signature} ? { annotation ... } ?
 #   meta context contextName {
 #       command name {signature} ? { annotation ... } ?
@@ -119,6 +121,11 @@
 # behavior. `meta` is an ensemble whose subcommands describe command metadata
 # and embedded command contexts.
 meta command meta {subcommand args} {
+    # Declare the builtin package or module represented by this metadata file.
+    # Files with a `meta module` declaration are indexed as bundled package
+    # metadata.
+    subcommand module {name}
+
     # Declare metadata for a command or command prefix.
     # Use `meta command name {signature}` for plain declarations, or add an
     # annotation body to describe options, bindings, nested script bodies,

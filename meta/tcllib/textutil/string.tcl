@@ -1,5 +1,6 @@
 # Textutil::string package command metadata for tcl-ls.
 # This file is parsed as Tcl source so docs live in leading comments.
+meta module textutil::string
 
 # Uppercase the first character of a string.
 meta command textutil::string::cap {text}

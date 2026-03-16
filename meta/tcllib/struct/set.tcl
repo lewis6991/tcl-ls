@@ -1,5 +1,6 @@
 # Struct::set package command metadata for tcl-ls.
 # This file is parsed as Tcl source so docs live in leading comments.
+meta module struct::set
 
 # Manipulate finite sets through the struct::set ensemble.
 meta command struct::set {subcommand args} {

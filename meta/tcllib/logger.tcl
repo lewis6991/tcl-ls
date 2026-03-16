@@ -1,5 +1,6 @@
 # Logger package command metadata for tcl-ls.
 # This file is parsed as Tcl source so docs live in leading comments.
+meta module logger
 
 # Initialize a logging service and return its command token.
 meta command logger::init {service}

@@ -1,5 +1,6 @@
 # Log package command metadata for tcl-ls.
 # This file is parsed as Tcl source so docs live in leading comments.
+meta module log
 
 # Log a message at the specified log level.
 meta command log::log {level text}

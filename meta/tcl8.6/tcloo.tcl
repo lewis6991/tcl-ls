@@ -1,5 +1,6 @@
 # TclOO package command metadata for tcl-ls.
 # This file is parsed as Tcl source so docs live in leading comments.
+meta module TclOO
 
 # Create or introspect Tcl classes via the TclOO class ensemble.
 meta command oo::class {subcommand args} {

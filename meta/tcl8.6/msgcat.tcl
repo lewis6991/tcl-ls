@@ -1,5 +1,6 @@
 # Msgcat package command metadata for tcl-ls.
 # This file is parsed as Tcl source so docs live in leading comments.
+meta module msgcat
 
 # Localize a message string using the active message catalog.
 meta command msgcat::mc {args}

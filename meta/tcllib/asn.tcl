@@ -1,5 +1,6 @@
 # ASN package command metadata for tcl-ls.
 # This file is parsed as Tcl source so docs live in leading comments.
+meta module asn
 
 # Decode a single byte and store it by name in the caller.
 meta command asn::asnGetByte {data_var byte_var} {

@@ -1,5 +1,6 @@
 # Doctools text helper metadata for tcl-ls.
 # This file is parsed as Tcl source so docs live in leading comments.
+meta module doctools::text
 
 # Reset the text formatter state.
 meta command text::begin {}

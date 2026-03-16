@@ -4,6 +4,7 @@
 # The metadata format itself is declared in meta/meta.tcl.
 # Generated subcommand sections are maintained by scripts/generate_builtin_commands.py.
 # Descriptions are adapted from the Tcl 8.6 command manual.
+meta module Tcl
 
 # Execute a command after a time delay.
 # Pause for the given number of milliseconds and then return. While the

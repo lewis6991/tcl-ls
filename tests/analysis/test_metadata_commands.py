@@ -127,19 +127,24 @@ def test_core_metadata_models_meta_as_ensemble() -> None:
     meta_builtin = builtin_command('meta')
     meta_command_builtin = builtin_command('meta command')
     meta_context_builtin = builtin_command('meta context')
+    meta_module_builtin = builtin_command('meta module')
 
     assert meta_builtin is not None
     assert meta_command_builtin is not None
     assert meta_context_builtin is not None
+    assert meta_module_builtin is not None
     assert meta_builtin.metadata_path_name == 'meta.tcl'
     assert meta_command_builtin.metadata_path_name == 'meta.tcl'
     assert meta_context_builtin.metadata_path_name == 'meta.tcl'
+    assert meta_module_builtin.metadata_path_name == 'meta.tcl'
 
-    assert meta_builtin.overloads[0].subcommands == ('command', 'context')
+    assert meta_builtin.overloads[0].subcommands == ('module', 'command', 'context')
 
     assert meta_command_builtin.overloads[0].arity is not None
     assert meta_command_builtin.overloads[0].arity.accepts(2) is True
     assert meta_command_builtin.overloads[0].arity.accepts(3) is True
+    assert meta_module_builtin.overloads[0].arity is not None
+    assert meta_module_builtin.overloads[0].arity.accepts(1) is True
 
 
 def test_tcloo_metadata_parses_embedded_context_annotations() -> None:

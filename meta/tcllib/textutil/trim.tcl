@@ -1,5 +1,6 @@
 # Textutil::trim package command metadata for tcl-ls.
 # This file is parsed as Tcl source so docs live in leading comments.
+meta module textutil::trim
 
 # Trim a regular expression from both sides of a string.
 meta command textutil::trim::trim {text {?regexp?}}

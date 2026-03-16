@@ -1,5 +1,6 @@
 # Clay package command metadata for tcl-ls.
 # This file is parsed as Tcl source so docs live in leading comments.
+meta module clay
 
 # Define a Clay class or object with a declarative body script.
 meta command clay::define {target body} {

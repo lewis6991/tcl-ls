@@ -1,5 +1,6 @@
 # Textutil::adjust package command metadata for tcl-ls.
 # This file is parsed as Tcl source so docs live in leading comments.
+meta module textutil::adjust
 
 # Reflow a paragraph of text.
 meta command textutil::adjust::adjust {text args} {

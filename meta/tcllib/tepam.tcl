@@ -1,4 +1,5 @@
 # Tepam package command metadata for tcl-ls.
+meta module tepam
 
 # Declare a procedure using Tepam's attribute DSL.
 meta command tepam::procedure {name attributes body} {

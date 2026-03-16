@@ -1,5 +1,6 @@
 # Fileutil package command metadata for tcl-ls.
 # This file is parsed as Tcl source so docs live in leading comments.
+meta module fileutil
 
 # Read and concatenate the contents of one or more files.
 meta command fileutil::cat {args}
