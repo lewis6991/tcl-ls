@@ -12,7 +12,9 @@ def test_analysis_reports_unknown_builtin_subcommand(parser: Parser) -> None:
         'info gurka\n',
     )
 
-    assert [diagnostic.code for diagnostic in snapshot.analysis.diagnostics] == ['unknown-subcommand']
+    assert [diagnostic.code for diagnostic in snapshot.analysis.diagnostics] == [
+        'unknown-subcommand'
+    ]
     assert snapshot.analysis.diagnostics[0].message == (
         'Unknown subcommand `gurka` for command `info`.'
     )
@@ -25,7 +27,9 @@ def test_analysis_reports_unknown_nested_builtin_subcommand(parser: Parser) -> N
         'namespace ensemble frob widget\n',
     )
 
-    assert [diagnostic.code for diagnostic in snapshot.analysis.diagnostics] == ['unknown-subcommand']
+    assert [diagnostic.code for diagnostic in snapshot.analysis.diagnostics] == [
+        'unknown-subcommand'
+    ]
     assert snapshot.analysis.diagnostics[0].message == (
         'Unknown subcommand `frob` for command `namespace ensemble`.'
     )
@@ -38,7 +42,9 @@ def test_analysis_reports_unknown_explicit_builtin_subcommand(parser: Parser) ->
         'binary decode frob payload\n',
     )
 
-    assert [diagnostic.code for diagnostic in snapshot.analysis.diagnostics] == ['unknown-subcommand']
+    assert [diagnostic.code for diagnostic in snapshot.analysis.diagnostics] == [
+        'unknown-subcommand'
+    ]
     assert snapshot.analysis.diagnostics[0].message == (
         'Unknown subcommand `frob` for command `binary decode`.'
     )
@@ -63,7 +69,9 @@ def test_analysis_keeps_unknown_subcommand_checks_for_stable_positions(
         'info gurka {*}$args\n',
     )
 
-    assert [diagnostic.code for diagnostic in snapshot.analysis.diagnostics] == ['unknown-subcommand']
+    assert [diagnostic.code for diagnostic in snapshot.analysis.diagnostics] == [
+        'unknown-subcommand'
+    ]
     assert snapshot.analysis.diagnostics[0].message == (
         'Unknown subcommand `gurka` for command `info`.'
     )

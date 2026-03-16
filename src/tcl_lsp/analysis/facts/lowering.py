@@ -184,7 +184,9 @@ class _Lowerer:
         self.diagnostics: list[Diagnostic] = []
 
     def lower_script(self, script: Script) -> LoweredScript:
-        return LoweredScript(commands=tuple(self._lower_command(command) for command in script.commands))
+        return LoweredScript(
+            commands=tuple(self._lower_command(command) for command in script.commands)
+        )
 
     def _lower_command(self, command: Command) -> LoweredCommand:
         words = command.words
@@ -237,7 +239,9 @@ class _Lowerer:
             name=word_static_text(name_word) if name_word is not None else None,
             name_span=name_word.span if name_word is not None else None,
             documentation=command_documentation(command),
-            parameter_items=self._parse_list_items(command.words[2] if len(command.words) > 2 else None),
+            parameter_items=self._parse_list_items(
+                command.words[2] if len(command.words) > 2 else None
+            ),
             body_span=body_span(body_word) if body_word is not None else None,
             body=self._lower_script_word(body_word),
         )
@@ -302,8 +306,12 @@ class _Lowerer:
             command=command,
             command_name=command_name,
             word_references=word_references,
-            start_body=self._lower_script_word(command.words[1] if len(command.words) > 1 else None),
-            condition=self._lower_condition_word(command.words[2] if len(command.words) > 2 else None),
+            start_body=self._lower_script_word(
+                command.words[1] if len(command.words) > 1 else None
+            ),
+            condition=self._lower_condition_word(
+                command.words[2] if len(command.words) > 2 else None
+            ),
             next_body=self._lower_script_word(command.words[3] if len(command.words) > 3 else None),
             body=self._lower_script_word(command.words[4] if len(command.words) > 4 else None),
         )
@@ -351,8 +359,7 @@ class _Lowerer:
                     self._emit_analysis_diagnostic(
                         code='malformed-if',
                         message=(
-                            'Malformed `if` command; expected `elseif` or `else`, '
-                            f'got `{keyword}`.'
+                            f'Malformed `if` command; expected `elseif` or `else`, got `{keyword}`.'
                         ),
                         span=keyword_word.span,
                     )
@@ -360,7 +367,9 @@ class _Lowerer:
                 else:
                     break
 
-            condition = self._lower_condition_word(command.words[index] if index < len(command.words) else None)
+            condition = self._lower_condition_word(
+                command.words[index] if index < len(command.words) else None
+            )
             body_index = self._if_body_index(command.words, index + 1)
             if body_index is None:
                 if clause_kind == 'elseif':
@@ -439,7 +448,9 @@ class _Lowerer:
             command=command,
             command_name=command_name,
             word_references=word_references,
-            condition=self._lower_condition_word(command.words[1] if len(command.words) > 1 else None),
+            condition=self._lower_condition_word(
+                command.words[1] if len(command.words) > 1 else None
+            ),
             body=self._lower_script_word(command.words[2] if len(command.words) > 2 else None),
         )
 
@@ -592,7 +603,9 @@ class _Lowerer:
             if body_item.text == '-':
                 continue
             bodies.append(
-                LoweredScriptBody(script=self._lower_embedded_script(body_item.text, body_item.content_start))
+                LoweredScriptBody(
+                    script=self._lower_embedded_script(body_item.text, body_item.content_start)
+                )
             )
         return tuple(bodies)
 

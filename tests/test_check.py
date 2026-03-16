@@ -118,8 +118,7 @@ def test_check_project_uses_helper_metadata_for_proc_source_parent_loads(tmp_pat
     shared_root.mkdir()
 
     (devtools_root / 'testutilities.tcl').write_text(
-        'proc testing {script} {}\n'
-        'proc use {fname pname args} {}\n',
+        'proc testing {script} {}\nproc use {fname pname args} {}\n',
         encoding='utf-8',
     )
     (shared_root / 'helper.tcl').write_text(

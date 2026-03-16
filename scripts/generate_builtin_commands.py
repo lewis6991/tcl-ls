@@ -23,8 +23,7 @@ from tcl_lsp.parser.model import BracedWord, Command, Word
 _DEFAULT_METADATA_PATH = _REPO_ROOT / 'meta' / 'tcl8.6' / 'tcl.tcl'
 _DEFAULT_DOC_ROOT_TEMPLATE = 'https://www.tcl-lang.org/man/tcl{series}/TclCmd'
 _GENERATOR_NOTE = (
-    '# Generated subcommand sections are maintained by '
-    'scripts/generate_builtin_commands.py.'
+    '# Generated subcommand sections are maintained by scripts/generate_builtin_commands.py.'
 )
 _DESCRIPTION_LINE_PATTERN = re.compile(
     r'^# Descriptions are adapted from the Tcl .+ command manual\.$',
@@ -112,8 +111,7 @@ _MANUAL_ENTRIES: dict[str, tuple[GeneratedEntry, ...]] = {
 
 _OVERRIDE_DOCS = {
     'interp children': 'Alias for interp slaves.',
-    'package prefer': 'Get or set whether package selection prefers the latest or stable '
-    'version.',
+    'package prefer': 'Get or set whether package selection prefers the latest or stable version.',
 }
 
 _OVERRIDE_PARAMS = {
@@ -183,7 +181,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     current_output = output_path.read_text(encoding='utf-8') if output_path.exists() else ''
     if args.check:
         if current_output != rendered:
-            print(f'{output_path} is out of date; rerun scripts/generate_builtin_commands.py', file=sys.stderr)
+            print(
+                f'{output_path} is out of date; rerun scripts/generate_builtin_commands.py',
+                file=sys.stderr,
+            )
             return 1
         return 0
 
@@ -251,7 +252,9 @@ def strip_generated_blocks(source_text: str) -> str:
                     result_lines[-1] = candidate_line
             if result_lines and result_lines[-1] == '':
                 result_lines.pop()
-            active_command = stripped_line.removeprefix(_GENERATED_BEGIN_PREFIX).split(' ', maxsplit=1)[0]
+            active_command = stripped_line.removeprefix(_GENERATED_BEGIN_PREFIX).split(
+                ' ', maxsplit=1
+            )[0]
             continue
 
         if stripped_line.startswith(_GENERATED_END_PREFIX):
@@ -344,7 +347,8 @@ def build_generated_entries(
                 params=_OVERRIDE_PARAMS.get(entry.name, entry.params),
                 documentation=_OVERRIDE_DOCS.get(
                     entry.name,
-                    entry.documentation or first_doc_by_name.get(entry.name, f'{entry.name} subcommand.'),
+                    entry.documentation
+                    or first_doc_by_name.get(entry.name, f'{entry.name} subcommand.'),
                 ),
             )
         )
@@ -473,7 +477,9 @@ def _collect_annotation_subcommand_names(
     for nested_command in parse_result.script.commands:
         if word_static_text(nested_command.words[0]) != 'subcommand':
             continue
-        names.extend(_collect_annotation_subcommand_decl_names(nested_command, parent_name=parent_name))
+        names.extend(
+            _collect_annotation_subcommand_decl_names(nested_command, parent_name=parent_name)
+        )
     return tuple(names)
 
 
@@ -501,7 +507,9 @@ def _build_generated_tree(command: str, entries: tuple[GeneratedEntry, ...]) -> 
     command_parts = command.split()
     for entry in entries:
         name_parts = entry.name.split()
-        if name_parts[: len(command_parts)] != command_parts or len(name_parts) <= len(command_parts):
+        if name_parts[: len(command_parts)] != command_parts or len(name_parts) <= len(
+            command_parts
+        ):
             raise RuntimeError(f'Generated entry `{entry.name}` does not belong to `{command}`.')
 
         node = root
@@ -546,7 +554,9 @@ def _render_generated_node(
             lines.append(f'{declaration} {{')
             lines.append('')
             for child_index, child in enumerate(child_nodes):
-                lines.extend(_render_generated_node(child, command=entry.name, indent=indent + '    '))
+                lines.extend(
+                    _render_generated_node(child, command=entry.name, indent=indent + '    ')
+                )
                 if child_index < len(child_nodes) - 1:
                     lines.append('')
             lines.append(f'{indent}}}')

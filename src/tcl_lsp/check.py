@@ -764,6 +764,7 @@ def _index_document(path: Path, *, parser: Parser, extractor: FactExtractor) -> 
         facts=extractor.extract(parse_result, include_parse_result=False),
     )
 
+
 def _group_diagnostics(
     diagnostics: tuple[ProjectDiagnostic, ...],
 ) -> tuple[tuple[Path, tuple[ProjectDiagnostic, ...]], ...]:
@@ -882,8 +883,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         type=_worker_count,
         default=_DEFAULT_WORKER_COUNT,
         help=(
-            'Index documents with this many worker processes. '
-            f'Defaults to {_DEFAULT_WORKER_COUNT}.'
+            f'Index documents with this many worker processes. Defaults to {_DEFAULT_WORKER_COUNT}.'
         ),
     )
     return parser.parse_args(argv)
@@ -1093,7 +1093,7 @@ def _create_unit_executor(
             initializer=_initialize_unit_worker,
             initargs=(package_index_catalog,),
         )
-    except (NotImplementedError, PermissionError, OSError):
+    except NotImplementedError, PermissionError, OSError:
         return None
 
 

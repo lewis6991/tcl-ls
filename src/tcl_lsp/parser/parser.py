@@ -166,11 +166,11 @@ class _ParserImplementation:
             previous_token_was_separator = False
             at_command_start = False
 
-        return Script(span=Span(start=start, end=self._current_position()), commands=tuple(commands))
+        return Script(
+            span=Span(start=start, end=self._current_position()), commands=tuple(commands)
+        )
 
-    def _parse_command(
-        self, stop_char: str | None, leading_comments: tuple[Token, ...]
-    ) -> Command:
+    def _parse_command(self, stop_char: str | None, leading_comments: tuple[Token, ...]) -> Command:
         start = self._current_position()
         words: list[Word] = []
 
@@ -525,7 +525,9 @@ class _ParserImplementation:
         start_position = self._current_position()
         self._advance_char()
         if self._is_eof():
-            return LiteralText(span=Span(start=start_position, end=self._current_position()), text='$')
+            return LiteralText(
+                span=Span(start=start_position, end=self._current_position()), text='$'
+            )
 
         current_char = self._peek()
         if current_char == '{':
@@ -571,7 +573,9 @@ class _ParserImplementation:
 
         name_end = consume_bare_variable_name_end(self._text, self._index)
         if name_end == self._index:
-            return LiteralText(span=Span(start=start_position, end=self._current_position()), text='$')
+            return LiteralText(
+                span=Span(start=start_position, end=self._current_position()), text='$'
+            )
 
         name_start = self._index
         self._advance_plain_run(name_end)
