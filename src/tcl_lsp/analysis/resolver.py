@@ -6,15 +6,20 @@ from tcl_lsp.analysis.builtins import (
     BuiltinCommand,
     builtin_commands_any,
     builtin_commands_for_packages,
-    is_builtin_package,
 )
+from tcl_lsp.analysis.diagnostics import (
+    DiagnosticContext,
+    ResolvedCommand,
+    ResolvedCommandTarget,
+    ResolvedVariable,
+    collect_diagnostics,
+)
+from tcl_lsp.analysis.diagnostics.helpers import command_call_key
 from tcl_lsp.analysis.index import WorkspaceIndex
-from tcl_lsp.analysis.metadata_commands import scan_command_options
 from tcl_lsp.analysis.model import (
     AnalysisResult,
     AnalysisUncertainty,
     CommandCall,
-    CommandArity,
     DefinitionTarget,
     DocumentFacts,
     ProcDecl,
@@ -24,16 +29,13 @@ from tcl_lsp.analysis.model import (
     VarBinding,
     VariableReference,
 )
-from tcl_lsp.common import Diagnostic, HoverInfo, Location
+from tcl_lsp.common import HoverInfo, Location
 
 
 @dataclass(frozen=True, slots=True)
 class _BindingSummary:
     binding: VarBinding
     detail: str
-
-
-type _ResolvedCommandTarget = BuiltinCommand | ProcDecl
 
 
 class Resolver:
@@ -47,7 +49,7 @@ class Resolver:
         *,
         additional_required_packages: frozenset[str] = frozenset(),
     ) -> AnalysisResult:
-        diagnostics: list[Diagnostic] = list(facts.diagnostics)
+        diagnostics = list(facts.diagnostics)
         definitions = self._build_definitions(facts)
         definition_by_symbol = {definition.symbol_id: definition for definition in definitions}
         binding_lookup = self._build_binding_lookup(facts.variable_bindings)
@@ -57,35 +59,8 @@ class Resolver:
 
         resolutions: list[ResolutionResult] = []
         resolved_references: list[ResolvedReference] = []
-        command_targets: dict[tuple[str, int, int, int, int], _ResolvedCommandTarget] = {}
-
-        for proc in facts.procedures:
-            duplicates = workspace_index.procedures_for_name(proc.qualified_name)
-            if len(duplicates) > 1:
-                diagnostics.append(
-                    Diagnostic(
-                        span=proc.name_span,
-                        severity='error',
-                        message=f'Procedure `{proc.qualified_name}` is declared multiple times.',
-                        source='analysis',
-                        code='duplicate-proc',
-                    )
-                )
-
-        for package_require in facts.package_requires:
-            if is_builtin_package(package_require.name) or workspace_index.has_package(
-                package_require.name
-            ):
-                continue
-            diagnostics.append(
-                Diagnostic(
-                    span=package_require.span,
-                    severity='warning',
-                    message=f'Unresolved package `{package_require.name}`.',
-                    source='analysis',
-                    code='unresolved-package',
-                )
-            )
+        command_targets: dict[tuple[str, int, int, int, int], ResolvedCommandTarget] = {}
+        command_resolutions: list[ResolvedCommand] = []
 
         for command_call in facts.command_calls:
             resolution, command_hover, command_target = self._resolve_command(
@@ -94,8 +69,14 @@ class Resolver:
                 required_packages,
             )
             resolutions.append(resolution)
+            command_resolutions.append(
+                ResolvedCommand(
+                    command_call=command_call,
+                    resolution=resolution,
+                )
+            )
             if command_target is not None:
-                command_targets[_command_call_key(command_call)] = command_target
+                command_targets[command_call_key(command_call)] = command_target
             if command_hover is not None:
                 hovers.append(command_hover)
             if resolution.uncertainty.state == 'resolved':
@@ -106,39 +87,7 @@ class Resolver:
                             reference=resolution.reference,
                         )
                     )
-            if resolution.uncertainty.state == 'unresolved':
-                diagnostics.append(
-                    Diagnostic(
-                        span=command_call.name_span,
-                        severity='warning',
-                        message=f'Unresolved command `{command_call.name}`.',
-                        source='analysis',
-                        code='unresolved-command',
-                    )
-                )
-            if resolution.uncertainty.state == 'ambiguous':
-                diagnostics.append(
-                    Diagnostic(
-                        span=command_call.name_span,
-                        severity='warning',
-                        message=f'Command `{command_call.name}` resolves to multiple procedures.',
-                        source='analysis',
-                        code='ambiguous-command',
-                    )
-                )
-
-        diagnostics.extend(
-            self._command_argument_diagnostics(
-                facts.command_calls,
-                command_targets,
-            )
-        )
-        diagnostics.extend(
-            self._command_option_diagnostics(
-                facts.command_calls,
-                command_targets,
-            )
-        )
+        variable_resolutions: list[ResolvedVariable] = []
 
         for variable_reference in facts.variable_references:
             resolution, variable_hover = self._resolve_variable(
@@ -147,6 +96,12 @@ class Resolver:
                 definition_by_symbol,
             )
             resolutions.append(resolution)
+            variable_resolutions.append(
+                ResolvedVariable(
+                    variable_reference=variable_reference,
+                    resolution=resolution,
+                )
+            )
             if variable_hover is not None:
                 hovers.append(variable_hover)
             if resolution.uncertainty.state == 'resolved':
@@ -157,19 +112,19 @@ class Resolver:
                             reference=resolution.reference,
                         )
                     )
-            if (
-                resolution.uncertainty.state == 'unresolved'
-                and variable_reference.procedure_symbol_id is not None
-            ):
-                diagnostics.append(
-                    Diagnostic(
-                        span=variable_reference.span,
-                        severity='warning',
-                        message=f'Unresolved variable `{variable_reference.name}`.',
-                        source='analysis',
-                        code='unresolved-variable',
-                    )
+
+        diagnostics.extend(
+            collect_diagnostics(
+                DiagnosticContext(
+                    facts=facts,
+                    workspace_index=workspace_index,
+                    required_packages=required_packages,
+                    command_targets=command_targets,
+                    command_resolutions=tuple(command_resolutions),
+                    variable_resolutions=tuple(variable_resolutions),
                 )
+            )
+        )
 
         return AnalysisResult(
             uri=uri,
@@ -240,7 +195,7 @@ class Resolver:
         command_call: CommandCall,
         workspace_index: WorkspaceIndex,
         required_packages: frozenset[str],
-    ) -> tuple[ResolutionResult, HoverInfo | None, _ResolvedCommandTarget | None]:
+    ) -> tuple[ResolutionResult, HoverInfo | None, ResolvedCommandTarget | None]:
         reference = ReferenceSite(
             uri=command_call.uri,
             kind='command',
@@ -475,7 +430,7 @@ class Resolver:
                         state='ambiguous',
                         reason='Multiple procedures match this command name.',
                     ),
-                        target_symbol_ids=tuple(match.symbol_id for match in matches),
+                    target_symbol_ids=tuple(match.symbol_id for match in matches),
                 ),
                 None,
                 None,
@@ -512,38 +467,6 @@ class Resolver:
             None,
             None,
         )
-
-    def _command_argument_diagnostics(
-        self,
-        command_calls: tuple[CommandCall, ...],
-        command_targets: dict[tuple[str, int, int, int, int], _ResolvedCommandTarget],
-    ) -> tuple[Diagnostic, ...]:
-        diagnostics: list[Diagnostic] = []
-        for command_call in _most_specific_command_calls(command_calls):
-            command_target = command_targets.get(_command_call_key(command_call))
-            if command_target is None:
-                continue
-
-            diagnostic = _command_argument_diagnostic(command_call, command_target)
-            if diagnostic is not None:
-                diagnostics.append(diagnostic)
-        return tuple(diagnostics)
-
-    def _command_option_diagnostics(
-        self,
-        command_calls: tuple[CommandCall, ...],
-        command_targets: dict[tuple[str, int, int, int, int], _ResolvedCommandTarget],
-    ) -> tuple[Diagnostic, ...]:
-        diagnostics: list[Diagnostic] = []
-        for command_call in _most_specific_command_calls(command_calls):
-            command_target = command_targets.get(_command_call_key(command_call))
-            if command_target is None:
-                continue
-
-            diagnostic = _command_option_diagnostic(command_call, command_target)
-            if diagnostic is not None:
-                diagnostics.append(diagnostic)
-        return tuple(diagnostics)
 
     def _resolve_variable(
         self,
@@ -623,171 +546,6 @@ class Resolver:
             return ()
 
         return builtin_commands_any(f'tcltest::{_normalize_command_name(command_call.name)}')
-
-
-def _command_argument_diagnostic(
-    command_call: CommandCall,
-    command_target: _ResolvedCommandTarget,
-) -> Diagnostic | None:
-    arg_count = len(command_call.arg_texts)
-    command_name = command_call.name or '<dynamic>'
-
-    if isinstance(command_target, ProcDecl):
-        if command_target.arity is None or command_target.arity.accepts(arg_count):
-            return None
-        expected = _arity_descriptions((command_target.arity,))
-    else:
-        overload_arities = tuple(overload.arity for overload in command_target.overloads)
-        if not overload_arities or any(arity is None for arity in overload_arities):
-            return None
-
-        supported_arities = tuple(arity for arity in overload_arities if arity is not None)
-        if any(arity.accepts(arg_count) for arity in supported_arities):
-            return None
-        expected = _arity_descriptions(supported_arities)
-
-    return Diagnostic(
-        span=command_call.span,
-        severity='error',
-        message=(
-            f'Wrong number of arguments for command `{command_name}`; '
-            f'expected {expected}, got {arg_count}.'
-        ),
-        source='analysis',
-        code='wrong-argument-count',
-    )
-
-
-def _command_option_diagnostic(
-    command_call: CommandCall,
-    command_target: _ResolvedCommandTarget,
-) -> Diagnostic | None:
-    if isinstance(command_target, ProcDecl):
-        return None
-
-    options = _builtin_option_specs(command_target)
-    if options is None:
-        return None
-
-    scan_result = scan_command_options(command_call.arg_texts, options)
-    if scan_result.state in {'ok', 'dynamic'}:
-        return None
-
-    if scan_result.option_index is None or scan_result.option_name is None:
-        return None
-
-    span = _command_arg_span(command_call, scan_result.option_index) or command_call.span
-    if scan_result.state == 'unknown-option':
-        return Diagnostic(
-            span=span,
-            severity='error',
-            message=(
-                f'Unknown option `{scan_result.option_name}` '
-                f'for command `{command_call.name}`.'
-            ),
-            source='analysis',
-            code='unknown-option',
-        )
-
-    return Diagnostic(
-        span=span,
-        severity='error',
-        message=(
-            f'Option `{scan_result.option_name}` for command '
-            f'`{command_call.name}` requires a value.'
-        ),
-        source='analysis',
-        code='missing-option-value',
-    )
-
-
-def _arity_descriptions(arities: tuple[CommandArity, ...]) -> str:
-    unique_descriptions: dict[str, None] = {}
-    sorted_arities = sorted(
-        arities,
-        key=lambda arity: (
-            arity.min_args,
-            arity.max_args is None,
-            -1 if arity.max_args is None else arity.max_args,
-        ),
-    )
-    for arity in sorted_arities:
-        unique_descriptions.setdefault(_arity_description(arity), None)
-
-    descriptions = tuple(unique_descriptions)
-    if len(descriptions) == 1:
-        return descriptions[0]
-    if len(descriptions) == 2:
-        return f'{descriptions[0]} or {descriptions[1]}'
-    return ', '.join(descriptions[:-1]) + f', or {descriptions[-1]}'
-
-
-def _arity_description(arity: CommandArity) -> str:
-    min_args = arity.min_args
-    max_args = arity.max_args
-    if max_args is None:
-        return f'at least {min_args}'
-    if min_args == max_args:
-        return str(min_args)
-    return f'{min_args}..{max_args}'
-
-
-def _most_specific_command_calls(command_calls: tuple[CommandCall, ...]) -> tuple[CommandCall, ...]:
-    most_specific_by_span: dict[tuple[str, int, int], CommandCall] = {}
-    for command_call in command_calls:
-        key = (
-            command_call.uri,
-            command_call.span.start.offset,
-            command_call.span.end.offset,
-        )
-        current = most_specific_by_span.get(key)
-        if current is None or _command_call_specificity(command_call) > _command_call_specificity(
-            current
-        ):
-            most_specific_by_span[key] = command_call
-
-    return tuple(
-        sorted(
-            most_specific_by_span.values(),
-            key=lambda command_call: command_call.span.start.offset,
-        )
-    )
-
-
-def _command_call_specificity(command_call: CommandCall) -> tuple[int, int]:
-    static_segments = 0 if command_call.name is None else command_call.name.count(' ') + 1
-    return (
-        static_segments,
-        command_call.name_span.end.offset - command_call.name_span.start.offset,
-    )
-
-
-def _command_call_key(command_call: CommandCall) -> tuple[str, int, int, int, int]:
-    return (
-        command_call.uri,
-        command_call.span.start.offset,
-        command_call.span.end.offset,
-        command_call.name_span.start.offset,
-        command_call.name_span.end.offset,
-    )
-
-
-def _builtin_option_specs(builtin: BuiltinCommand):
-    if not builtin.overloads:
-        return None
-    if any(not overload.options for overload in builtin.overloads):
-        return None
-
-    first_options = builtin.overloads[0].options
-    if any(overload.options != first_options for overload in builtin.overloads[1:]):
-        return None
-    return first_options
-
-
-def _command_arg_span(command_call: CommandCall, index: int):
-    if index < 0 or index >= len(command_call.arg_spans):
-        return None
-    return command_call.arg_spans[index]
 
 
 def _proc_detail(proc: ProcDecl) -> str:
