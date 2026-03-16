@@ -73,6 +73,99 @@ def test_check_project_loads_static_source_commands(tmp_path: Path) -> None:
     assert report.diagnostics == ()
 
 
+def test_check_project_uses_helper_metadata_for_embedded_dependencies(tmp_path: Path) -> None:
+    project_root = tmp_path / 'workspace'
+    devtools_root = project_root / 'devtools'
+    package_root = project_root / 'pkg'
+    devtools_root.mkdir(parents=True)
+    package_root.mkdir()
+
+    (devtools_root / 'testutilities.tcl').write_text(
+        'proc testing {script} {}\n'
+        'proc useLocal {fname pname args} {}\n'
+        'proc testsNeed {name {version {}}} {}\n',
+        encoding='utf-8',
+    )
+    (package_root / 'helper.tcl').write_text(
+        'proc helper {} {return ok}\n',
+        encoding='utf-8',
+    )
+    (package_root / 'main.test').write_text(
+        'source [file join [file dirname [file dirname [info script]]] devtools testutilities.tcl]\n'
+        'testing {\n'
+        '    useLocal helper.tcl demo\n'
+        '    testsNeed Tk 8.5\n'
+        '}\n'
+        'helper\n'
+        'frame .f\n',
+        encoding='utf-8',
+    )
+
+    report = check_project(package_root / 'main.test')
+
+    assert report.source_count == 1
+    assert report.background_source_count == 2
+    assert report.diagnostics == ()
+
+
+def test_check_project_uses_helper_metadata_for_proc_source_parent_loads(tmp_path: Path) -> None:
+    project_root = tmp_path / 'workspace'
+    devtools_root = project_root / 'devtools'
+    package_root = project_root / 'pkg'
+    shared_root = project_root / 'shared'
+    devtools_root.mkdir(parents=True)
+    package_root.mkdir()
+    shared_root.mkdir()
+
+    (devtools_root / 'testutilities.tcl').write_text(
+        'proc testing {script} {}\n'
+        'proc use {fname pname args} {}\n',
+        encoding='utf-8',
+    )
+    (shared_root / 'helper.tcl').write_text(
+        'proc helper {} {return ok}\n',
+        encoding='utf-8',
+    )
+    (package_root / 'main.test').write_text(
+        'source [file join [file dirname [file dirname [info script]]] devtools testutilities.tcl]\n'
+        'testing {\n'
+        '    use shared/helper.tcl demo\n'
+        '}\n'
+        'helper\n',
+        encoding='utf-8',
+    )
+
+    report = check_project(package_root / 'main.test')
+
+    assert report.source_count == 1
+    assert report.background_source_count == 2
+    assert report.diagnostics == ()
+
+
+def test_check_project_does_not_apply_helper_metadata_to_other_sources(tmp_path: Path) -> None:
+    project_root = tmp_path / 'workspace'
+    project_root.mkdir()
+    (project_root / 'helpers.tcl').write_text(
+        'proc useLocal {fname pname args} {}\n',
+        encoding='utf-8',
+    )
+    (project_root / 'helper.tcl').write_text(
+        'proc helper {} {return ok}\n',
+        encoding='utf-8',
+    )
+    (project_root / 'main.tcl').write_text(
+        'source [file join [file dirname [info script]] helpers.tcl]\n'
+        'useLocal helper.tcl demo\n'
+        'helper\n',
+        encoding='utf-8',
+    )
+
+    report = check_project(project_root / 'main.tcl')
+
+    assert [item.diagnostic.code for item in report.diagnostics] == ['unresolved-command']
+    assert report.diagnostics[0].diagnostic.message == 'Unresolved command `helper`.'
+
+
 def test_check_project_loads_transitive_static_source_commands(tmp_path: Path) -> None:
     package_root = tmp_path / 'workspace' / 'modules' / 'demo'
     package_root.mkdir(parents=True)

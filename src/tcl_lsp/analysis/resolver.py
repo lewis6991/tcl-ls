@@ -34,7 +34,12 @@ class Resolver:
     __slots__ = ()
 
     def analyze(
-        self, uri: str, facts: DocumentFacts, workspace_index: WorkspaceIndex
+        self,
+        uri: str,
+        facts: DocumentFacts,
+        workspace_index: WorkspaceIndex,
+        *,
+        additional_required_packages: frozenset[str] = frozenset(),
     ) -> AnalysisResult:
         diagnostics: list[Diagnostic] = list(facts.diagnostics)
         definitions = self._build_definitions(facts)
@@ -42,6 +47,7 @@ class Resolver:
         binding_lookup = self._build_binding_lookup(facts.variable_bindings)
         hovers = self._build_definition_hovers(definitions)
         required_packages = frozenset(requirement.name for requirement in facts.package_requires)
+        required_packages |= additional_required_packages
 
         resolutions: list[ResolutionResult] = []
         resolved_references: list[ResolvedReference] = []

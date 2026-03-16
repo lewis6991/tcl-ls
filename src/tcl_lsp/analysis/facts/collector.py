@@ -241,6 +241,7 @@ class _FactCollector:
             command_name=command.command_name,
             command_span=syntax_command.span,
             name_span=command_name_word.span,
+            arg_texts=tuple(word_static_text(word) for word in syntax_command.words[1:]),
             context=context,
         )
 
@@ -255,12 +256,14 @@ class _FactCollector:
         command_name: str | None,
         command_span: Span,
         name_span: Span,
+        arg_texts: tuple[str | None, ...],
         context: _ExtractionContext,
     ) -> None:
         self._command_calls.append(
             CommandCall(
                 uri=context.uri,
                 name=command_name,
+                arg_texts=arg_texts,
                 namespace=context.namespace,
                 scope_id=context.scope_id,
                 procedure_symbol_id=context.procedure_symbol_id,
@@ -291,6 +294,7 @@ class _FactCollector:
                 command_name=builtin_name,
                 command_span=command.span,
                 name_span=word.content_span,
+                arg_texts=tuple(word_static_text(argument) for argument in command.words[index + 1 :]),
                 context=context,
             )
 

@@ -19,6 +19,7 @@ from tcl_lsp.analysis import (
     Resolver,
     WorkspaceIndex,
 )
+from tcl_lsp.analysis.metadata_effects import metadata_dependency_overlay
 from tcl_lsp.common import Diagnostic
 from tcl_lsp.parser import Parser
 from tcl_lsp.workspace import (
@@ -644,10 +645,15 @@ def _background_source_uris(
     workspace_index: WorkspaceIndex,
 ) -> tuple[str, ...]:
     uris: dict[str, None] = {}
-    for directive in document.facts.source_directives:
-        uris.setdefault(directive.target_uri, None)
-    for package_require in document.facts.package_requires:
-        for source_uri in workspace_index.package_source_uris(package_require.name):
+    overlay = metadata_dependency_overlay(
+        document.path,
+        document.facts,
+        workspace_index,
+    )
+    for source_uri in overlay.source_uris:
+        uris.setdefault(source_uri, None)
+    for package_name in overlay.required_packages:
+        for source_uri in workspace_index.package_source_uris(package_name):
             uris.setdefault(source_uri, None)
     return tuple(uris)
 
@@ -1001,12 +1007,18 @@ def _analyze_source_document(
     resolver: Resolver,
     workspace_index: WorkspaceIndex,
 ) -> _UnitSourceReport:
+    dependency_overlay = metadata_dependency_overlay(
+        document.path,
+        document.facts,
+        workspace_index,
+    )
     diagnostics = tuple(
         sorted(
             resolver.analyze(
                 uri=document.uri,
                 facts=document.facts,
                 workspace_index=workspace_index,
+                additional_required_packages=dependency_overlay.required_packages,
             ).diagnostics,
             key=_diagnostic_key,
         )

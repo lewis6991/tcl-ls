@@ -117,6 +117,7 @@ class VarBinding:
 class CommandCall:
     uri: str
     name: str | None
+    arg_texts: tuple[str | None, ...]
     namespace: str
     scope_id: str
     procedure_symbol_id: str | None
