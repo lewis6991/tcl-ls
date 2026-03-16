@@ -15,7 +15,9 @@ _META_DIR = metadata_dir()
 
 type SourceBase = Literal['call-source-directory', 'proc-source-parent']
 type MetadataOptionKind = Literal['flag', 'value', 'stop']
-type OptionScanState = Literal['ok', 'dynamic', 'unknown-option', 'missing-option-value']
+type OptionScanState = Literal[
+    'ok', 'dynamic', 'unstable', 'unknown-option', 'missing-option-value'
+]
 type MetadataValueSetKind = Literal['keyword', 'subcommand']
 
 
@@ -165,21 +167,33 @@ def select_argument_indices(
     selector: MetadataSelector,
     arg_texts: tuple[str | None, ...],
     options: tuple[MetadataOption, ...],
+    arg_expanded: tuple[bool, ...] | None = None,
 ) -> tuple[int, ...] | None:
+    expanded_flags = _normalized_argument_expansion_flags(arg_texts, arg_expanded)
     if selector.after_options:
-        scan_result = scan_command_options(arg_texts, options)
-        if scan_result.state not in {'ok', 'dynamic'}:
+        scan_result = scan_command_options(arg_texts, options, expanded_flags)
+        if scan_result.state not in {'ok', 'dynamic', 'unstable'}:
             return None
         positional_indices = scan_result.positional_indices
         if selector.start_index >= len(positional_indices):
+            if scan_result.state == 'unstable':
+                return None
             return ()
         if selector.all_remaining:
+            if scan_result.state == 'unstable':
+                return None
             return positional_indices[selector.start_index :]
         return positional_indices[selector.start_index : selector.start_index + 1]
+
+    first_expanded_index = _first_expanded_index(expanded_flags)
+    if first_expanded_index is not None and first_expanded_index <= selector.start_index:
+        return None
 
     if selector.start_index >= len(arg_texts):
         return ()
     if selector.all_remaining:
+        if first_expanded_index is not None and first_expanded_index >= selector.start_index:
+            return None
         return tuple(range(selector.start_index, len(arg_texts)))
     return (selector.start_index,)
 
@@ -187,23 +201,30 @@ def select_argument_indices(
 def scan_command_options(
     arg_texts: tuple[str | None, ...],
     options: tuple[MetadataOption, ...],
+    arg_expanded: tuple[bool, ...] | None = None,
 ) -> OptionScanResult:
+    expanded_flags = _normalized_argument_expansion_flags(arg_texts, arg_expanded)
     if not options:
-        return OptionScanResult(
+        return _positional_scan_result(
+            start_index=0,
+            arg_texts=arg_texts,
+            expanded_flags=expanded_flags,
             state='ok',
-            positional_indices=tuple(range(len(arg_texts))),
         )
 
     option_specs = {option.name: option for option in options}
-    positional_indices: list[int] = []
     index = 0
     while index < len(arg_texts):
+        if expanded_flags[index]:
+            return OptionScanResult(state='unstable', positional_indices=())
+
         arg_text = arg_texts[index]
         if arg_text is None:
-            positional_indices.extend(range(index, len(arg_texts)))
-            return OptionScanResult(
+            return _positional_scan_result(
+                start_index=index,
+                arg_texts=arg_texts,
+                expanded_flags=expanded_flags,
                 state='dynamic',
-                positional_indices=tuple(positional_indices),
             )
 
         option = option_specs.get(arg_text)
@@ -211,14 +232,15 @@ def scan_command_options(
             if arg_text.startswith('-') and arg_text != '-':
                 return OptionScanResult(
                     state='unknown-option',
-                    positional_indices=tuple(positional_indices),
+                    positional_indices=(),
                     option_index=index,
                     option_name=arg_text,
                 )
-            positional_indices.extend(range(index, len(arg_texts)))
-            return OptionScanResult(
+            return _positional_scan_result(
+                start_index=index,
+                arg_texts=arg_texts,
+                expanded_flags=expanded_flags,
                 state='ok',
-                positional_indices=tuple(positional_indices),
             )
 
         if option.kind == 'flag':
@@ -228,22 +250,62 @@ def scan_command_options(
             if index + 1 >= len(arg_texts):
                 return OptionScanResult(
                     state='missing-option-value',
-                    positional_indices=tuple(positional_indices),
+                    positional_indices=(),
                     option_index=index,
                     option_name=arg_text,
                 )
+            if expanded_flags[index + 1]:
+                return OptionScanResult(state='unstable', positional_indices=())
             index += 2
             continue
-        positional_indices.extend(range(index + 1, len(arg_texts)))
-        return OptionScanResult(
+        return _positional_scan_result(
+            start_index=index + 1,
+            arg_texts=arg_texts,
+            expanded_flags=expanded_flags,
             state='ok',
-            positional_indices=tuple(positional_indices),
         )
 
+    return OptionScanResult(state='ok', positional_indices=())
+
+
+def _normalized_argument_expansion_flags(
+    arg_texts: tuple[str | None, ...],
+    arg_expanded: tuple[bool, ...] | None,
+) -> tuple[bool, ...]:
+    if arg_expanded is None:
+        return (False,) * len(arg_texts)
+    if len(arg_expanded) >= len(arg_texts):
+        return arg_expanded[: len(arg_texts)]
+    return arg_expanded + (False,) * (len(arg_texts) - len(arg_expanded))
+
+
+def _positional_scan_result(
+    *,
+    start_index: int,
+    arg_texts: tuple[str | None, ...],
+    expanded_flags: tuple[bool, ...],
+    state: Literal['ok', 'dynamic'],
+) -> OptionScanResult:
+    first_expanded_index = _first_expanded_index(expanded_flags, start_index)
+    if first_expanded_index is None:
+        return OptionScanResult(
+            state=state,
+            positional_indices=tuple(range(start_index, len(arg_texts))),
+        )
     return OptionScanResult(
-        state='ok',
-        positional_indices=tuple(positional_indices),
+        state='unstable',
+        positional_indices=tuple(range(start_index, first_expanded_index)),
     )
+
+
+def _first_expanded_index(
+    expanded_flags: tuple[bool, ...],
+    start_index: int = 0,
+) -> int | None:
+    for index in range(start_index, len(expanded_flags)):
+        if expanded_flags[index]:
+            return index
+    return None
 
 
 def _parse_annotation_body(

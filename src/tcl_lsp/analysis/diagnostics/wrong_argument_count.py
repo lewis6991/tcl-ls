@@ -32,6 +32,9 @@ def _command_argument_message(
     command_call: CommandCall,
     command_target: ResolvedCommandTarget,
 ) -> str | None:
+    if command_call.has_expanded_args:
+        return None
+
     arg_count = len(command_call.arg_texts)
     command_name = command_call.name or '<dynamic>'
 

@@ -240,12 +240,14 @@ class _FactCollector:
             return None
 
         command_name_word = syntax_command.words[0]
+        argument_words = syntax_command.words[1:]
         self._record_command_call(
             command_name=command.command_name,
             command_span=syntax_command.span,
             name_span=command_name_word.span,
-            arg_texts=tuple(word_static_text(word) for word in syntax_command.words[1:]),
-            arg_spans=tuple(word.span for word in syntax_command.words[1:]),
+            arg_texts=tuple(word_static_text(word) for word in argument_words),
+            arg_spans=tuple(word.span for word in argument_words),
+            arg_expanded=tuple(word.expanded for word in argument_words),
             context=context,
         )
 
@@ -263,6 +265,7 @@ class _FactCollector:
         name_span: Span,
         arg_texts: tuple[str | None, ...],
         arg_spans: tuple[Span, ...],
+        arg_expanded: tuple[bool, ...],
         context: _ExtractionContext,
     ) -> None:
         self._command_calls.append(
@@ -271,6 +274,7 @@ class _FactCollector:
                 name=command_name,
                 arg_texts=arg_texts,
                 arg_spans=arg_spans,
+                arg_expanded=arg_expanded,
                 namespace=context.namespace,
                 scope_id=context.scope_id,
                 procedure_symbol_id=context.procedure_symbol_id,
@@ -297,12 +301,14 @@ class _FactCollector:
             if builtin_command(builtin_name) is None:
                 continue
 
+            argument_words = command.words[index + 1 :]
             self._record_command_call(
                 command_name=builtin_name,
                 command_span=command.span,
                 name_span=word.content_span,
-                arg_texts=tuple(word_static_text(argument) for argument in command.words[index + 1 :]),
-                arg_spans=tuple(argument.span for argument in command.words[index + 1 :]),
+                arg_texts=tuple(word_static_text(argument) for argument in argument_words),
+                arg_spans=tuple(argument.span for argument in argument_words),
+                arg_expanded=tuple(argument.expanded for argument in argument_words),
                 context=context,
             )
 
@@ -395,6 +401,7 @@ class _FactCollector:
             annotation.selector,
             argument_texts,
             metadata_command.options,
+            tuple(word.expanded for word in argument_words),
         )
         if selected_indices is None:
             return None

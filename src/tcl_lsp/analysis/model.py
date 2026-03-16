@@ -156,12 +156,17 @@ class CommandCall:
     name: str | None
     arg_texts: tuple[str | None, ...]
     arg_spans: tuple[Span, ...]
+    arg_expanded: tuple[bool, ...]
     namespace: str
     scope_id: str
     procedure_symbol_id: str | None
     span: Span
     name_span: Span
     dynamic: bool
+
+    @property
+    def has_expanded_args(self) -> bool:
+        return any(self.arg_expanded)
 
 
 @dataclass(frozen=True, slots=True)

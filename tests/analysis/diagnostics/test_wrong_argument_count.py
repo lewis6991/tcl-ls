@@ -52,3 +52,8 @@ def test_analysis_checks_most_specific_builtin_subcommand_arguments(parser: Pars
 def test_analysis_skips_unsupported_builtin_argument_signatures(parser: Parser) -> None:
     snapshot = _analyze(parser, 'file:///binary_encode.tcl', 'binary encode\n')
     assert snapshot.analysis.diagnostics == ()
+
+
+def test_analysis_skips_argument_count_checks_when_expansion_is_present(parser: Parser) -> None:
+    snapshot = _analyze(parser, 'file:///string_map_expanded_args.tcl', 'string map {*}$args\n')
+    assert snapshot.analysis.diagnostics == ()

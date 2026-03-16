@@ -195,7 +195,12 @@ def _selected_argument_texts(
     selector: MetadataSelector,
     options: tuple[MetadataOption, ...],
 ) -> tuple[str, ...] | None:
-    selected_indices = select_argument_indices(selector, command_call.arg_texts, options)
+    selected_indices = select_argument_indices(
+        selector,
+        command_call.arg_texts,
+        options,
+        command_call.arg_expanded,
+    )
     if selected_indices is None:
         return None
 

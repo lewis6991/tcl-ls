@@ -39,3 +39,18 @@ def test_analysis_accepts_unique_builtin_subcommand_abbreviations(parser: Parser
     )
 
     assert snapshot.analysis.diagnostics == ()
+
+
+def test_analysis_keeps_unknown_subcommand_checks_for_stable_positions(
+    parser: Parser,
+) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///unknown_info_subcommand_with_expanded_tail.tcl',
+        'info gurka {*}$args\n',
+    )
+
+    assert [diagnostic.code for diagnostic in snapshot.analysis.diagnostics] == ['unknown-subcommand']
+    assert snapshot.analysis.diagnostics[0].message == (
+        'Unknown subcommand `gurka` for command `info`.'
+    )

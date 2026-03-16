@@ -4,6 +4,7 @@ from pathlib import Path
 
 from tcl_lsp.analysis.metadata_commands import (
     MetadataBind,
+    MetadataSelector,
     MetadataValueSet,
     load_metadata_commands,
     select_argument_indices,
@@ -53,6 +54,40 @@ def test_core_metadata_option_selectors_allow_dynamic_positionals() -> None:
     )
 
     assert selected == (4,)
+
+
+def test_core_metadata_option_selectors_skip_unstable_expansion_tails() -> None:
+    metadata_path = metadata_dir() / Path('tcl8.6/tcl.tcl')
+    regexp_command = next(
+        command
+        for command in load_metadata_commands(metadata_path)
+        if command.name == 'regexp'
+    )
+    bind_annotation = next(
+        annotation
+        for annotation in regexp_command.annotations
+        if isinstance(annotation, MetadataBind)
+    )
+
+    selected = select_argument_indices(
+        bind_annotation.selector,
+        ('-indices', '(..)(..)', None, 'match'),
+        regexp_command.options,
+        (False, False, True, False),
+    )
+
+    assert selected is None
+
+
+def test_argument_selectors_allow_fixed_positions_before_late_expansion() -> None:
+    selected = select_argument_indices(
+        MetadataSelector(start_index=0, all_remaining=False, list_mode=False, after_options=False),
+        ('gurka', None),
+        (),
+        (False, True),
+    )
+
+    assert selected == (0,)
 
 
 def test_core_metadata_parses_return_options() -> None:

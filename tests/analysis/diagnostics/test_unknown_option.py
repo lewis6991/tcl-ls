@@ -18,3 +18,14 @@ def test_analysis_reports_unknown_builtin_option(parser: Parser) -> None:
 def test_analysis_respects_option_stop_marker(parser: Parser) -> None:
     snapshot = _analyze(parser, 'file:///return_stop.tcl', 'return -- -code error\n')
     assert snapshot.analysis.diagnostics == ()
+
+
+def test_analysis_skips_unknown_option_checks_for_expanded_option_values(
+    parser: Parser,
+) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///return_expanded_option_value.tcl',
+        'return -code {*}$args -bogus\n',
+    )
+    assert snapshot.analysis.diagnostics == ()

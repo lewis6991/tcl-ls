@@ -73,8 +73,8 @@ def command_option_issue(
     if options is None:
         return None
 
-    scan_result = scan_command_options(command_call.arg_texts, options)
-    if scan_result.state in {'ok', 'dynamic'}:
+    scan_result = scan_command_options(command_call.arg_texts, options, command_call.arg_expanded)
+    if scan_result.state in {'ok', 'dynamic', 'unstable'}:
         return None
 
     if scan_result.option_index is None or scan_result.option_name is None:
@@ -105,7 +105,12 @@ def command_subcommand_issue(
         if value_set.kind != 'subcommand':
             continue
 
-        indices = select_argument_indices(value_set.selector, command_call.arg_texts, options)
+        indices = select_argument_indices(
+            value_set.selector,
+            command_call.arg_texts,
+            options,
+            command_call.arg_expanded,
+        )
         if indices is None or len(indices) != 1:
             continue
 
