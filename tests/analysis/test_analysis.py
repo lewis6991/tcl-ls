@@ -755,6 +755,67 @@ def test_analysis_resolves_common_tcllib_builtin_metadata(parser: Parser) -> Non
     assert analysis.diagnostics == ()
 
 
+def test_analysis_resolves_clay_definition_commands(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///clay_definition.tcl',
+        'package require clay\n'
+        'clay::define ::demo {\n'
+        '    superclass ::clay::object\n'
+        '    constructor {name} {\n'
+        '        my variable seen\n'
+        '        set seen $name\n'
+        '    }\n'
+        '    method greet {who} {\n'
+        '        return $who\n'
+        '    }\n'
+        '    Ensemble uri::add {vhosts patterns info} {\n'
+        '        return [list $vhosts $patterns $info]\n'
+        '    }\n'
+        '    Dict reply {}\n'
+        '    clay set plugin/ load {}\n'
+        '}\n',
+    )
+    analysis = snapshot.analysis
+
+    resolution_by_name = {
+        resolution.reference.name: resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command'
+    }
+    assert resolution_by_name['clay::define'] == 'resolved'
+    assert resolution_by_name['superclass'] == 'resolved'
+    assert resolution_by_name['constructor'] == 'resolved'
+    assert resolution_by_name['method'] == 'resolved'
+    assert resolution_by_name['Ensemble'] == 'resolved'
+    assert resolution_by_name['Dict'] == 'resolved'
+    assert resolution_by_name['clay'] == 'resolved'
+    assert analysis.diagnostics == ()
+
+
+def test_analysis_resolves_clay_class_create_body_commands(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///clay_class_create.tcl',
+        'package require clay\n'
+        'clay::class create ::demo::Widget {\n'
+        '    method greet {who} {\n'
+        '        return $who\n'
+        '    }\n'
+        '}\n',
+    )
+    analysis = snapshot.analysis
+
+    resolution_by_name = {
+        resolution.reference.name: resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command'
+    }
+    assert resolution_by_name['clay::class'] == 'resolved'
+    assert resolution_by_name['method'] == 'resolved'
+    assert analysis.diagnostics == ()
+
+
 def test_analysis_collects_tepam_procedures_from_package_metadata(parser: Parser) -> None:
     snapshot = _analyze(
         parser,
