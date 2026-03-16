@@ -44,7 +44,7 @@ from tcl_lsp.analysis.model import (
     VarBinding,
     VariableReference,
 )
-from tcl_lsp.common import HoverInfo, Location
+from tcl_lsp.common import HoverInfo, Location, Span
 from tcl_lsp.workspace import source_id_to_path
 
 
@@ -666,7 +666,7 @@ class Resolver:
 def _metadata_var_binding(
     command_call: CommandCall,
     argument_text: str,
-    span,
+    span: Span,
     kind: BindingKind,
     symbol_ids_by_key: dict[tuple[str, str], str],
 ) -> VarBinding | None:
@@ -697,7 +697,9 @@ def _annotated_metadata_commands() -> dict[tuple[str, str], MetadataCommand]:
     for metadata_command in all_metadata_commands():
         if metadata_command.context_name is not None:
             continue
-        if not any(isinstance(annotation, MetadataBind) for annotation in metadata_command.annotations):
+        if not any(
+            isinstance(annotation, MetadataBind) for annotation in metadata_command.annotations
+        ):
             continue
 
         key = (metadata_command.metadata_path.name, metadata_command.name)

@@ -4,7 +4,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from tcl_lsp.analysis.arity import proc_parameter_arity
-from tcl_lsp.analysis.builtins import builtin_command, core_annotated_metadata_commands
+from tcl_lsp.analysis.builtins import (
+    annotated_metadata_commands_for_packages,
+    builtin_command,
+    canonical_builtin_package_name,
+    is_builtin_package,
+)
 from tcl_lsp.analysis.embedded_languages import (
     EmbeddedLanguageName,
     EmbeddedLanguageEntry,
@@ -33,11 +38,13 @@ from tcl_lsp.analysis.facts.parsing import ListItem, is_simple_name, split_tcl_l
 from tcl_lsp.analysis.metadata_commands import (
     MetadataBind,
     MetadataCommand,
+    MetadataPlugin,
     MetadataProcedure,
     MetadataRef,
     MetadataScriptBody,
     select_argument_indices,
 )
+from tcl_lsp.analysis.tcl_plugins import PluginProcedureEffect, TclPluginHost
 from tcl_lsp.analysis.facts.utils import (
     body_span,
     command_documentation,
@@ -101,15 +108,23 @@ class _VariableTarget:
 
 
 class FactExtractor:
-    __slots__ = ('_parser',)
+    __slots__ = ('_parser', '_plugin_host')
 
-    def __init__(self, parser: Parser | None = None) -> None:
+    def __init__(
+        self,
+        parser: Parser | None = None,
+        plugin_host: TclPluginHost | None = None,
+    ) -> None:
         self._parser = Parser() if parser is None else parser
+        self._plugin_host = TclPluginHost() if plugin_host is None else plugin_host
 
-    def extract(self, parse_result: ParseResult, *, include_parse_result: bool = True) -> DocumentFacts:
+    def extract(
+        self, parse_result: ParseResult, *, include_parse_result: bool = True
+    ) -> DocumentFacts:
         lowering_result = lower_parse_result(parse_result, parser=self._parser)
         collector = _FactCollector(
             parser=self._parser,
+            plugin_host=self._plugin_host,
             parse_result=parse_result,
             lowered_script=lowering_result.script,
             diagnostics=parse_result.diagnostics + lowering_result.diagnostics,
@@ -120,6 +135,7 @@ class FactExtractor:
 
 class _FactCollector:
     __slots__ = (
+        '_active_builtin_packages',
         '_command_calls',
         '_command_handlers',
         '_command_imports',
@@ -135,6 +151,7 @@ class _FactCollector:
         '_parser',
         '_procedures',
         '_source_directives',
+        '_plugin_host',
         '_variable_bindings',
         '_variable_references',
     )
@@ -142,6 +159,7 @@ class _FactCollector:
     def __init__(
         self,
         parser: Parser,
+        plugin_host: TclPluginHost,
         parse_result: ParseResult,
         *,
         lowered_script: LoweredScript,
@@ -149,10 +167,12 @@ class _FactCollector:
         include_parse_result: bool,
     ) -> None:
         self._parser = parser
+        self._plugin_host = plugin_host
         self._parse_result = parse_result
         self._lowered_script = lowered_script
         self._include_parse_result = include_parse_result
         self._diagnostics: list[Diagnostic] = list(diagnostics)
+        self._active_builtin_packages: set[str] = set()
         self._namespaces: list[NamespaceScope] = []
         self._procedures: list[ProcDecl] = []
         self._source_directives: list[SourceDirective] = []
@@ -202,7 +222,9 @@ class _FactCollector:
         for command in script.commands:
             self._collect_lowered_command(command, context)
 
-    def _collect_lowered_command(self, command: LoweredCommand, context: _ExtractionContext) -> None:
+    def _collect_lowered_command(
+        self, command: LoweredCommand, context: _ExtractionContext
+    ) -> None:
         syntax_command = command.command
         command_name = self._collect_command_common(command, context)
         normalized_command_name = (
@@ -336,11 +358,29 @@ class _FactCollector:
         command: Command,
         context: _ExtractionContext,
     ) -> None:
-        matched_command = self._matched_core_metadata_command(command)
+        matched_command = self._matched_metadata_command(command, context)
         if matched_command is None:
             return
 
         metadata_command, prefix_word_count = matched_command
+        for annotation in metadata_command.annotations:
+            if not isinstance(annotation, MetadataProcedure):
+                if isinstance(annotation, MetadataPlugin):
+                    self._collect_metadata_plugin(
+                        command,
+                        context,
+                        metadata_command=metadata_command,
+                        prefix_word_count=prefix_word_count,
+                        plugin=annotation,
+                    )
+                continue
+            self._collect_metadata_procedure(
+                command,
+                context,
+                command_name=metadata_command.name,
+                prefix_word_count=prefix_word_count,
+                procedure=annotation,
+            )
         self._collect_selected_metadata_annotations(
             command,
             context,
@@ -378,6 +418,158 @@ class _FactCollector:
         )
         return handled
 
+    def _collect_metadata_plugin(
+        self,
+        command: Command,
+        context: _ExtractionContext,
+        *,
+        metadata_command: MetadataCommand,
+        prefix_word_count: int,
+        plugin: MetadataPlugin,
+    ) -> None:
+        word_texts, static_flags = self._plugin_word_texts(command.words)
+        effects = self._plugin_host.call_plugin(
+            plugin,
+            words=word_texts,
+            info={
+                'embedded-language': context.embedded_language or '',
+                'embedded-owner-name': context.embedded_owner_name or '',
+                'metadata-command': metadata_command.name,
+                'namespace': context.namespace,
+                'prefix-word-count': str(prefix_word_count),
+                'procedure-symbol-id': context.procedure_symbol_id or '',
+                'scope-id': context.scope_id,
+                'static-flags': self._plugin_flag_list(static_flags),
+                'expanded-flags': self._plugin_flag_list(
+                    tuple(word.expanded for word in command.words)
+                ),
+                'uri': context.uri,
+            },
+        )
+        for effect in effects:
+            self._collect_plugin_procedure(command, context, effect)
+
+    def _collect_metadata_procedure(
+        self,
+        command: Command,
+        context: _ExtractionContext,
+        *,
+        command_name: str,
+        prefix_word_count: int,
+        procedure: MetadataProcedure,
+    ) -> None:
+        argument_words = command.words[prefix_word_count:]
+        procedure_name, selection_span = self._procedure_name(
+            command,
+            command_name=command_name,
+            prefix_word_count=prefix_word_count,
+            argument_words=argument_words,
+            procedure=procedure,
+        )
+        if procedure_name is None or selection_span is None:
+            return
+
+        parameter_items = self._procedure_parameter_items(argument_words, procedure)
+        if parameter_items is None:
+            return
+
+        if procedure.body_index >= len(argument_words):
+            return
+        body_word = argument_words[procedure.body_index]
+        body = self._embedded_script_text(body_word)
+        if body is None:
+            return
+
+        qualified_name = qualify_name(procedure_name, context.namespace)
+        proc_id = proc_symbol_id(context.uri, qualified_name, selection_span.start.offset)
+        proc_decl = ProcDecl(
+            symbol_id=proc_id,
+            uri=context.uri,
+            name=procedure_name,
+            qualified_name=qualified_name,
+            namespace=namespace_for_name(qualified_name),
+            span=command.span,
+            name_span=selection_span,
+            parameters=self._parameter_decls_from_items(
+                parameter_items,
+                uri=context.uri,
+                proc_symbol_id=proc_id,
+            ),
+            arity=proc_parameter_arity(parameter_items),
+            documentation=command_documentation(command),
+            body_span=body_span(body_word),
+        )
+        self._procedures.append(proc_decl)
+
+        body_context = _ExtractionContext(
+            uri=proc_decl.uri,
+            namespace=proc_decl.namespace,
+            scope_id=proc_decl.symbol_id,
+            procedure_symbol_id=proc_decl.symbol_id,
+            embedded_language=procedure.body_context,
+            embedded_owner_name=None,
+        )
+        self._record_parameter_bindings(proc_decl.parameters, body_context)
+        self._collect_script_body_word(body_word, body_context)
+
+    def _collect_plugin_procedure(
+        self,
+        command: Command,
+        context: _ExtractionContext,
+        effect: PluginProcedureEffect,
+    ) -> None:
+        if effect.name_word_index >= len(command.words) or effect.body_word_index >= len(
+            command.words
+        ):
+            return
+
+        name_word = command.words[effect.name_word_index]
+        procedure_name = word_static_text(name_word)
+        if procedure_name is None:
+            return
+
+        body_word = command.words[effect.body_word_index]
+        if self._embedded_script_text(body_word) is None:
+            return
+
+        qualified_name = qualify_name(procedure_name, context.namespace)
+        proc_id = proc_symbol_id(context.uri, qualified_name, name_word.content_span.start.offset)
+        proc_decl = ProcDecl(
+            symbol_id=proc_id,
+            uri=context.uri,
+            name=procedure_name,
+            qualified_name=qualified_name,
+            namespace=namespace_for_name(qualified_name),
+            span=command.span,
+            name_span=name_word.content_span,
+            parameters=self._parameter_decls_from_plugin_names(
+                effect.parameter_names,
+                source_span=(
+                    command.words[effect.parameter_word_index].content_span
+                    if effect.parameter_word_index is not None
+                    and effect.parameter_word_index < len(command.words)
+                    else name_word.content_span
+                ),
+                uri=context.uri,
+                proc_symbol_id=proc_id,
+            ),
+            arity=None,
+            documentation=command_documentation(command),
+            body_span=body_span(body_word),
+        )
+        self._procedures.append(proc_decl)
+
+        body_context = _ExtractionContext(
+            uri=proc_decl.uri,
+            namespace=proc_decl.namespace,
+            scope_id=proc_decl.symbol_id,
+            procedure_symbol_id=proc_decl.symbol_id,
+            embedded_language=effect.body_context,
+            embedded_owner_name=None,
+        )
+        self._record_parameter_bindings(proc_decl.parameters, body_context)
+        self._collect_script_body_word(body_word, body_context)
+
     def _collect_embedded_language_entry(
         self,
         command: Command,
@@ -392,9 +584,8 @@ class _FactCollector:
         if entry.script_word_index is not None and entry.script_word_index < len(command.words):
             self._collect_script_body_word(command.words[entry.script_word_index], entry_context)
             handled = True
-        if (
-            entry.inline_command_start_index is not None
-            and entry.inline_command_start_index < len(command.words)
+        if entry.inline_command_start_index is not None and entry.inline_command_start_index < len(
+            command.words
         ):
             self._collect_inline_embedded_command(
                 command.words[entry.inline_command_start_index :],
@@ -452,7 +643,7 @@ class _FactCollector:
             return
 
         argument_words = command.words[prefix_word_count:]
-        procedure_name, selection_span = self._embedded_procedure_name(
+        procedure_name, selection_span = self._procedure_name(
             command,
             command_name=command_name,
             prefix_word_count=prefix_word_count,
@@ -462,7 +653,7 @@ class _FactCollector:
         if procedure_name is None or selection_span is None:
             return
 
-        parameter_items = self._embedded_parameter_items(argument_words, procedure)
+        parameter_items = self._procedure_parameter_items(argument_words, procedure)
         if parameter_items is None:
             return
 
@@ -556,7 +747,7 @@ class _FactCollector:
 
         return handled
 
-    def _embedded_procedure_name(
+    def _procedure_name(
         self,
         command: Command,
         *,
@@ -578,7 +769,7 @@ class _FactCollector:
             return None, None
         return name, name_word.content_span
 
-    def _embedded_parameter_items(
+    def _procedure_parameter_items(
         self,
         argument_words: tuple[Word, ...],
         procedure: MetadataProcedure,
@@ -587,10 +778,12 @@ class _FactCollector:
             return ()
         if procedure.parameter_index >= len(argument_words):
             return None
+
         parameter_word = argument_words[procedure.parameter_index]
-        if word_static_text(parameter_word) is None:
+        static_text = word_static_text(parameter_word)
+        if static_text is None:
             return None
-        return self._static_list_items(parameter_word)
+        return tuple(split_tcl_list(static_text, parameter_word.content_span.start))
 
     def _embedded_procedure_qualified_name(
         self,
@@ -619,11 +812,16 @@ class _FactCollector:
             )
         return inferred_kind
 
-    def _matched_core_metadata_command(
+    def _matched_metadata_command(
         self,
         command: Command,
+        context: _ExtractionContext,
     ) -> tuple[MetadataCommand, int] | None:
+        available_commands = annotated_metadata_commands_for_packages(
+            frozenset(self._active_builtin_packages)
+        )
         static_prefix_parts: list[str] = []
+        imported_prefix_parts: list[list[str]] | None = None
         matched: tuple[MetadataCommand, int] | None = None
         for index, word in enumerate(command.words):
             static_text = word_static_text(word)
@@ -632,10 +830,82 @@ class _FactCollector:
             if index == 0:
                 static_text = normalize_command_name(static_text)
             static_prefix_parts.append(static_text)
-            metadata_command = core_annotated_metadata_commands().get(' '.join(static_prefix_parts))
+
+            if index == 0:
+                imported_prefix_parts = [
+                    [normalize_command_name(target_name)]
+                    for target_name in self._imported_command_candidates(
+                        static_text,
+                        context.namespace,
+                    )
+                ]
+            elif imported_prefix_parts is not None:
+                for prefix_parts in imported_prefix_parts:
+                    prefix_parts.append(static_text)
+
+            metadata_command = self._unique_metadata_command(
+                available_commands.get(' '.join(static_prefix_parts), ())
+            )
             if metadata_command is not None:
                 matched = metadata_command, index + 1
+            if imported_prefix_parts is None:
+                continue
+            for prefix_parts in imported_prefix_parts:
+                metadata_command = self._unique_metadata_command(
+                    available_commands.get(' '.join(prefix_parts), ())
+                )
+                if metadata_command is not None:
+                    matched = metadata_command, index + 1
         return matched
+
+    def _unique_metadata_command(
+        self,
+        candidates: tuple[MetadataCommand, ...],
+    ) -> MetadataCommand | None:
+        if len(candidates) != 1:
+            return None
+        return candidates[0]
+
+    def _imported_command_candidates(
+        self,
+        raw_name: str,
+        namespace: str,
+    ) -> tuple[str, ...]:
+        if raw_name.startswith('::'):
+            return ()
+
+        candidates: dict[str, None] = {}
+        for candidate_namespace in self._namespace_candidates(namespace):
+            for command_import in self._command_imports:
+                if command_import.namespace != candidate_namespace:
+                    continue
+                target_name = self._import_target_name(command_import, raw_name)
+                if target_name is None:
+                    continue
+                candidates.setdefault(target_name, None)
+        return tuple(candidates)
+
+    def _namespace_candidates(self, namespace: str) -> tuple[str, ...]:
+        if namespace == '::':
+            return ('::',)
+
+        namespace_segments = [segment for segment in namespace.split('::') if segment]
+        candidates: list[str] = []
+        while namespace_segments:
+            candidates.append('::' + '::'.join(namespace_segments))
+            namespace_segments = namespace_segments[:-1]
+        candidates.append('::')
+        return tuple(candidates)
+
+    def _import_target_name(self, command_import: CommandImport, raw_name: str) -> str | None:
+        if command_import.kind == 'exact':
+            if command_import.imported_name != raw_name:
+                return None
+            return command_import.target_name
+
+        if command_import.target_name == '::':
+            return f'::{raw_name}'
+        return f'{command_import.target_name}::{raw_name}'
 
     def _selected_metadata_argument_words(
         self,
@@ -654,9 +924,7 @@ class _FactCollector:
         if selected_indices is None:
             return None
         return tuple(
-            argument_words[index]
-            for index in selected_indices
-            if index < len(argument_words)
+            argument_words[index] for index in selected_indices if index < len(argument_words)
         )
 
     def _record_list_binding_word(
@@ -731,6 +999,8 @@ class _FactCollector:
             package_name = word_static_text(command.words[2])
             if package_name is None:
                 return
+            if is_builtin_package(package_name):
+                self._active_builtin_packages.add(canonical_builtin_package_name(package_name))
             version_constraints = tuple(
                 version_text
                 for word in command.words[3:]
@@ -1560,6 +1830,42 @@ class _FactCollector:
                 context=context,
                 kind='parameter',
             )
+
+    def _parameter_decls_from_plugin_names(
+        self,
+        names: tuple[str, ...],
+        *,
+        source_span: Span,
+        uri: str,
+        proc_symbol_id: str,
+    ) -> tuple[ParameterDecl, ...]:
+        parameters: list[ParameterDecl] = []
+        for name in names:
+            if not is_simple_name(name):
+                continue
+            parameters.append(
+                ParameterDecl(
+                    symbol_id=variable_symbol_id(uri, proc_symbol_id, name),
+                    name=name,
+                    span=source_span,
+                )
+            )
+        return tuple(parameters)
+
+    def _plugin_word_texts(
+        self,
+        words: tuple[Word, ...],
+    ) -> tuple[tuple[str, ...], tuple[bool, ...]]:
+        texts: list[str] = []
+        static_flags: list[bool] = []
+        for word in words:
+            static_text = word_static_text(word)
+            texts.append(static_text or '')
+            static_flags.append(static_text is not None)
+        return tuple(texts), tuple(static_flags)
+
+    def _plugin_flag_list(self, flags: tuple[bool, ...]) -> str:
+        return ' '.join('1' if flag else '0' for flag in flags)
 
     def _collect_switch_regexp_bindings(
         self,

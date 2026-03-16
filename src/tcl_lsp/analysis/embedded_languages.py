@@ -13,7 +13,7 @@ from tcl_lsp.analysis.metadata_commands import (
     select_argument_indices,
 )
 from tcl_lsp.parser import word_static_text
-from tcl_lsp.parser.model import Command
+from tcl_lsp.parser.model import Command, Word
 
 type EmbeddedLanguageName = str
 
@@ -59,7 +59,9 @@ def _embedded_languages() -> dict[EmbeddedLanguageName, _EmbeddedLanguage]:
 
         root_name = _root_command_name(metadata_command.name)
         root_commands_by_language.setdefault(language_name, set()).add(root_name)
-        if any(isinstance(annotation, MetadataProcedure) for annotation in metadata_command.annotations):
+        if any(
+            isinstance(annotation, MetadataProcedure) for annotation in metadata_command.annotations
+        ):
             procedure_roots_by_language.setdefault(language_name, set()).add(root_name)
         if any(isinstance(annotation, MetadataBind) for annotation in metadata_command.annotations):
             binding_roots_by_language.setdefault(language_name, set()).add(root_name)
@@ -85,7 +87,9 @@ def _context_entry_commands() -> tuple[MetadataCommand, ...]:
         metadata_command
         for metadata_command in all_metadata_commands()
         if metadata_command.context_name is None
-        and any(isinstance(annotation, MetadataContext) for annotation in metadata_command.annotations)
+        and any(
+            isinstance(annotation, MetadataContext) for annotation in metadata_command.annotations
+        )
     )
 
 
@@ -181,7 +185,9 @@ def match_embedded_language_entry(
     return None
 
 
-def contextual_resolution_reason(language_name: EmbeddedLanguageName | None, command_name: str) -> str:
+def contextual_resolution_reason(
+    language_name: EmbeddedLanguageName | None, command_name: str
+) -> str:
     language = _embedded_languages().get(language_name or '')
     if language is None:
         return 'Resolved in an embedded language context.'
@@ -200,10 +206,7 @@ def _command_index(
     commands_by_name: dict[str, list[MetadataCommand]] = {}
     for metadata_command in metadata_commands:
         commands_by_name.setdefault(metadata_command.name, []).append(metadata_command)
-    return {
-        command_name: tuple(commands)
-        for command_name, commands in commands_by_name.items()
-    }
+    return {command_name: tuple(commands) for command_name, commands in commands_by_name.items()}
 
 
 def _match_metadata_command(
@@ -234,7 +237,7 @@ def _root_command_name(command_name: str) -> str:
 
 
 def _static_owner_name(
-    word,
+    word: Word,
     *,
     current_namespace: str,
 ) -> str | None:

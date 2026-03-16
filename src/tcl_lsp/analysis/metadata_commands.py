@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from tcl_lsp.analysis.model import BINDING_KINDS, BindingKind
 from tcl_lsp.common import Span
@@ -86,6 +86,12 @@ class MetadataProcedure:
     body_context: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class MetadataPlugin:
+    script_path: Path
+    proc_name: str
+
+
 type MetadataAnnotation = (
     MetadataBind
     | MetadataRef
@@ -94,6 +100,7 @@ type MetadataAnnotation = (
     | MetadataPackage
     | MetadataContext
     | MetadataProcedure
+    | MetadataPlugin
 )
 
 
@@ -237,7 +244,9 @@ def _parse_metadata_context_entry(
         raise RuntimeError('Metadata context entries must have a static context name.')
 
     body_text = _metadata_body_text(command.words[3])
-    parse_result = Parser().parse_document(path=f'{metadata_uri}#context:{context_name}', text=body_text)
+    parse_result = Parser().parse_document(
+        path=f'{metadata_uri}#context:{context_name}', text=body_text
+    )
     if parse_result.diagnostics:
         message = '; '.join(diagnostic.message for diagnostic in parse_result.diagnostics)
         raise RuntimeError(
@@ -466,6 +475,15 @@ def _parse_annotation_body(
         if annotation_name == 'procedure':
             annotations.append(_parse_procedure_annotation(command, command_name))
             continue
+        if annotation_name == 'plugin':
+            annotations.append(
+                _parse_plugin_annotation(
+                    command,
+                    command_name,
+                    metadata_path=metadata_path,
+                )
+            )
+            continue
         raise RuntimeError(
             f'Unknown metadata command annotation `{annotation_name}` for `{command_name}`.'
         )
@@ -668,9 +686,7 @@ def _parse_context_annotation(command: Command, command_name: str) -> MetadataCo
             _validate_context_owner_selector(selector, command_name)
             owner_selector = selector
             continue
-        raise RuntimeError(
-            f'Unknown context setting `{nested_name}` for `{command_name}`.'
-        )
+        raise RuntimeError(f'Unknown context setting `{nested_name}` for `{command_name}`.')
 
     if body_selector is None or owner_selector is None:
         raise RuntimeError(
@@ -688,7 +704,8 @@ def _parse_procedure_annotation(command: Command, command_name: str) -> Metadata
     if len(command.words) != 2:
         raise RuntimeError(
             f'Procedure annotations for `{command_name}` must be '
-            '`procedure {{ name index|-; params index|-; body index; ?context body-context? }}`.'
+            '`procedure { name index|-; params index|-; body index; '
+            '? context body-context ? }`.'
         )
 
     config_text = _metadata_body_text(command.words[1])
@@ -762,9 +779,7 @@ def _parse_procedure_annotation(command: Command, command_name: str) -> Metadata
                 )
             body_context = nested_words[1]
             continue
-        raise RuntimeError(
-            f'Unknown procedure setting `{nested_name}` for `{command_name}`.'
-        )
+        raise RuntimeError(f'Unknown procedure setting `{nested_name}` for `{command_name}`.')
 
     if member_name_index is _MISSING or parameter_index is _MISSING or body_index is _MISSING:
         raise RuntimeError(
@@ -772,11 +787,35 @@ def _parse_procedure_annotation(command: Command, command_name: str) -> Metadata
         )
 
     return MetadataProcedure(
-        member_name_index=member_name_index,
-        parameter_index=parameter_index,
-        body_index=body_index,
+        member_name_index=cast(int | None, member_name_index),
+        parameter_index=cast(int | None, parameter_index),
+        body_index=cast(int, body_index),
         body_context=body_context,
     )
+
+
+def _parse_plugin_annotation(
+    command: Command,
+    command_name: str,
+    *,
+    metadata_path: Path,
+) -> MetadataPlugin:
+    words = _annotation_words(command, command_name)
+    if len(words) != 3:
+        raise RuntimeError(
+            f'Plugin annotations for `{command_name}` must be `plugin scriptPath procName`.'
+        )
+
+    script_path = Path(words[1])
+    if not script_path.is_absolute():
+        script_path = metadata_path.parent / script_path
+    script_path = script_path.resolve(strict=False)
+    if not script_path.is_file():
+        raise RuntimeError(
+            f'Plugin annotation for `{command_name}` references missing script `{words[1]}`.'
+        )
+
+    return MetadataPlugin(script_path=script_path, proc_name=words[2])
 
 
 def _validate_package_selector(selector: MetadataSelector, command_name: str) -> None:

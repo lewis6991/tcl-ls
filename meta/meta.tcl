@@ -85,11 +85,32 @@
 #     body index
 #     context body-context
 # }
-#   Describe a procedure-like command inside a `meta context` block. `name`
-#   selects the member name, or `-` when the command has no separate member
-#   name. `params` selects the formal argument list, or `-` when there is none.
+#   Describe a procedure-like command declaration. `name` selects the declared
+#   member name, or `-` when the command has no separate member name. `params`
+#   selects the formal Tcl argument list, or `-` when there is none.
 #   `body` selects the script body. `context` is optional and sets the embedded
 #   language used when analyzing that body.
+#
+# plugin scriptPath procName
+#   Invoke a Tcl plugin hook for matching command instances. `scriptPath` is
+#   resolved relative to the metadata file that declares it. The plugin proc is
+#   called as `procName words info`, where `words` is the command words as
+#   static strings when available and `info` is a dict with context like
+#   `metadata-command`, `namespace`, `prefix-word-count`, `static-flags`, and
+#   `expanded-flags`.
+#
+#   Plugins run inside a fresh safe Tcl interpreter for each call. They do not
+#   share state with other plugin invocations, and file, package, interpreter,
+#   and channel commands are not available there.
+#
+#   The proc returns a Tcl list of effects. The supported effect format is:
+#       procedure {
+#           name-index N
+#           params-word-index N
+#           params {name ...}
+#           body-index N
+#           context body-context
+#       }
 #
 # A command can use multiple annotations in one body when needed.
 #

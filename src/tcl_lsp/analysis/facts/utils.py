@@ -163,7 +163,11 @@ def extract_static_text(
 
     resolved_parts: list[str] = []
     variable_values = {} if variables is None else dict(variables)
-    for part in word.parts:
+    if isinstance(word, BracedWord):
+        return None
+
+    parts = word.parts
+    for part in parts:
         if isinstance(part, LiteralText):
             resolved_parts.append(part.text)
             continue

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tcl_lsp.analysis import FactExtractor, Resolver, WorkspaceIndex
+from tcl_lsp.analysis import DocumentFacts, FactExtractor, Resolver, WorkspaceIndex
 from tcl_lsp.analysis.builtins import builtin_command
 from tcl_lsp.metadata_paths import metadata_dir
 from tcl_lsp.parser import Parser
@@ -41,7 +41,7 @@ def test_analysis_reports_no_diagnostics_for_metadata_files(parser: Parser) -> N
     extractor = FactExtractor(parser)
     resolver = Resolver()
     workspace = WorkspaceIndex()
-    facts_by_uri = {}
+    facts_by_uri: dict[str, DocumentFacts] = {}
 
     metadata_paths = sorted(metadata_dir().rglob('*.tcl'))
     assert metadata_paths
@@ -755,6 +755,86 @@ def test_analysis_resolves_common_tcllib_builtin_metadata(parser: Parser) -> Non
     assert analysis.diagnostics == ()
 
 
+def test_analysis_collects_tepam_procedures_from_package_metadata(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///tepam_proc.tcl',
+        'package require tepam\n'
+        'tepam::procedure warn {\n'
+        '    -args {\n'
+        '        {-mtype -default Warning}\n'
+        '        {text -type string}\n'
+        '        {-verbose -type none}\n'
+        '    }\n'
+        '} {\n'
+        '    puts $mtype\n'
+        '    puts $text\n'
+        '    if {$verbose} {\n'
+        '        puts verbose\n'
+        '    }\n'
+        '}\n',
+    )
+    facts = snapshot.facts
+    analysis = snapshot.analysis
+
+    assert '::warn' in {procedure.qualified_name for procedure in facts.procedures}
+
+    resolution_by_name = {
+        resolution.reference.name: resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command'
+    }
+    assert resolution_by_name['tepam::procedure'] == 'resolved'
+
+    variable_resolution_by_name = {
+        resolution.reference.name: resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'variable'
+    }
+    assert variable_resolution_by_name['mtype'] == 'resolved'
+    assert variable_resolution_by_name['text'] == 'resolved'
+    assert variable_resolution_by_name['verbose'] == 'resolved'
+    assert analysis.diagnostics == ()
+
+
+def test_analysis_collects_imported_tepam_procedures(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///tepam_imported_proc.tcl',
+        'package require tepam\n'
+        'namespace import ::tepam::*\n'
+        'procedure {display message} {\n'
+        '    -args {\n'
+        '        {-title -default Hello}\n'
+        '        {text -type string}\n'
+        '    }\n'
+        '} {\n'
+        '    puts $title\n'
+        '    puts $text\n'
+        '}\n',
+    )
+    facts = snapshot.facts
+    analysis = snapshot.analysis
+
+    assert '::display message' in {procedure.qualified_name for procedure in facts.procedures}
+
+    resolution_by_name = {
+        resolution.reference.name: resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command'
+    }
+    assert resolution_by_name['procedure'] == 'resolved'
+
+    variable_resolution_by_name = {
+        resolution.reference.name: resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'variable'
+    }
+    assert variable_resolution_by_name['title'] == 'resolved'
+    assert variable_resolution_by_name['text'] == 'resolved'
+    assert analysis.diagnostics == ()
+
+
 def test_analysis_treats_tcl_oo_alias_as_builtin_package(parser: Parser) -> None:
     snapshot = _analyze(
         parser,
@@ -814,10 +894,7 @@ def test_analysis_resolves_additional_required_tk_commands(parser: Parser) -> No
     snapshot = _analyze(
         parser,
         'file:///tk_more.tcl',
-        'package require Tk\n'
-        'bind . <Escape> {destroy .}\n'
-        'font families\n'
-        'tkwait visibility .\n',
+        'package require Tk\nbind . <Escape> {destroy .}\nfont families\ntkwait visibility .\n',
     )
     analysis = snapshot.analysis
 
@@ -1051,10 +1128,7 @@ def test_analysis_resolves_dynamic_array_element_bindings(parser: Parser) -> Non
     snapshot = _analyze(
         parser,
         'file:///dynamic_array_bindings.tcl',
-        'proc run {n} {\n'
-        '    set p($n) ok\n'
-        '    puts $p($n)\n'
-        '}\n',
+        'proc run {n} {\n    set p($n) ok\n    puts $p($n)\n}\n',
     )
     facts = snapshot.facts
     analysis = snapshot.analysis
@@ -1080,10 +1154,7 @@ def test_analysis_does_not_normalize_dynamic_scalar_suffix_names(parser: Parser)
     snapshot = _analyze(
         parser,
         'file:///dynamic_scalar_suffix.tcl',
-        'proc run {n} {\n'
-        '    set p($n)suffix ok\n'
-        '    puts $p\n'
-        '}\n',
+        'proc run {n} {\n    set p($n)suffix ok\n    puts $p\n}\n',
     )
     analysis = snapshot.analysis
 
@@ -1096,7 +1167,9 @@ def test_analysis_does_not_normalize_dynamic_scalar_suffix_names(parser: Parser)
     assert variable_states['p'] == 'unresolved'
 
     diagnostics = [
-        diagnostic.code for diagnostic in analysis.diagnostics if diagnostic.code == 'unresolved-variable'
+        diagnostic.code
+        for diagnostic in analysis.diagnostics
+        if diagnostic.code == 'unresolved-variable'
     ]
     assert diagnostics == ['unresolved-variable']
 
@@ -1458,7 +1531,9 @@ def test_analysis_treats_meta_command_as_builtin() -> None:
     assert len(meta_command_resolution.target_symbol_ids) == 1
 
     hover_by_offset = {hover.span.start.offset: hover.contents for hover in analysis.hovers}
-    meta_command_call = next(command_call for command_call in facts.command_calls if command_call.name == 'meta command')
+    meta_command_call = next(
+        command_call for command_call in facts.command_calls if command_call.name == 'meta command'
+    )
     hover = hover_by_offset[meta_command_call.name_span.start.offset]
     assert hover.startswith(
         'builtin command meta command {name signature ? annotationBody ?}\n\n'
