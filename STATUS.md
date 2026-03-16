@@ -114,6 +114,7 @@ This repository contains an early but working bootstrap of a Tcl language server
   - [x] `textDocument/references`
   - [x] `textDocument/hover`
   - [x] `textDocument/documentSymbol`
+  - [x] `textDocument/semanticTokens/full`
 - [x] Diagnostics are published on open/change/close
 - [x] Full-document sync model
 - [x] In-memory document store and reanalysis of currently managed/open documents on updates
@@ -123,7 +124,7 @@ This repository contains an early but working bootstrap of a Tcl language server
 - [ ] rename
 - [ ] code actions
 - [ ] formatting
-- [ ] semantic tokens
+- [x] semantic tokens
 - [ ] document highlights
 - [ ] workspace symbols
 - [ ] code lens

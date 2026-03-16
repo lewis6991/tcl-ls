@@ -8,6 +8,7 @@ from tcl_lsp.analysis import AnalysisResult, FactExtractor, Resolver, WorkspaceI
 from tcl_lsp.analysis.builtins import builtin_definition_targets
 from tcl_lsp.analysis.model import DefinitionTarget, DocumentFacts
 from tcl_lsp.common import Diagnostic, DocumentSymbol, HoverInfo, Location
+from tcl_lsp.lsp.semantic_tokens import encode_document_semantic_tokens
 from tcl_lsp.parser import Parser, ParseResult
 from tcl_lsp.workspace import candidate_package_roots, read_source_file, source_id_to_path
 
@@ -126,6 +127,16 @@ class LanguageService:
         if document is None:
             return ()
         return document.analysis.document_symbols
+
+    def semantic_tokens(self, uri: str) -> tuple[int, ...] | None:
+        document = self._documents.get(uri)
+        if document is None:
+            return None
+        return encode_document_semantic_tokens(
+            text=document.text,
+            facts=document.facts,
+            analysis=document.analysis,
+        )
 
     def get_document(self, uri: str) -> ManagedDocument | None:
         return self._documents.get(uri)

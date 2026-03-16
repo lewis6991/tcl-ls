@@ -225,6 +225,9 @@ class ResolvedReference:
 class DocumentFacts:
     uri: str
     parse_result: ParseResult | None
+    comment_spans: tuple[Span, ...]
+    string_spans: tuple[Span, ...]
+    operator_spans: tuple[Span, ...]
     namespaces: tuple[NamespaceScope, ...]
     procedures: tuple[ProcDecl, ...]
     source_directives: tuple[SourceDirective, ...]

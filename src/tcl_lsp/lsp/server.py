@@ -27,11 +27,15 @@ from tcl_lsp.lsp.model import (
     OutgoingMessage,
     PublishDiagnosticsParams,
     ReferenceParams,
+    SemanticTokens,
+    SemanticTokensLegend,
+    SemanticTokensOptions,
     ServerCapabilities,
     SuccessResponseMessage,
     TextDocumentIdentifierParams,
     TextDocumentPositionParams,
 )
+from tcl_lsp.lsp.semantic_tokens import SEMANTIC_TOKEN_MODIFIERS, SEMANTIC_TOKEN_TYPES
 from tcl_lsp.lsp.service import LanguageService
 
 _INVALID_REQUEST = -32600
@@ -219,6 +223,18 @@ class LanguageServer:
                 )
             ]
 
+        if method == 'textDocument/semanticTokens/full':
+            parsed = _validate_model(TextDocumentIdentifierParams, params)
+            if parsed is None or request_id is None:
+                return self._invalid_params(request_id)
+            data = self._service.semantic_tokens(parsed.text_document.uri)
+            result = SemanticTokens(data=list(data)).model_dump() if data is not None else None
+            return [
+                self._serialize_message(
+                    self._success_response(request_id=request_id, result=result)
+                )
+            ]
+
         if request_id is None:
             return []
         return [
@@ -236,6 +252,13 @@ class LanguageServer:
             references_provider=True,
             hover_provider=True,
             document_symbol_provider=True,
+            semantic_tokens_provider=SemanticTokensOptions(
+                legend=SemanticTokensLegend(
+                    tokenTypes=list(SEMANTIC_TOKEN_TYPES),
+                    tokenModifiers=list(SEMANTIC_TOKEN_MODIFIERS),
+                ),
+                full=True,
+            ),
         )
         return InitializeResult(capabilities=capabilities)
 

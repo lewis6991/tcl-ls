@@ -21,6 +21,7 @@ from tcl_lsp.parser.model import (
     CommandSubstitution,
     LiteralText,
     ParseResult,
+    QuotedWord,
     Script,
     VariableSubstitution,
     Word,
@@ -144,10 +145,118 @@ def _braced_word_raw_content(word: BracedWord) -> str:
     return raw_text
 
 
+def _script_lexical_spans(
+    script: Script,
+    *,
+    parser: Parser,
+    source_id: str,
+) -> tuple[tuple[Span, ...], tuple[Span, ...]]:
+    string_spans: list[Span] = []
+    operator_spans: list[Span] = []
+    for command in script.commands:
+        for word in command.words:
+            _collect_word_lexical_spans(
+                word,
+                parser=parser,
+                source_id=source_id,
+                string_spans=string_spans,
+                operator_spans=operator_spans,
+            )
+    return tuple(string_spans), tuple(operator_spans)
+
+
+def _collect_word_lexical_spans(
+    word: Word,
+    *,
+    parser: Parser,
+    source_id: str,
+    string_spans: list[Span],
+    operator_spans: list[Span],
+) -> None:
+    if isinstance(word, BracedWord):
+        if not word.expanded:
+            operator_spans.append(Span(start=word.span.start, end=word.content_span.start))
+            operator_spans.append(Span(start=word.content_span.end, end=word.span.end))
+            if any(char in word.text for char in '{}[]"'):
+                nested_parse_result = parser.parse_embedded_script(
+                    source_id=source_id,
+                    text=_braced_word_raw_content(word),
+                    start_position=word.content_span.start,
+                )
+                nested_strings, nested_operators = _script_lexical_spans(
+                    nested_parse_result.script,
+                    parser=parser,
+                    source_id=source_id,
+                )
+                string_spans.extend(nested_strings)
+                operator_spans.extend(nested_operators)
+        return
+
+    if isinstance(word, QuotedWord):
+        string_spans.append(Span(start=word.span.start, end=word.content_span.start))
+        string_spans.append(Span(start=word.content_span.end, end=word.span.end))
+
+    for part in word.parts:
+        if isinstance(part, LiteralText):
+            if isinstance(word, QuotedWord):
+                string_spans.append(part.span)
+            continue
+        if isinstance(part, VariableSubstitution):
+            _collect_variable_substitution_lexical_spans(
+                part,
+                operator_spans=operator_spans,
+            )
+            continue
+        _collect_command_substitution_lexical_spans(
+            part,
+            parser=parser,
+            source_id=source_id,
+            string_spans=string_spans,
+            operator_spans=operator_spans,
+        )
+
+
+def _collect_command_substitution_lexical_spans(
+    substitution: CommandSubstitution,
+    *,
+    parser: Parser,
+    source_id: str,
+    string_spans: list[Span],
+    operator_spans: list[Span],
+) -> None:
+    operator_spans.append(Span(start=substitution.span.start, end=substitution.content_span.start))
+    operator_spans.append(Span(start=substitution.content_span.end, end=substitution.span.end))
+    nested_strings, nested_operators = _script_lexical_spans(
+        substitution.script,
+        parser=parser,
+        source_id=source_id,
+    )
+    string_spans.extend(nested_strings)
+    operator_spans.extend(nested_operators)
+
+
+def _collect_variable_substitution_lexical_spans(
+    substitution: VariableSubstitution,
+    *,
+    operator_spans: list[Span],
+) -> None:
+    if not substitution.brace_wrapped:
+        return
+
+    opening_brace_start = substitution.span.start.advance('$')
+    opening_brace_end = opening_brace_start.advance('{')
+    closing_brace_start = opening_brace_end.advance(substitution.name)
+    operator_spans.append(Span(start=opening_brace_start, end=opening_brace_end))
+    operator_spans.append(Span(start=closing_brace_start, end=substitution.span.end))
+
+
 @dataclass(frozen=True, slots=True)
 class LoweringResult:
     script: LoweredScript
     diagnostics: tuple[Diagnostic, ...]
+    comment_spans: tuple[Span, ...]
+    string_spans: tuple[Span, ...]
+    operator_spans: tuple[Span, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,24 +273,56 @@ class _SwitchOptionState:
 
 
 def lower_parse_result(parse_result: ParseResult, *, parser: Parser) -> LoweringResult:
-    return lower_script(parse_result.script, parser=parser, source_id=parse_result.source_id)
+    lowering_result = lower_script(
+        parse_result.script,
+        parser=parser,
+        source_id=parse_result.source_id,
+    )
+    return LoweringResult(
+        script=lowering_result.script,
+        diagnostics=lowering_result.diagnostics,
+        comment_spans=tuple(
+            token.span for token in parse_result.tokens if token.kind == 'comment'
+        )
+        + lowering_result.comment_spans,
+        string_spans=lowering_result.string_spans,
+        operator_spans=lowering_result.operator_spans,
+    )
 
 
 def lower_script(script: Script, *, parser: Parser, source_id: str) -> LoweringResult:
     lowerer = _Lowerer(parser=parser, source_id=source_id)
+    string_spans, operator_spans = _script_lexical_spans(
+        script,
+        parser=parser,
+        source_id=source_id,
+    )
     return LoweringResult(
         script=lowerer.lower_script(script),
         diagnostics=tuple(lowerer.diagnostics),
+        comment_spans=tuple(lowerer.comment_spans),
+        string_spans=string_spans + tuple(lowerer.string_spans),
+        operator_spans=operator_spans + tuple(lowerer.operator_spans),
     )
 
 
 class _Lowerer:
-    __slots__ = ('_parser', '_source_id', 'diagnostics')
+    __slots__ = (
+        '_parser',
+        '_source_id',
+        'comment_spans',
+        'diagnostics',
+        'operator_spans',
+        'string_spans',
+    )
 
     def __init__(self, *, parser: Parser, source_id: str) -> None:
         self._parser = parser
         self._source_id = source_id
         self.diagnostics: list[Diagnostic] = []
+        self.comment_spans: list[Span] = []
+        self.string_spans: list[Span] = []
+        self.operator_spans: list[Span] = []
 
     def lower_script(self, script: Script) -> LoweredScript:
         return LoweredScript(
@@ -492,13 +633,18 @@ class _Lowerer:
         return LoweredScriptBody(script=self._lower_embedded_script(text, word.content_span.start))
 
     def _lower_embedded_script(self, text: str, start_position: Position) -> LoweredScript:
-        script = self._parser.parse_embedded_script_for_analysis(
+        parse_result = self._parser.parse_embedded_script(
             source_id=self._source_id,
             text=text,
             start_position=start_position,
-            diagnostics=self.diagnostics,
         )
-        return self.lower_script(script)
+        lowering_result = lower_parse_result(parse_result, parser=self._parser)
+        self.diagnostics.extend(parse_result.diagnostics)
+        self.diagnostics.extend(lowering_result.diagnostics)
+        self.comment_spans.extend(lowering_result.comment_spans)
+        self.string_spans.extend(lowering_result.string_spans)
+        self.operator_spans.extend(lowering_result.operator_spans)
+        return lowering_result.script
 
     def _lower_word_references(self, word: Word) -> LoweredWordReferences:
         if isinstance(word, BracedWord):

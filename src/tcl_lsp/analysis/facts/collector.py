@@ -6,14 +6,13 @@ from dataclasses import dataclass
 from tcl_lsp.analysis.arity import proc_parameter_arity
 from tcl_lsp.analysis.builtins import (
     annotated_metadata_commands_for_packages,
-    builtin_command,
     builtin_command_for_packages,
     canonical_builtin_package_name,
     is_builtin_package,
 )
 from tcl_lsp.analysis.embedded_languages import (
-    EmbeddedLanguageName,
     EmbeddedLanguageEntry,
+    EmbeddedLanguageName,
     match_embedded_language_command,
     match_embedded_language_entry,
 )
@@ -36,16 +35,6 @@ from tcl_lsp.analysis.facts.lowering import (
     lower_script,
 )
 from tcl_lsp.analysis.facts.parsing import ListItem, is_simple_name, split_tcl_list
-from tcl_lsp.analysis.metadata_commands import (
-    MetadataBind,
-    MetadataCommand,
-    MetadataPlugin,
-    MetadataProcedure,
-    MetadataRef,
-    MetadataScriptBody,
-    select_argument_indices,
-)
-from tcl_lsp.analysis.tcl_plugins import PluginProcedureEffect, TclPluginHost
 from tcl_lsp.analysis.facts.utils import (
     body_span,
     command_documentation,
@@ -59,6 +48,15 @@ from tcl_lsp.analysis.facts.utils import (
     qualify_name,
     qualify_namespace,
     variable_symbol_id,
+)
+from tcl_lsp.analysis.metadata_commands import (
+    MetadataBind,
+    MetadataCommand,
+    MetadataPlugin,
+    MetadataProcedure,
+    MetadataRef,
+    MetadataScriptBody,
+    select_argument_indices,
 )
 from tcl_lsp.analysis.model import (
     BINDING_KINDS,
@@ -76,6 +74,7 @@ from tcl_lsp.analysis.model import (
     VarBinding,
     VariableReference,
 )
+from tcl_lsp.analysis.tcl_plugins import PluginProcedureEffect, TclPluginHost
 from tcl_lsp.common import Diagnostic, DocumentSymbol, Position, Span
 from tcl_lsp.parser import Parser, word_static_text
 from tcl_lsp.parser.model import (
@@ -127,6 +126,9 @@ class FactExtractor:
             parser=self._parser,
             plugin_host=self._plugin_host,
             parse_result=parse_result,
+            comment_spans=lowering_result.comment_spans,
+            operator_spans=lowering_result.operator_spans,
+            string_spans=lowering_result.string_spans,
             lowered_script=lowering_result.script,
             diagnostics=parse_result.diagnostics + lowering_result.diagnostics,
             include_parse_result=include_parse_result,
@@ -140,19 +142,22 @@ class _FactCollector:
         '_command_calls',
         '_command_handlers',
         '_command_imports',
+        '_comment_spans',
         '_diagnostics',
         '_include_parse_result',
         '_linked_variables_by_scope',
         '_lowered_script',
         '_namespaces',
+        '_operator_spans',
         '_package_index_entries',
         '_package_provides',
         '_package_requires',
         '_parse_result',
         '_parser',
+        '_plugin_host',
         '_procedures',
         '_source_directives',
-        '_plugin_host',
+        '_string_spans',
         '_variable_bindings',
         '_variable_references',
     )
@@ -163,6 +168,9 @@ class _FactCollector:
         plugin_host: TclPluginHost,
         parse_result: ParseResult,
         *,
+        comment_spans: tuple[Span, ...],
+        operator_spans: tuple[Span, ...],
+        string_spans: tuple[Span, ...],
         lowered_script: LoweredScript,
         diagnostics: tuple[Diagnostic, ...],
         include_parse_result: bool,
@@ -174,6 +182,9 @@ class _FactCollector:
         self._include_parse_result = include_parse_result
         self._diagnostics: list[Diagnostic] = list(diagnostics)
         self._active_builtin_packages: set[str] = set()
+        self._comment_spans: list[Span] = list(comment_spans)
+        self._string_spans: list[Span] = list(string_spans)
+        self._operator_spans: list[Span] = list(operator_spans)
         self._namespaces: list[NamespaceScope] = []
         self._procedures: list[ProcDecl] = []
         self._source_directives: list[SourceDirective] = []
@@ -205,6 +216,9 @@ class _FactCollector:
         return DocumentFacts(
             uri=self._parse_result.source_id,
             parse_result=self._parse_result if self._include_parse_result else None,
+            comment_spans=tuple(self._comment_spans),
+            string_spans=tuple(self._string_spans),
+            operator_spans=tuple(self._operator_spans),
             namespaces=tuple(self._namespaces),
             procedures=tuple(self._procedures),
             source_directives=tuple(self._source_directives),
@@ -628,6 +642,9 @@ class _FactCollector:
             parser=self._parser,
             source_id=context.uri,
         )
+        self._comment_spans.extend(lowering_result.comment_spans)
+        self._string_spans.extend(lowering_result.string_spans)
+        self._operator_spans.extend(lowering_result.operator_spans)
         self._diagnostics.extend(lowering_result.diagnostics)
         self._collect_lowered_script(lowering_result.script, context)
 
@@ -974,6 +991,9 @@ class _FactCollector:
             start_position,
         )
         lowering_result = lower_parse_result(parse_result, parser=self._parser)
+        self._comment_spans.extend(lowering_result.comment_spans)
+        self._string_spans.extend(lowering_result.string_spans)
+        self._operator_spans.extend(lowering_result.operator_spans)
         self._diagnostics.extend(parse_result.diagnostics)
         self._diagnostics.extend(lowering_result.diagnostics)
         self._collect_lowered_script(lowering_result.script, context)

@@ -60,6 +60,94 @@ def _server_position_request(
     return _as_dict(response)
 
 
+def _server_document_request(
+    server: LanguageServer,
+    *,
+    method: str,
+    uri: str = _MAIN_URI,
+    request_id: int = 1,
+) -> dict[str, object]:
+    messages = server.process_message(
+        {
+            'jsonrpc': '2.0',
+            'id': request_id,
+            'method': method,
+            'params': {
+                'textDocument': {'uri': uri},
+            },
+        }
+    )
+    response = next(message for message in messages if message.get('id') == request_id)
+    return _as_dict(response)
+
+
+def _semantic_tokens_legend(server: LanguageServer) -> tuple[list[str], list[str]]:
+    initialize_messages = server.process_message(
+        {'jsonrpc': '2.0', 'id': 999, 'method': 'initialize', 'params': {}}
+    )
+    initialize_response = next(
+        message for message in initialize_messages if message.get('id') == 999
+    )
+    result = _as_dict(_as_dict(initialize_response)['result'])
+    capabilities = _as_dict(result['capabilities'])
+    semantic_tokens = _as_dict(capabilities['semanticTokensProvider'])
+    legend = _as_dict(semantic_tokens['legend'])
+    token_types = cast(list[str], legend['tokenTypes'])
+    token_modifiers = cast(list[str], legend['tokenModifiers'])
+    return token_types, token_modifiers
+
+
+def _decode_semantic_tokens(
+    data: list[int],
+    *,
+    token_types: list[str],
+    token_modifiers: list[str],
+) -> list[dict[str, object]]:
+    line = 0
+    character = 0
+    decoded: list[dict[str, object]] = []
+    for index in range(0, len(data), 5):
+        delta_line, delta_character, length, token_type_index, modifier_bits = data[
+            index : index + 5
+        ]
+        line += delta_line
+        if delta_line:
+            character = delta_character
+        else:
+            character += delta_character
+        decoded.append(
+            {
+                'line': line,
+                'character': character,
+                'length': length,
+                'type': token_types[token_type_index],
+                'modifiers': [
+                    modifier
+                    for bit_index, modifier in enumerate(token_modifiers)
+                    if modifier_bits & (1 << bit_index)
+                ],
+            }
+        )
+    return decoded
+
+
+def _semantic_token(
+    *,
+    line: int,
+    character: int,
+    length: int,
+    token_type: str,
+    modifiers: list[str] | None = None,
+) -> dict[str, object]:
+    return {
+        'line': line,
+        'character': character,
+        'length': length,
+        'type': token_type,
+        'modifiers': [] if modifiers is None else modifiers,
+    }
+
+
 def _hover_markdown_value(
     server: LanguageServer,
     *,
@@ -227,6 +315,269 @@ def test_language_server_hover_uses_markdown_code_fences_for_signatures(
 
     hover_value = _hover_markdown_value(server, line=2, character=1)
     assert hover_value == '```tcl\nproc ::greet(name)\n```\n\nGreets a user by name.'
+
+
+def test_language_server_initialize_advertises_semantic_tokens(server: LanguageServer) -> None:
+    response = _as_dict(
+        server.process_message({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {}})[
+            0
+        ]
+    )
+
+    capabilities = _as_dict(_as_dict(response['result'])['capabilities'])
+    semantic_tokens = _as_dict(capabilities['semanticTokensProvider'])
+    legend = _as_dict(semantic_tokens['legend'])
+
+    assert legend['tokenTypes'] == [
+        'comment',
+        'keyword',
+        'namespace',
+        'function',
+        'parameter',
+        'variable',
+        'string',
+        'operator',
+    ]
+    assert legend['tokenModifiers'] == ['declaration', 'defaultLibrary']
+    assert semantic_tokens['full'] is True
+
+
+def test_language_server_returns_semantic_tokens(server: LanguageServer) -> None:
+    _open_server_document(
+        server,
+        '# doc\n'
+        'namespace eval app {\n'
+        '    proc greet {name} {\n'
+        '        set local $name\n'
+        '        puts $local\n'
+        '    }\n'
+        '}\n'
+        'app::greet World\n',
+    )
+
+    token_types, token_modifiers = _semantic_tokens_legend(server)
+    response = _server_document_request(server, method='textDocument/semanticTokens/full')
+    result = _as_dict(response['result'])
+    data = cast(list[int], result['data'])
+
+    decoded = _decode_semantic_tokens(
+        data,
+        token_types=token_types,
+        token_modifiers=token_modifiers,
+    )
+
+    expected_tokens = (
+        _semantic_token(line=0, character=0, length=5, token_type='comment'),
+        _semantic_token(line=1, character=0, length=9, token_type='keyword'),
+        _semantic_token(line=1, character=10, length=4, token_type='keyword'),
+        _semantic_token(
+            line=1,
+            character=15,
+            length=3,
+            token_type='namespace',
+            modifiers=['declaration'],
+        ),
+        _semantic_token(line=2, character=4, length=4, token_type='keyword'),
+        _semantic_token(
+            line=2,
+            character=9,
+            length=5,
+            token_type='function',
+            modifiers=['declaration'],
+        ),
+        _semantic_token(
+            line=2,
+            character=16,
+            length=4,
+            token_type='parameter',
+            modifiers=['declaration'],
+        ),
+        _semantic_token(line=3, character=8, length=3, token_type='keyword'),
+        _semantic_token(
+            line=3,
+            character=12,
+            length=5,
+            token_type='variable',
+            modifiers=['declaration'],
+        ),
+        _semantic_token(line=3, character=19, length=4, token_type='parameter'),
+        _semantic_token(
+            line=4,
+            character=8,
+            length=4,
+            token_type='function',
+            modifiers=['defaultLibrary'],
+        ),
+        _semantic_token(line=4, character=14, length=5, token_type='variable'),
+        _semantic_token(line=7, character=0, length=10, token_type='function'),
+    )
+
+    for expected_token in expected_tokens:
+        assert expected_token in decoded
+
+
+def test_language_server_returns_semantic_tokens_for_embedded_comments_and_if_keywords(
+    server: LanguageServer,
+) -> None:
+    _open_server_document(
+        server,
+        'proc greet {} {\n'
+        '    if {1} then {\n'
+        '        # then comment\n'
+        '    } else {\n'
+        '        # else comment\n'
+        '    }\n'
+        '}\n',
+    )
+
+    token_types, token_modifiers = _semantic_tokens_legend(server)
+    response = _server_document_request(server, method='textDocument/semanticTokens/full')
+    result = _as_dict(response['result'])
+    data = cast(list[int], result['data'])
+
+    decoded = _decode_semantic_tokens(
+        data,
+        token_types=token_types,
+        token_modifiers=token_modifiers,
+    )
+
+    assert {
+        'line': 1,
+        'character': 11,
+        'length': 4,
+        'type': 'keyword',
+        'modifiers': [],
+    } in decoded
+
+    assert {
+        'line': 3,
+        'character': 6,
+        'length': 4,
+        'type': 'keyword',
+        'modifiers': [],
+    } in decoded
+
+    assert {
+        'line': 2,
+        'character': 8,
+        'length': 14,
+        'type': 'comment',
+        'modifiers': [],
+    } in decoded
+
+    assert {
+        'line': 4,
+        'character': 8,
+        'length': 14,
+        'type': 'comment',
+        'modifiers': [],
+    } in decoded
+
+
+def test_language_server_returns_semantic_tokens_for_blocks_and_quoted_strings(
+    server: LanguageServer,
+) -> None:
+    _open_server_document(
+        server,
+        'proc greet {name} {\n'
+        '    if {1} {\n'
+        '        puts "hello [string trim $name]"\n'
+        '    }\n'
+        '}\n',
+    )
+
+    token_types, token_modifiers = _semantic_tokens_legend(server)
+    response = _server_document_request(server, method='textDocument/semanticTokens/full')
+    result = _as_dict(response['result'])
+    data = cast(list[int], result['data'])
+
+    decoded = _decode_semantic_tokens(
+        data,
+        token_types=token_types,
+        token_modifiers=token_modifiers,
+    )
+
+    for expected_token in (
+        _semantic_token(line=0, character=18, length=1, token_type='operator'),
+        _semantic_token(line=1, character=11, length=1, token_type='operator'),
+        _semantic_token(line=2, character=13, length=1, token_type='string'),
+        _semantic_token(line=2, character=14, length=6, token_type='string'),
+        _semantic_token(line=2, character=20, length=1, token_type='operator'),
+        _semantic_token(line=2, character=38, length=1, token_type='operator'),
+        _semantic_token(line=2, character=39, length=1, token_type='string'),
+        _semantic_token(line=3, character=4, length=1, token_type='operator'),
+        _semantic_token(line=4, character=0, length=1, token_type='operator'),
+    ):
+        assert expected_token in decoded
+
+
+def test_language_server_returns_semantic_tokens_for_nested_delimiters_in_braced_words(
+    server: LanguageServer,
+) -> None:
+    _open_server_document(
+        server,
+        'proc init {{httpproxy {}}} {\n'
+        '    if {! [info exists options]} {\n'
+        '        switch -- $mode {\n'
+        '            default { return [list {}] }\n'
+        '        }\n'
+        '    }\n'
+        '}\n',
+    )
+
+    token_types, token_modifiers = _semantic_tokens_legend(server)
+    response = _server_document_request(server, method='textDocument/semanticTokens/full')
+    result = _as_dict(response['result'])
+    data = cast(list[int], result['data'])
+
+    decoded = _decode_semantic_tokens(
+        data,
+        token_types=token_types,
+        token_modifiers=token_modifiers,
+    )
+
+    for expected_token in (
+        _semantic_token(line=0, character=22, length=1, token_type='operator'),
+        _semantic_token(line=0, character=23, length=1, token_type='operator'),
+        _semantic_token(line=1, character=10, length=1, token_type='operator'),
+        _semantic_token(line=1, character=30, length=1, token_type='operator'),
+        _semantic_token(line=3, character=20, length=1, token_type='operator'),
+        _semantic_token(line=3, character=29, length=1, token_type='operator'),
+        _semantic_token(line=3, character=35, length=1, token_type='operator'),
+        _semantic_token(line=3, character=36, length=1, token_type='operator'),
+        _semantic_token(line=3, character=37, length=1, token_type='operator'),
+        _semantic_token(line=3, character=39, length=1, token_type='operator'),
+    ):
+        assert expected_token in decoded
+
+
+def test_language_server_returns_semantic_tokens_for_braced_variable_substitutions(
+    server: LanguageServer,
+) -> None:
+    _open_server_document(
+        server,
+        'set value ${name}\n'
+        'puts ${value}\n',
+    )
+
+    token_types, token_modifiers = _semantic_tokens_legend(server)
+    response = _server_document_request(server, method='textDocument/semanticTokens/full')
+    result = _as_dict(response['result'])
+    data = cast(list[int], result['data'])
+
+    decoded = _decode_semantic_tokens(
+        data,
+        token_types=token_types,
+        token_modifiers=token_modifiers,
+    )
+
+    for expected_token in (
+        _semantic_token(line=0, character=11, length=1, token_type='operator'),
+        _semantic_token(line=0, character=16, length=1, token_type='operator'),
+        _semantic_token(line=1, character=6, length=1, token_type='operator'),
+        _semantic_token(line=1, character=12, length=1, token_type='operator'),
+    ):
+        assert expected_token in decoded
 
 
 @pytest.mark.parametrize(
@@ -520,7 +871,7 @@ def test_language_server_process_message_publishes_diagnostics(server: LanguageS
     )
 
     assert len(messages) == 1
-    publish = cast(dict[str, object], messages[0])
+    publish = messages[0]
     assert publish['method'] == 'textDocument/publishDiagnostics'
     params = _as_dict(publish['params'])
     assert params['uri'] == 'file:///diag.tcl'

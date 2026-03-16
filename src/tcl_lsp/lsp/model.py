@@ -150,12 +150,29 @@ class ReferenceParams(ProtocolModel):
     context: ReferenceContext
 
 
+class SemanticTokensLegend(ProtocolModel):
+    token_types: list[str] = Field(alias='tokenTypes')
+    token_modifiers: list[str] = Field(alias='tokenModifiers')
+
+
+class SemanticTokensOptions(ProtocolModel):
+    legend: SemanticTokensLegend
+    full: bool
+
+
+class SemanticTokens(ProtocolModel):
+    data: list[StrictInt]
+
+
 class ServerCapabilities(ProtocolModel):
     text_document_sync: StrictInt = Field(serialization_alias='textDocumentSync')
     definition_provider: bool = Field(serialization_alias='definitionProvider')
     references_provider: bool = Field(serialization_alias='referencesProvider')
     hover_provider: bool = Field(serialization_alias='hoverProvider')
     document_symbol_provider: bool = Field(serialization_alias='documentSymbolProvider')
+    semantic_tokens_provider: SemanticTokensOptions = Field(
+        serialization_alias='semanticTokensProvider'
+    )
 
 
 class InitializeResult(ProtocolModel):
