@@ -32,7 +32,9 @@ def _comment_text(text: str) -> str:
     return text[1:] if text.startswith(' ') else text
 
 
-def body_span(word: Word) -> Span:
+def body_span(word: Word) -> Span | None:
+    if word.expanded:
+        return None
     return word.content_span
 
 
@@ -156,7 +158,7 @@ def extract_static_text(
     source_id: str,
     variables: Mapping[str, str] | None = None,
 ) -> str | None:
-    if isinstance(word, BracedWord):
+    if isinstance(word, BracedWord) and not word.expanded:
         return word.text
 
     resolved_parts: list[str] = []

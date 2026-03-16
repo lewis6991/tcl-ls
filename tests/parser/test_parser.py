@@ -3,6 +3,7 @@ from __future__ import annotations
 from tcl_lsp.common import Position
 from tcl_lsp.parser import (
     BareWord,
+    BracedWord,
     CommandSubstitution,
     Parser,
     QuotedWord,
@@ -132,3 +133,41 @@ def test_parser_handles_line_continuations_in_comments_and_commands(parser: Pars
         'hello',
         'world',
     ]
+
+
+def test_parser_marks_argument_expansion_words(parser: Parser) -> None:
+    result = parser.parse_document('expand.tcl', 'show {*}$args {*}{a b} {*}"x y"\n')
+
+    assert result.diagnostics == ()
+    words = result.script.commands[0].words
+    assert [word_static_text(word) for word in words] == ['show', None, None, None]
+
+    bare_word = words[1]
+    assert isinstance(bare_word, BareWord)
+    assert bare_word.expanded is True
+    assert bare_word.parts
+    variable = bare_word.parts[0]
+    assert isinstance(variable, VariableSubstitution)
+    assert variable.name == 'args'
+
+    braced_word = words[2]
+    assert isinstance(braced_word, BracedWord)
+    assert braced_word.expanded is True
+    assert braced_word.text == 'a b'
+    assert braced_word.raw_text == '{a b}'
+
+    quoted_word = words[3]
+    assert isinstance(quoted_word, QuotedWord)
+    assert quoted_word.expanded is True
+
+
+def test_parser_treats_braced_star_as_literal_without_attached_word(parser: Parser) -> None:
+    result = parser.parse_document('literal-expand.tcl', 'show {*} $args\n')
+
+    assert result.diagnostics == ()
+    words = result.script.commands[0].words
+    assert [word_static_text(word) for word in words] == ['show', '*', None]
+
+    literal_star = words[1]
+    assert isinstance(literal_star, BracedWord)
+    assert literal_star.expanded is False

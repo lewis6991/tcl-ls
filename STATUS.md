@@ -23,6 +23,7 @@ This repository contains an early but working bootstrap of a Tcl language server
   - [x] bare words
   - [x] braced words
   - [x] quoted words
+  - [x] argument expansion syntax like `{*}$args`
   - [x] variable substitution
   - [x] nested command substitution
 - [x] Tracks source spans/positions for tokens and AST nodes
@@ -34,7 +35,6 @@ This repository contains an early but working bootstrap of a Tcl language server
   - [x] malformed variable substitutions
 - [ ] Full Tcl 8.6 language coverage is not implemented
 - [ ] No parser support is documented or tested for many advanced Tcl constructs, including:
-  - [ ] argument expansion syntax like `{*}$args`
   - [ ] array variable syntax like `$name(index)`
   - [ ] richer escape handling beyond the current simple escape support
   - [ ] package- or extension-specific syntax

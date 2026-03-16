@@ -43,6 +43,7 @@ class BareWord:
     span: Span
     content_span: Span
     parts: tuple[WordPart, ...]
+    expanded: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +52,7 @@ class BracedWord:
     content_span: Span
     text: str
     raw_text: str
+    expanded: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +60,7 @@ class QuotedWord:
     span: Span
     content_span: Span
     parts: tuple[WordPart, ...]
+    expanded: bool = False
 
 
 type Word = BareWord | BracedWord | QuotedWord

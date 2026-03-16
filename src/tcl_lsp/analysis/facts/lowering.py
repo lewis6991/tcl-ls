@@ -444,7 +444,7 @@ class _Lowerer:
         )
 
     def _lower_condition_word(self, word: Word | None) -> LoweredCondition | None:
-        if not isinstance(word, BracedWord):
+        if not isinstance(word, BracedWord) or word.expanded:
             return None
 
         variable_substitutions: list[ConditionVariableSubstitution] = []
@@ -468,7 +468,7 @@ class _Lowerer:
     def _lower_script_word(self, word: Word | None) -> LoweredScriptBody | None:
         if word is None:
             return None
-        if isinstance(word, BracedWord):
+        if isinstance(word, BracedWord) and not word.expanded:
             return LoweredScriptBody(
                 script=self._lower_embedded_script(
                     _braced_word_raw_content(word),
@@ -513,7 +513,7 @@ class _Lowerer:
     def _parse_list_items(self, word: Word | None) -> tuple[ListItem, ...]:
         if word is None:
             return ()
-        if isinstance(word, BracedWord):
+        if isinstance(word, BracedWord) and not word.expanded:
             return tuple(split_tcl_list(word.text, word.content_span.start))
         static_text = word_static_text(word)
         if static_text is None:

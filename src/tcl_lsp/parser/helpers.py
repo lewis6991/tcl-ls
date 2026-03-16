@@ -24,6 +24,8 @@ def iter_word_parts(word: Word) -> Iterator[WordPart]:
 
 
 def word_static_text(word: Word) -> str | None:
+    if word.expanded:
+        return None
     if isinstance(word, BracedWord):
         return word.text
 

@@ -30,6 +30,7 @@ _HORIZONTAL_WHITESPACE_RUN = re.compile(r'[ \t\r\f]+')
 _QUOTED_WORD_PLAIN_TEXT_RUN = re.compile(r'[^"[$\\]+')
 _ESCAPE_MAP = {'n': '\n', 't': '\t', 'r': '\r'}
 _DOCUMENT_START_POSITION = Position(offset=0, line=0, character=0)
+_ARGUMENT_EXPANSION_PREFIX = '{*}'
 
 
 @dataclass(slots=True)
@@ -198,12 +199,32 @@ class _ParserImplementation:
         )
 
     def _parse_word(self, stop_char: str | None) -> Word:
+        word_start_index = self._index
+        word_start_position = self._current_position()
+        expanded = self._starts_argument_expansion(stop_char)
+        if expanded:
+            self._advance_text(_ARGUMENT_EXPANSION_PREFIX)
+
         current_char = self._peek()
         if current_char == '{':
-            return self._parse_braced_word()
+            return self._parse_braced_word(
+                token_start_index=word_start_index,
+                word_start_position=word_start_position,
+                expanded=expanded,
+            )
         if current_char == '"':
-            return self._parse_quoted_word()
-        return self._parse_bare_word(stop_char)
+            return self._parse_quoted_word(
+                token_start_index=word_start_index,
+                word_start_position=word_start_position,
+                expanded=expanded,
+            )
+        return self._parse_bare_word(
+            stop_char,
+            token_start_index=word_start_index,
+            word_start_position=word_start_position,
+            content_start_position=self._current_position(),
+            expanded=expanded,
+        )
 
     def _parse_comment(self) -> Token:
         start_index = self._index
@@ -229,9 +250,15 @@ class _ParserImplementation:
         self._append_token(comment)
         return comment
 
-    def _parse_bare_word(self, stop_char: str | None) -> BareWord:
-        start_index = self._index
-        start_position = self._current_position()
+    def _parse_bare_word(
+        self,
+        stop_char: str | None,
+        *,
+        token_start_index: int,
+        word_start_position: Position,
+        content_start_position: Position,
+        expanded: bool,
+    ) -> BareWord:
         buffer = _TextBuffer(start=None, pieces=[])
         parts: list[WordPart] = []
         text = self._text
@@ -272,23 +299,28 @@ class _ParserImplementation:
         self._flush_buffer(buffer, parts)
         end_position = self._current_position()
         word = BareWord(
-            span=Span(start=start_position, end=end_position),
-            content_span=Span(start=start_position, end=end_position),
+            span=Span(start=word_start_position, end=end_position),
+            content_span=Span(start=content_start_position, end=end_position),
             parts=tuple(parts),
+            expanded=expanded,
         )
         if self._collect_tokens:
             self._append_token(
                 Token(
                     kind='bare_word',
                     span=word.span,
-                    text=self._text[start_index : self._index],
+                    text=self._text[token_start_index : self._index],
                 )
             )
         return word
 
-    def _parse_quoted_word(self) -> QuotedWord:
-        start_index = self._index
-        start_position = self._current_position()
+    def _parse_quoted_word(
+        self,
+        *,
+        token_start_index: int,
+        word_start_position: Position,
+        expanded: bool,
+    ) -> QuotedWord:
         self._advance_char()
         content_start = self._current_position()
         buffer = _TextBuffer(start=None, pieces=[])
@@ -311,16 +343,17 @@ class _ParserImplementation:
                 self._advance_char()
                 end_position = self._current_position()
                 word = QuotedWord(
-                    span=Span(start=start_position, end=end_position),
+                    span=Span(start=word_start_position, end=end_position),
                     content_span=Span(start=content_start, end=content_end),
                     parts=tuple(parts),
+                    expanded=expanded,
                 )
                 if self._collect_tokens:
                     self._append_token(
                         Token(
                             kind='quoted_word',
                             span=word.span,
-                            text=self._text[start_index : self._index],
+                            text=self._text[token_start_index : self._index],
                         )
                     )
                 return word
@@ -343,27 +376,33 @@ class _ParserImplementation:
         self._add_diagnostic(
             code='unmatched-quote',
             message='Expected a closing `"` for this quoted word.',
-            start=start_position,
+            start=word_start_position,
             end=end_position,
         )
         word = QuotedWord(
-            span=Span(start=start_position, end=end_position),
+            span=Span(start=word_start_position, end=end_position),
             content_span=Span(start=content_start, end=end_position),
             parts=tuple(parts),
+            expanded=expanded,
         )
         if self._collect_tokens:
             self._append_token(
                 Token(
                     kind='quoted_word',
                     span=word.span,
-                    text=self._text[start_index : self._index],
+                    text=self._text[token_start_index : self._index],
                 )
             )
         return word
 
-    def _parse_braced_word(self) -> BracedWord:
-        start_index = self._index
-        start_position = self._current_position()
+    def _parse_braced_word(
+        self,
+        *,
+        token_start_index: int,
+        word_start_position: Position,
+        expanded: bool,
+    ) -> BracedWord:
+        raw_start_index = self._index
         self._advance_char()
         content_start = self._current_position()
         depth = 1
@@ -406,17 +445,18 @@ class _ParserImplementation:
                     self._advance_char()
                     end_position = self._current_position()
                     word = BracedWord(
-                        span=Span(start=start_position, end=end_position),
+                        span=Span(start=word_start_position, end=end_position),
                         content_span=Span(start=content_start, end=content_end),
                         text=''.join(text_parts),
-                        raw_text=self._text[start_index : self._index],
+                        raw_text=self._text[raw_start_index : self._index],
+                        expanded=expanded,
                     )
                     if self._collect_tokens:
                         self._append_token(
                             Token(
                                 kind='braced_word',
                                 span=word.span,
-                                text=self._text[start_index : self._index],
+                                text=self._text[token_start_index : self._index],
                             )
                         )
                     return word
@@ -431,21 +471,22 @@ class _ParserImplementation:
         self._add_diagnostic(
             code='unmatched-brace',
             message='Expected a closing `}` for this braced word.',
-            start=start_position,
+            start=word_start_position,
             end=end_position,
         )
         word = BracedWord(
-            span=Span(start=start_position, end=end_position),
+            span=Span(start=word_start_position, end=end_position),
             content_span=Span(start=content_start, end=end_position),
             text=''.join(text_parts),
-            raw_text=self._text[start_index : self._index],
+            raw_text=self._text[raw_start_index : self._index],
+            expanded=expanded,
         )
         if self._collect_tokens:
             self._append_token(
                 Token(
                     kind='braced_word',
                     span=word.span,
-                    text=self._text[start_index : self._index],
+                    text=self._text[token_start_index : self._index],
                 )
             )
         return word
@@ -650,6 +691,21 @@ class _ParserImplementation:
             return False
         next_index = self._index + 1
         return next_index < self._text_length and self._text[next_index] in {'\n', '\r'}
+
+    def _starts_argument_expansion(self, stop_char: str | None) -> bool:
+        if not self._text.startswith(_ARGUMENT_EXPANSION_PREFIX, self._index):
+            return False
+
+        next_index = self._index + len(_ARGUMENT_EXPANSION_PREFIX)
+        if next_index >= self._text_length:
+            return False
+
+        next_char = self._text[next_index]
+        if next_char in _WORD_DELIMITERS:
+            return False
+        if stop_char is not None and next_char == stop_char:
+            return False
+        return True
 
     def _consume_line_continuation(self) -> None:
         self._advance_char()

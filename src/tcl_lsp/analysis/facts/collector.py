@@ -454,7 +454,7 @@ class _FactCollector:
         self._collect_lowered_script(lowering_result.script, context)
 
     def _embedded_script_text(self, word: Word) -> tuple[str, Position] | None:
-        if isinstance(word, BracedWord):
+        if isinstance(word, BracedWord) and not word.expanded:
             raw_text = word.raw_text
             if raw_text.startswith('{'):
                 raw_text = raw_text[1:]

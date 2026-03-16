@@ -567,7 +567,7 @@ def _commands_with_derived_subcommands(
 
 
 def _metadata_body_text(word: Word) -> str:
-    if isinstance(word, BracedWord):
+    if isinstance(word, BracedWord) and not word.expanded:
         raw_text = word.raw_text
         if raw_text.startswith('{'):
             raw_text = raw_text[1:]
