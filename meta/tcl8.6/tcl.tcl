@@ -50,7 +50,9 @@ meta command after {info {id {}}}
 # If varName does not exist, it is given a value equal to the concatenation of
 # all the value arguments. The result of this command is the new value stored
 # in variable varName.
-meta command append {varName args}
+meta command append {varName args} {
+    bind 1
+}
 
 # Apply an anonymous function.
 # The command apply applies the function func to the arguments arg1 arg2...
@@ -748,7 +750,9 @@ meta command format {formatString args}
 # This command reads the next line from channelId, returns everything in the
 # line up to (but not including) the end-of-line character(s), and discards
 # the end-of-line character(s).
-meta command gets {channelId {varName {}}}
+meta command gets {channelId {varName {}}} {
+    bind 2
+}
 
 # Return names of files that match patterns.
 # This command performs file name "globbing" in a fashion similar to the csh
@@ -776,7 +780,9 @@ meta command if {test body args}
 # of the variable must be an integer. If increment is supplied then its value
 # (which must be an integer) is added to the value of variable varName;
 # otherwise 1 is added to varName.
-meta command incr {varName {increment 1}}
+meta command incr {varName {increment 1}} {
+    bind 1
+}
 
 # Return information about the state of the Tcl interpreter.
 # This command provides information about various internals of the Tcl
@@ -1139,14 +1145,18 @@ meta command join {list {joinString { }}}
 # of the value arguments to that list as a separate element, with spaces
 # between elements. If varName does not exist, it is created as a list with
 # elements given by the value arguments.
-meta command lappend {varName args}
+meta command lappend {varName args} {
+    bind 1
+}
 
 # Assign list elements to variables.
 # This command treats the value list as a list and assigns successive elements
 # from that list to the variables given by the varName arguments in order. If
 # there are more variable names than list elements, the remaining variables
 # are set to the empty string.
-meta command lassign {list args}
+meta command lassign {list args} {
+    bind 2..
+}
 
 # Retrieve an element from a list.
 # The lindex command accepts a parameter, list, which it treats as a Tcl list.
@@ -1411,13 +1421,36 @@ meta command read {channelId {numChars {}}}
 # and returns 1 if it does, 0 if it does not, unless -inline is specified (see
 # below). (Regular expression matching is described in the re_syntax reference
 # page.)
-meta command regexp {args}
+meta command regexp {args} {
+    option -all
+    option -about
+    option -expanded
+    option -indices
+    option -inline
+    option -line
+    option -lineanchor
+    option -linestop
+    option -nocase
+    option -start value
+    option -- stop
+    bind after-options 3..
+}
 
 # Perform substitutions based on regular expression pattern matching.
 # This command matches the regular expression exp against string, and either
 # copies string to the variable whose name is given by varName or returns
 # string if varName is not present.
-meta command regsub {args}
+meta command regsub {args} {
+    option -all
+    option -expanded
+    option -line
+    option -lineanchor
+    option -linestop
+    option -nocase
+    option -start value
+    option -- stop
+    bind after-options 4
+}
 
 # Rename or delete a command.
 # Rename the command that used to be called oldName so that it is now called
@@ -1429,10 +1462,19 @@ meta command rename {oldName newName}
 # In its simplest usage, the return command is used without options in the
 # body of a procedure to immediately return control to the caller of the
 # procedure.
-meta command return {args}
+meta command return {args} {
+    option -code value
+    option -errorcode value
+    option -errorinfo value
+    option -level value
+    option -options value
+    option -- stop
+}
 
 # Parse string using conversion specifiers in the style of sscanf.
-meta command scan {string format args}
+meta command scan {string format args} {
+    bind 3..
+}
 
 # Change the access position for an open channel.
 # Changes the current access position for channelId.

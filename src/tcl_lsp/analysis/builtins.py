@@ -4,11 +4,10 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
+from tcl_lsp.analysis.metadata_commands import MetadataCommand, load_metadata_commands
 from tcl_lsp.analysis.model import DefinitionTarget
 from tcl_lsp.common import Location
 from tcl_lsp.metadata_paths import metadata_dir
-from tcl_lsp.parser import Parser, word_static_text
-from tcl_lsp.parser.model import Token
 
 _META_DIR = metadata_dir()
 _CORE_PACKAGE = 'Tcl'
@@ -47,6 +46,24 @@ class BuiltinCommand:
 @lru_cache(maxsize=1)
 def builtin_commands() -> dict[str, BuiltinCommand]:
     return builtin_commands_by_package()[_CORE_PACKAGE]
+
+
+@lru_cache(maxsize=1)
+def core_annotated_metadata_commands() -> dict[str, MetadataCommand]:
+    annotated: dict[str, MetadataCommand] = {}
+    for metadata_command in load_metadata_commands(_META_DIR / _TCL_86_DIR / 'tcl.tcl'):
+        if not metadata_command.options and not metadata_command.annotations:
+            continue
+        existing = annotated.get(metadata_command.name)
+        if existing is not None and (
+            existing.options != metadata_command.options
+            or existing.annotations != metadata_command.annotations
+        ):
+            raise RuntimeError(
+                f'Conflicting metadata annotations for core command `{metadata_command.name}`.'
+            )
+        annotated[metadata_command.name] = metadata_command
+    return annotated
 
 
 @lru_cache(maxsize=1)
@@ -137,46 +154,22 @@ def _load_metadata_file(
     package_name: str,
     metadata_path: Path,
 ) -> dict[str, BuiltinCommand]:
-    metadata_uri = metadata_path.as_uri()
-    text = metadata_path.read_text(encoding='utf-8')
-    parse_result = Parser().parse_document(path=metadata_uri, text=text)
-    if parse_result.diagnostics:
-        message = '; '.join(diagnostic.message for diagnostic in parse_result.diagnostics)
-        raise RuntimeError(f'Invalid builtin command metadata: {message}')
-
     commands: dict[str, list[BuiltinOverload]] = {}
-    for command in parse_result.script.commands:
-        command_name = word_static_text(command.words[0])
-        if command_name != 'meta':
-            continue
-
-        metadata_kind = word_static_text(command.words[1]) if len(command.words) > 1 else None
-        if metadata_kind != 'command':
-            continue
-
-        if len(command.words) != 4:
-            raise RuntimeError(
-                'Builtin command metadata entries must be `meta command name {args}`.'
-            )
-
-        builtin_name = word_static_text(command.words[2])
-        parameter_list = word_static_text(command.words[3])
-        if builtin_name is None or parameter_list is None:
-            raise RuntimeError(
-                'Builtin command metadata entries must be fully static `meta command name {args}`.'
-            )
-
-        documentation = _command_documentation(command.leading_comments)
+    for metadata_command in load_metadata_commands(metadata_path):
+        documentation = metadata_command.documentation
         if not documentation:
-            raise RuntimeError(f'Builtin command `{builtin_name}` is missing documentation.')
+            raise RuntimeError(f'Builtin command `{metadata_command.name}` is missing documentation.')
 
-        name_span = command.words[2].content_span
-        commands.setdefault(builtin_name, []).append(
+        commands.setdefault(metadata_command.name, []).append(
             BuiltinOverload(
-                symbol_id=_builtin_symbol_id(package_name, builtin_name, name_span.start.offset),
-                signature=_signature(builtin_name, parameter_list),
+                symbol_id=_builtin_symbol_id(
+                    package_name,
+                    metadata_command.name,
+                    metadata_command.name_span.start.offset,
+                ),
+                signature=_signature(metadata_command.name, metadata_command.signature),
                 documentation=documentation,
-                location=Location(uri=metadata_uri, span=name_span),
+                location=Location(uri=metadata_command.uri, span=metadata_command.name_span),
             )
         )
 
@@ -187,21 +180,6 @@ def _load_metadata_file(
         name: BuiltinCommand(name=name, package=package_name, overloads=tuple(overloads))
         for name, overloads in commands.items()
     }
-
-def _command_documentation(comments: tuple[Token, ...]) -> str | None:
-    if not comments:
-        return None
-
-    lines = [_comment_text(comment.text) for comment in comments]
-    documentation = '\n'.join(lines).strip()
-    return documentation or None
-
-
-def _comment_text(text: str) -> str:
-    if not text.startswith('#'):
-        return text
-    text = text[1:]
-    return text[1:] if text.startswith(' ') else text
 
 
 def _signature(name: str, parameter_list: str) -> str:

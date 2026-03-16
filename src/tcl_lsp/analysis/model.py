@@ -26,6 +26,27 @@ type BindingKind = Literal[
     'upvar',
     'variable',
 ]
+_BINDING_KIND_VALUES: tuple[BindingKind, ...] = (
+    'append',
+    'array',
+    'catch',
+    'foreach',
+    'gets',
+    'global',
+    'incr',
+    'lappend',
+    'lassign',
+    'lmap',
+    'parameter',
+    'regexp',
+    'regsub',
+    'scan',
+    'set',
+    'switch',
+    'upvar',
+    'variable',
+)
+BINDING_KINDS: frozenset[BindingKind] = frozenset(_BINDING_KIND_VALUES)
 type CommandImportKind = Literal['exact', 'namespace-wildcard']
 type ReferenceKind = Literal['command', 'variable']
 type ResolutionState = Literal['resolved', 'unresolved', 'ambiguous', 'dynamic']

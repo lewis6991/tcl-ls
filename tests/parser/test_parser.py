@@ -5,6 +5,7 @@ from tcl_lsp.parser import (
     BareWord,
     CommandSubstitution,
     Parser,
+    QuotedWord,
     VariableSubstitution,
     word_static_text,
 )
@@ -102,11 +103,15 @@ def test_parser_stops_bare_variable_names_before_trailing_colons(parser: Parser)
 
     assert result.diagnostics == ()
 
-    first_variable = result.script.commands[0].words[1].parts[0]
+    first_word = result.script.commands[0].words[1]
+    assert isinstance(first_word, BareWord)
+    first_variable = first_word.parts[0]
     assert isinstance(first_variable, VariableSubstitution)
     assert first_variable.name == 'argv0'
 
-    second_variable = result.script.commands[1].words[1].parts[0]
+    second_word = result.script.commands[1].words[1]
+    assert isinstance(second_word, QuotedWord)
+    second_variable = second_word.parts[0]
     assert isinstance(second_variable, VariableSubstitution)
     assert second_variable.name == 'pname'
 

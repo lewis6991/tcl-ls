@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-
-from tcl_lsp.analysis.builtins import builtin_command
+from tcl_lsp.analysis.builtins import builtin_command, core_annotated_metadata_commands
 from tcl_lsp.analysis.facts.lowering import (
     LoweredCatchCommand,
     LoweredCommand,
@@ -22,6 +21,13 @@ from tcl_lsp.analysis.facts.lowering import (
     lower_parse_result,
 )
 from tcl_lsp.analysis.facts.parsing import ListItem, is_simple_name, split_tcl_list
+from tcl_lsp.analysis.metadata_commands import (
+    MetadataBind,
+    MetadataCommand,
+    MetadataRef,
+    MetadataScriptBody,
+    select_argument_indices,
+)
 from tcl_lsp.analysis.facts.utils import (
     extract_ifneeded_source_uri,
     extract_static_source_uri,
@@ -35,6 +41,7 @@ from tcl_lsp.analysis.facts.utils import (
     variable_symbol_id,
 )
 from tcl_lsp.analysis.model import (
+    BINDING_KINDS,
     BindingKind,
     CommandCall,
     CommandImport,
@@ -49,7 +56,7 @@ from tcl_lsp.analysis.model import (
     VarBinding,
     VariableReference,
 )
-from tcl_lsp.common import Diagnostic, DocumentSymbol, Span
+from tcl_lsp.common import Diagnostic, DocumentSymbol, Position, Span
 from tcl_lsp.parser import Parser, word_static_text
 from tcl_lsp.parser.model import (
     BracedWord,
@@ -142,21 +149,13 @@ class _FactCollector:
         self._variable_references: list[VariableReference] = []
         self._linked_variables_by_scope: dict[str, dict[str, _VariableTarget]] = {}
         self._command_handlers: dict[str, Callable[[Command, _ExtractionContext], None]] = {
-            'append': self._collect_append,
             'array': self._collect_array,
             'binary': self._collect_binary,
             'package': self._collect_package,
             'namespace': self._collect_namespace,
             'set': self._collect_set,
             'global': self._collect_global,
-            'gets': self._collect_gets,
             'info': self._collect_info,
-            'incr': self._collect_incr,
-            'lappend': self._collect_lappend,
-            'lassign': self._collect_lassign,
-            'regexp': self._collect_regexp,
-            'regsub': self._collect_regsub,
-            'scan': self._collect_scan,
             'source': self._collect_source,
             'upvar': self._collect_upvar,
             'variable': self._collect_variable,
@@ -251,6 +250,7 @@ class _FactCollector:
             self._collect_lowered_word_references(word_references, context)
 
         self._collect_builtin_subcommands(syntax_command, context)
+        self._collect_metadata_command_annotations(syntax_command, context)
         return command.command_name
 
     def _record_command_call(
@@ -299,6 +299,167 @@ class _FactCollector:
                 arg_texts=tuple(word_static_text(argument) for argument in command.words[index + 1 :]),
                 context=context,
             )
+
+    def _collect_metadata_command_annotations(
+        self,
+        command: Command,
+        context: _ExtractionContext,
+    ) -> None:
+        matched_command = self._matched_core_metadata_command(command)
+        if matched_command is None:
+            return
+
+        metadata_command, prefix_word_count = matched_command
+        argument_words = command.words[prefix_word_count:]
+        argument_texts = tuple(word_static_text(word) for word in argument_words)
+        for annotation in metadata_command.annotations:
+            if not isinstance(annotation, (MetadataBind, MetadataRef, MetadataScriptBody)):
+                continue
+            selected_words = self._selected_metadata_argument_words(
+                argument_words=argument_words,
+                argument_texts=argument_texts,
+                metadata_command=metadata_command,
+                annotation=annotation,
+            )
+            if selected_words is None:
+                continue
+
+            if isinstance(annotation, MetadataBind):
+                binding_kind = self._metadata_binding_kind(metadata_command, annotation)
+                for selected_word in selected_words:
+                    if annotation.selector.list_mode:
+                        self._record_list_binding_word(selected_word, context, kind=binding_kind)
+                        continue
+                    self._record_simple_binding_word(selected_word, context, kind=binding_kind)
+                continue
+
+            if isinstance(annotation, MetadataRef):
+                for selected_word in selected_words:
+                    if annotation.selector.list_mode:
+                        self._record_list_reference_word(selected_word, context)
+                        continue
+                    self._record_simple_reference_word(selected_word, context)
+                continue
+
+            for selected_word in selected_words:
+                self._collect_script_body_word(selected_word, context)
+
+    def _metadata_binding_kind(
+        self,
+        metadata_command: MetadataCommand,
+        annotation: MetadataBind,
+    ) -> BindingKind:
+        if annotation.kind is not None:
+            return annotation.kind
+
+        inferred_kind = name_tail(metadata_command.name.rsplit(' ', 1)[-1])
+        if inferred_kind not in BINDING_KINDS:
+            raise RuntimeError(
+                f'Core metadata command `{metadata_command.name}` requires an explicit binding kind.'
+            )
+        return inferred_kind
+
+    def _matched_core_metadata_command(
+        self,
+        command: Command,
+    ) -> tuple[MetadataCommand, int] | None:
+        static_prefix_parts: list[str] = []
+        matched: tuple[MetadataCommand, int] | None = None
+        for index, word in enumerate(command.words):
+            static_text = word_static_text(word)
+            if static_text is None:
+                break
+            if index == 0:
+                static_text = normalize_command_name(static_text)
+            static_prefix_parts.append(static_text)
+            metadata_command = core_annotated_metadata_commands().get(' '.join(static_prefix_parts))
+            if metadata_command is not None:
+                matched = metadata_command, index + 1
+        return matched
+
+    def _selected_metadata_argument_words(
+        self,
+        *,
+        argument_words: tuple[Word, ...],
+        argument_texts: tuple[str | None, ...],
+        metadata_command: MetadataCommand,
+        annotation: MetadataBind | MetadataRef | MetadataScriptBody,
+    ) -> tuple[Word, ...] | None:
+        selected_indices = select_argument_indices(
+            annotation.selector,
+            argument_texts,
+            metadata_command.options,
+        )
+        if selected_indices is None:
+            return None
+        return tuple(
+            argument_words[index]
+            for index in selected_indices
+            if index < len(argument_words)
+        )
+
+    def _record_list_binding_word(
+        self,
+        word: Word,
+        context: _ExtractionContext,
+        *,
+        kind: BindingKind,
+    ) -> None:
+        for item in self._static_list_items(word):
+            if not is_simple_name(item.text):
+                continue
+            self._record_variable_binding(
+                name=item.text,
+                span=item.span,
+                context=context,
+                kind=kind,
+            )
+
+    def _record_list_reference_word(self, word: Word, context: _ExtractionContext) -> None:
+        for item in self._static_list_items(word):
+            if not is_simple_name(item.text):
+                continue
+            self._record_variable_reference(
+                name=item.text,
+                span=item.span,
+                context=context,
+            )
+
+    def _static_list_items(self, word: Word) -> tuple[ListItem, ...]:
+        static_text = word_static_text(word)
+        if static_text is None:
+            return ()
+        return tuple(split_tcl_list(static_text, word.content_span.start))
+
+    def _collect_script_body_word(self, word: Word, context: _ExtractionContext) -> None:
+        embedded_script_text = self._embedded_script_text(word)
+        if embedded_script_text is None:
+            return
+
+        script_text, start_position = embedded_script_text
+        parse_result = self._parser.parse_embedded_script(
+            context.uri,
+            script_text,
+            start_position,
+        )
+        lowering_result = lower_parse_result(parse_result, parser=self._parser)
+        self._diagnostics.extend(parse_result.diagnostics)
+        self._diagnostics.extend(lowering_result.diagnostics)
+        self._collect_lowered_script(lowering_result.script, context)
+
+    def _embedded_script_text(self, word: Word) -> tuple[str, Position] | None:
+        if isinstance(word, BracedWord):
+            raw_text = word.raw_text
+            if raw_text.startswith('{'):
+                raw_text = raw_text[1:]
+            if raw_text.endswith('}'):
+                raw_text = raw_text[:-1]
+            return raw_text, word.content_span.start
+
+        static_text = word_static_text(word)
+        if static_text is None:
+            return None
+        return static_text, word.content_span.start
 
     def _collect_package(self, command: Command, context: _ExtractionContext) -> None:
         if len(command.words) < 2:
@@ -529,32 +690,6 @@ class _FactCollector:
         if subcommand in {'exists', 'get', 'names', 'size', 'startsearch', 'statistics', 'unset'}:
             self._record_simple_reference_word(command.words[2], context)
 
-    def _collect_append(self, command: Command, context: _ExtractionContext) -> None:
-        self._record_variable_writer(command, context, kind='append')
-
-    def _collect_incr(self, command: Command, context: _ExtractionContext) -> None:
-        self._record_variable_writer(command, context, kind='incr')
-
-    def _collect_lappend(self, command: Command, context: _ExtractionContext) -> None:
-        self._record_variable_writer(command, context, kind='lappend')
-
-    def _collect_gets(self, command: Command, context: _ExtractionContext) -> None:
-        if len(command.words) < 3:
-            return
-        self._record_simple_binding_word(command.words[2], context, kind='gets')
-
-    def _collect_lassign(self, command: Command, context: _ExtractionContext) -> None:
-        if len(command.words) < 3:
-            return
-        for variable_word in command.words[2:]:
-            self._record_simple_binding_word(variable_word, context, kind='lassign')
-
-    def _collect_scan(self, command: Command, context: _ExtractionContext) -> None:
-        if len(command.words) < 4:
-            return
-        for variable_word in command.words[3:]:
-            self._record_simple_binding_word(variable_word, context, kind='scan')
-
     def _collect_binary(self, command: Command, context: _ExtractionContext) -> None:
         if len(command.words) < 5:
             return
@@ -562,19 +697,6 @@ class _FactCollector:
             return
         for variable_word in command.words[4:]:
             self._record_simple_binding_word(variable_word, context, kind='scan')
-
-    def _collect_regexp(self, command: Command, context: _ExtractionContext) -> None:
-        value_start = self._regex_value_start_index(command)
-        if value_start is None or len(command.words) < value_start + 3:
-            return
-        for variable_word in command.words[value_start + 2 :]:
-            self._record_simple_binding_word(variable_word, context, kind='regexp')
-
-    def _collect_regsub(self, command: Command, context: _ExtractionContext) -> None:
-        value_start = self._regex_value_start_index(command)
-        if value_start is None or len(command.words) <= value_start + 3:
-            return
-        self._record_simple_binding_word(command.words[value_start + 3], context, kind='regsub')
 
     def _collect_lowered_foreach(
         self,
@@ -986,17 +1108,6 @@ class _FactCollector:
             return None
         return variable_name
 
-    def _record_variable_writer(
-        self,
-        command: Command,
-        context: _ExtractionContext,
-        *,
-        kind: BindingKind,
-    ) -> None:
-        if len(command.words) < 2:
-            return
-        self._record_simple_binding_word(command.words[1], context, kind=kind)
-
     def _record_simple_binding_word(
         self,
         word: Word,
@@ -1012,37 +1123,6 @@ class _FactCollector:
             context=context,
             kind=kind,
         )
-
-    def _regex_value_start_index(self, command: Command) -> int | None:
-        index = 1
-        while index < len(command.words):
-            option = word_static_text(command.words[index])
-            if option is None:
-                return index
-            if option == '--':
-                return index + 1 if index + 1 < len(command.words) else None
-            if option in {
-                '-all',
-                '-about',
-                '-expanded',
-                '-indices',
-                '-inline',
-                '-line',
-                '-lineanchor',
-                '-linestop',
-                '-nocase',
-            }:
-                index += 1
-                continue
-            if option == '-start':
-                if index + 1 >= len(command.words):
-                    return None
-                index += 2
-                continue
-            if option.startswith('-'):
-                return None
-            return index
-        return None
 
     def _record_simple_reference_word(self, word: Word, context: _ExtractionContext) -> None:
         variable_name = self._simple_variable_name(word)

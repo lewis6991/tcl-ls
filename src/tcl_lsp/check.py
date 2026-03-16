@@ -33,9 +33,9 @@ type ColorMode = Literal['auto', 'always', 'never']
 
 _TAB_SIZE = 4
 _DEFAULT_WORKER_COUNT = 8
-_WORKER_DOCUMENT_CACHE: _DocumentCache | None = None
-_WORKER_RESOLVER: Resolver | None = None
-_WORKER_PACKAGE_INDEX_CATALOG: tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...] = ()
+_worker_document_cache: _DocumentCache | None = None
+_worker_resolver: Resolver | None = None
+_worker_package_index_catalog: tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1033,12 +1033,12 @@ def _analyze_source_document(
 def _initialize_unit_worker(
     package_index_catalog: tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...],
 ) -> None:
-    global _WORKER_DOCUMENT_CACHE, _WORKER_PACKAGE_INDEX_CATALOG, _WORKER_RESOLVER
+    global _worker_document_cache, _worker_package_index_catalog, _worker_resolver
     parser = Parser()
     extractor = FactExtractor(parser)
-    _WORKER_DOCUMENT_CACHE = _DocumentCache(parser=parser, extractor=extractor)
-    _WORKER_RESOLVER = Resolver()
-    _WORKER_PACKAGE_INDEX_CATALOG = package_index_catalog
+    _worker_document_cache = _DocumentCache(parser=parser, extractor=extractor)
+    _worker_resolver = Resolver()
+    _worker_package_index_catalog = package_index_catalog
 
 
 def _analyze_unit_worker(unit: _AnalysisUnit) -> _UnitAnalysisReport:
@@ -1056,12 +1056,12 @@ def _worker_services() -> tuple[
     Resolver,
     tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...],
 ]:
-    global _WORKER_DOCUMENT_CACHE, _WORKER_PACKAGE_INDEX_CATALOG, _WORKER_RESOLVER
-    if _WORKER_DOCUMENT_CACHE is None or _WORKER_RESOLVER is None:
+    global _worker_document_cache, _worker_package_index_catalog, _worker_resolver
+    if _worker_document_cache is None or _worker_resolver is None:
         _initialize_unit_worker(())
-    assert _WORKER_DOCUMENT_CACHE is not None
-    assert _WORKER_RESOLVER is not None
-    return (_WORKER_DOCUMENT_CACHE, _WORKER_RESOLVER, _WORKER_PACKAGE_INDEX_CATALOG)
+    assert _worker_document_cache is not None
+    assert _worker_resolver is not None
+    return (_worker_document_cache, _worker_resolver, _worker_package_index_catalog)
 
 
 def _index_package_index(

@@ -3,46 +3,29 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
 
 from tcl_lsp.analysis.facts import FactExtractor
-from tcl_lsp.analysis.facts.parsing import split_tcl_list
 from tcl_lsp.analysis.index import WorkspaceIndex
+from tcl_lsp.analysis.metadata_commands import (
+    MetadataCommand,
+    MetadataOption,
+    MetadataPackage,
+    MetadataSelector,
+    MetadataScriptBody,
+    MetadataSource,
+    SourceBase,
+    all_metadata_commands,
+    select_argument_indices,
+)
 from tcl_lsp.analysis.model import CommandCall, DocumentFacts, ProcDecl
-from tcl_lsp.common import Position
-from tcl_lsp.metadata_paths import metadata_dir
-from tcl_lsp.parser import Parser, word_static_text
+from tcl_lsp.parser import Parser
 from tcl_lsp.workspace import source_id_to_path
-
-_META_DIR = metadata_dir()
-
-type SourceBase = Literal['call-source-directory', 'proc-source-parent']
 
 
 @dataclass(frozen=True, slots=True)
 class MetadataDependencyOverlay:
     source_uris: tuple[str, ...]
     required_packages: frozenset[str]
-
-
-@dataclass(frozen=True, slots=True)
-class _ScriptBodyEffect:
-    argument_index: int
-
-
-@dataclass(frozen=True, slots=True)
-class _SourceEffect:
-    argument_index: int
-    base: SourceBase
-
-
-@dataclass(frozen=True, slots=True)
-class _PackageEffect:
-    argument_index: int | None
-    literal_package: str | None
-
-
-type _CommandEffect = _ScriptBodyEffect | _SourceEffect | _PackageEffect
 
 
 def metadata_dependency_overlay(
@@ -64,103 +47,37 @@ def metadata_dependency_overlay(
 @lru_cache(maxsize=1)
 def _candidate_effect_command_names() -> frozenset[str]:
     candidates: set[str] = set()
-    for _, qualified_name in _metadata_command_effects():
-        tail = qualified_name.rsplit('::', 1)[-1]
+    for _, metadata_command in _metadata_command_effects().items():
+        tail = metadata_command.name.rsplit('::', 1)[-1]
         candidates.add(tail)
-        candidates.add(qualified_name)
+        candidates.add(metadata_command.name)
     return frozenset(candidates)
 
 
 @lru_cache(maxsize=1)
-def _metadata_command_effects() -> dict[tuple[str, str], tuple[_CommandEffect, ...]]:
-    effects_by_key: dict[tuple[str, str], list[_CommandEffect]] = {}
-    parser = Parser()
-    for metadata_path in sorted(_META_DIR.rglob('*.tcl')):
-        metadata_uri = metadata_path.as_uri()
-        text = metadata_path.read_text(encoding='utf-8')
-        parse_result = parser.parse_document(path=metadata_uri, text=text)
-        if parse_result.diagnostics:
-            message = '; '.join(diagnostic.message for diagnostic in parse_result.diagnostics)
-            raise RuntimeError(f'Invalid metadata file `{metadata_path.name}`: {message}')
-
-        for command in parse_result.script.commands:
-            if word_static_text(command.words[0]) != 'meta':
-                continue
-
-            metadata_kind = word_static_text(command.words[1])
-            if metadata_kind != 'effect':
-                continue
-
-            if len(command.words) != 3:
-                raise RuntimeError(
-                    'Metadata effect entries must be `meta effect {spec}`.'
-                )
-
-            spec = word_static_text(command.words[2])
-            if spec is None:
-                raise RuntimeError(
-                    'Metadata effect entries must be fully static `meta effect {spec}`.'
-                )
-
-            qualified_name, effect = _parse_effect_spec(spec)
-            effects_by_key.setdefault((metadata_path.name, qualified_name), []).append(effect)
+def _metadata_command_effects() -> dict[tuple[str, str], MetadataCommand]:
+    effects_by_key: dict[tuple[str, str], MetadataCommand] = {}
+    for metadata_command in all_metadata_commands():
+        if not any(
+            isinstance(annotation, (MetadataPackage, MetadataScriptBody, MetadataSource))
+            for annotation in metadata_command.annotations
+        ):
+            continue
+        key = (metadata_command.metadata_path.name, metadata_command.name)
+        existing = effects_by_key.get(key)
+        if existing is not None and (
+            existing.options != metadata_command.options
+            or existing.annotations != metadata_command.annotations
+        ):
+            raise RuntimeError(
+                f'Conflicting metadata effects for `{metadata_command.name}` in '
+                f'`{metadata_command.metadata_path.name}`.'
+            )
+        effects_by_key[key] = metadata_command
 
     if not effects_by_key:
         raise RuntimeError('No metadata effect entries were loaded.')
-
-    return {
-        key: tuple(effects)
-        for key, effects in effects_by_key.items()
-    }
-
-
-def _parse_effect_spec(spec: str) -> tuple[str, _CommandEffect]:
-    items = split_tcl_list(spec, Position(line=0, character=0, offset=0))
-    if len(items) < 3:
-        raise RuntimeError('Helper command effect metadata must include a proc name and effect.')
-
-    proc_name = items[0].text
-    effect_kind = items[1].text
-    if not proc_name.startswith('::'):
-        raise RuntimeError('Helper command effects must target fully qualified procedure names.')
-
-    if effect_kind == 'script-body':
-        if len(items) != 3:
-            raise RuntimeError('Script-body effects must be `proc script-body argIndex`.')
-        return proc_name, _ScriptBodyEffect(argument_index=_parse_argument_index(items[2].text))
-
-    if effect_kind == 'source':
-        if len(items) != 4:
-            raise RuntimeError('Source effects must be `proc source argIndex base`.')
-        return proc_name, _SourceEffect(
-            argument_index=_parse_argument_index(items[2].text),
-            base=_parse_source_base(items[3].text),
-        )
-
-    if effect_kind == 'package':
-        if len(items) != 3:
-            raise RuntimeError('Package effects must be `proc package packageNameOrArgIndex`.')
-        package_spec = items[2].text
-        if package_spec.isdigit():
-            return proc_name, _PackageEffect(
-                argument_index=_parse_argument_index(package_spec),
-                literal_package=None,
-            )
-        return proc_name, _PackageEffect(argument_index=None, literal_package=package_spec)
-
-    raise RuntimeError(f'Unknown helper command effect kind `{effect_kind}`.')
-
-
-def _parse_argument_index(text: str) -> int:
-    if not text.isdigit() or text == '0':
-        raise RuntimeError(f'Argument indices must be positive integers, got `{text}`.')
-    return int(text) - 1
-
-
-def _parse_source_base(text: str) -> SourceBase:
-    if text not in {'call-source-directory', 'proc-source-parent'}:
-        raise RuntimeError(f'Unknown helper command source base `{text}`.')
-    return text
+    return effects_by_key
 
 
 @lru_cache(maxsize=1)
@@ -196,37 +113,62 @@ class _DependencyScanner:
         if procedure_path is None:
             return
 
-        effects = _metadata_command_effects().get((procedure_path.name, procedure.qualified_name), ())
-        for effect in effects:
-            if isinstance(effect, _ScriptBodyEffect):
-                script_text = _argument_text(command_call, effect.argument_index)
-                if script_text is None:
+        metadata_command = _metadata_command_effects().get(
+            (procedure_path.name, procedure.qualified_name)
+        )
+        if metadata_command is None:
+            return
+
+        for annotation in metadata_command.annotations:
+            if isinstance(annotation, MetadataScriptBody):
+                script_texts = _selected_argument_texts(
+                    command_call,
+                    selector=annotation.selector,
+                    options=metadata_command.options,
+                )
+                if script_texts is None:
                     continue
-                nested_facts = _extract_embedded_script(script_text, self.source_path)
-                self.scan_facts(nested_facts)
+                for script_text in script_texts:
+                    nested_facts = _extract_embedded_script(script_text, self.source_path)
+                    self.scan_facts(nested_facts)
                 continue
 
-            if isinstance(effect, _SourceEffect):
-                source_text = _argument_text(command_call, effect.argument_index)
-                if source_text is None:
+            if isinstance(annotation, MetadataSource):
+                source_texts = _selected_argument_texts(
+                    command_call,
+                    selector=annotation.selector,
+                    options=metadata_command.options,
+                )
+                if source_texts is None:
                     continue
                 base_directory = _effect_base_directory(
-                    effect.base,
+                    annotation.base,
                     call_source_path=self.source_path,
                     procedure_path=procedure_path,
                 )
-                self.source_uris.setdefault(
-                    (base_directory / source_text).resolve(strict=False).as_uri(),
-                    None,
-                )
+                for source_text in source_texts:
+                    self.source_uris.setdefault(
+                        (base_directory / source_text).resolve(strict=False).as_uri(),
+                        None,
+                    )
                 continue
 
-            if isinstance(effect, _PackageEffect):
-                package_name = effect.literal_package
-                if package_name is None and effect.argument_index is not None:
-                    package_name = _argument_text(command_call, effect.argument_index)
-                if package_name:
+            if isinstance(annotation, MetadataPackage):
+                if annotation.literal_package is not None:
+                    self.required_packages.add(annotation.literal_package)
+                    continue
+                if annotation.selector is None:
+                    continue
+                package_names = _selected_argument_texts(
+                    command_call,
+                    selector=annotation.selector,
+                    options=metadata_command.options,
+                )
+                if package_names is None:
+                    continue
+                for package_name in package_names:
                     self.required_packages.add(package_name)
+                continue
 
 
 def _resolve_unique_procedure(
@@ -247,10 +189,25 @@ def _resolve_unique_procedure(
     return matches[0]
 
 
-def _argument_text(command_call: CommandCall, argument_index: int) -> str | None:
-    if argument_index < 0 or argument_index >= len(command_call.arg_texts):
+def _selected_argument_texts(
+    command_call: CommandCall,
+    *,
+    selector: MetadataSelector,
+    options: tuple[MetadataOption, ...],
+) -> tuple[str, ...] | None:
+    selected_indices = select_argument_indices(selector, command_call.arg_texts, options)
+    if selected_indices is None:
         return None
-    return command_call.arg_texts[argument_index]
+
+    selected_texts: list[str] = []
+    for index in selected_indices:
+        if index >= len(command_call.arg_texts):
+            continue
+        argument_text = command_call.arg_texts[index]
+        if argument_text is None:
+            return None
+        selected_texts.append(argument_text)
+    return tuple(selected_texts)
 
 
 def _extract_embedded_script(text: str, source_path: Path) -> DocumentFacts:
