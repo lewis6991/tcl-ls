@@ -319,13 +319,42 @@ class _Lowerer:
 
         index = 1
         while index < len(command.words):
+            clause_kind = 'if'
+            clause_span = command.span
             if clauses:
-                keyword = word_static_text(command.words[index])
+                keyword_word = command.words[index]
+                keyword = word_static_text(keyword_word)
                 if keyword == 'elseif':
+                    clause_kind = 'elseif'
+                    clause_span = keyword_word.span
                     index += 1
                 elif keyword == 'else':
+                    clause_span = keyword_word.span
+                    if index + 1 >= len(command.words):
+                        self._emit_analysis_diagnostic(
+                            code='malformed-if',
+                            message='Malformed `if` command; `else` requires a body.',
+                            span=clause_span,
+                        )
+                        break
                     else_body = self._lower_script_word(
                         command.words[index + 1] if index + 1 < len(command.words) else None
+                    )
+                    if index + 2 < len(command.words):
+                        self._emit_analysis_diagnostic(
+                            code='malformed-if',
+                            message='Malformed `if` command; trailing words after `else` body.',
+                            span=command.words[index + 2].span,
+                        )
+                    break
+                elif keyword is not None:
+                    self._emit_analysis_diagnostic(
+                        code='malformed-if',
+                        message=(
+                            'Malformed `if` command; expected `elseif` or `else`, '
+                            f'got `{keyword}`.'
+                        ),
+                        span=keyword_word.span,
                     )
                     break
                 else:
@@ -334,6 +363,12 @@ class _Lowerer:
             condition = self._lower_condition_word(command.words[index] if index < len(command.words) else None)
             body_index = self._if_body_index(command.words, index + 1)
             if body_index is None:
+                if clause_kind == 'elseif':
+                    self._emit_analysis_diagnostic(
+                        code='malformed-if',
+                        message='Malformed `if` command; `elseif` requires a test and body.',
+                        span=clause_span,
+                    )
                 break
 
             clauses.append(
@@ -500,14 +535,32 @@ class _Lowerer:
 
     def _switch_layout(self, words: tuple[Word, ...]) -> _SwitchLayout | None:
         if len(words) < 3:
+            if len(words) >= 1:
+                self._emit_analysis_diagnostic(
+                    code='malformed-switch',
+                    message='Malformed `switch` command; missing pattern/body clauses.',
+                    span=words[0].span,
+                )
             return None
 
         option_state = self._scan_switch_options(words)
-        if option_state is None or option_state.value_index >= len(words):
+        if option_state is None:
+            return None
+        if option_state.value_index >= len(words):
+            self._emit_analysis_diagnostic(
+                code='malformed-switch',
+                message='Malformed `switch` command; missing value to match.',
+                span=words[0].span,
+            )
             return None
 
         branch_words = tuple(words[option_state.value_index + 1 :])
         if not branch_words:
+            self._emit_analysis_diagnostic(
+                code='malformed-switch',
+                message='Malformed `switch` command; missing pattern/body clauses.',
+                span=words[option_state.value_index].span,
+            )
             return None
 
         if len(branch_words) == 1:
@@ -526,6 +579,11 @@ class _Lowerer:
     def _lower_switch_branch_list(self, word: Word) -> tuple[LoweredScriptBody, ...]:
         items = self._parse_list_items(word)
         if len(items) % 2 != 0:
+            self._emit_analysis_diagnostic(
+                code='malformed-switch',
+                message='Malformed `switch` command; branch lists require pattern/body pairs.',
+                span=word.span,
+            )
             return ()
 
         bodies: list[LoweredScriptBody] = []
@@ -543,6 +601,11 @@ class _Lowerer:
         branch_words: tuple[Word, ...],
     ) -> tuple[LoweredScriptBody, ...]:
         if len(branch_words) % 2 != 0:
+            self._emit_analysis_diagnostic(
+                code='malformed-switch',
+                message='Malformed `switch` command; branches require pattern/body pairs.',
+                span=branch_words[-1].span,
+            )
             return ()
 
         bodies: list[LoweredScriptBody] = []
@@ -562,6 +625,8 @@ class _Lowerer:
 
         while index < len(words):
             option = word_static_text(words[index])
+            if option is None:
+                break
             if option == '--':
                 index += 1
                 break
@@ -574,14 +639,37 @@ class _Lowerer:
                 continue
             if option in {'-matchvar', '-indexvar'}:
                 if index + 1 >= len(words):
+                    self._emit_analysis_diagnostic(
+                        code='malformed-switch',
+                        message=f'Malformed `switch` command; `{option}` requires a value.',
+                        span=words[index].span,
+                    )
                     return None
                 if regexp_mode:
                     regexp_binding_words.append(words[index + 1])
                 index += 2
                 continue
+            if option.startswith('-') and option != '-':
+                self._emit_analysis_diagnostic(
+                    code='malformed-switch',
+                    message=f'Malformed `switch` command; unknown option `{option}`.',
+                    span=words[index].span,
+                )
+                return None
             break
 
         return _SwitchOptionState(
             value_index=index,
             regexp_binding_words=tuple(regexp_binding_words),
+        )
+
+    def _emit_analysis_diagnostic(self, *, code: str, message: str, span: Span) -> None:
+        self.diagnostics.append(
+            Diagnostic(
+                span=span,
+                severity='error',
+                message=message,
+                source='analysis',
+                code=code,
+            )
         )

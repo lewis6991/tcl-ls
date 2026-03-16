@@ -70,6 +70,8 @@ This repository contains an early but working bootstrap of a Tcl language server
 - [x] Semantic diagnostics currently implemented:
   - [x] ambiguous variable bindings in procedure scope
   - [x] duplicate procedure declarations
+  - [x] malformed static `if` command forms
+  - [x] malformed static `switch` command forms
   - [x] missing option values for commands with metadata option specs
   - [x] unknown options for commands with metadata option specs
   - [x] unknown subcommands for statically resolved builtin commands
