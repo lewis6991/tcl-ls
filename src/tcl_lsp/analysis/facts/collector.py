@@ -119,9 +119,20 @@ class FactExtractor:
         self._plugin_host = TclPluginHost() if plugin_host is None else plugin_host
 
     def extract(
-        self, parse_result: ParseResult, *, include_parse_result: bool = True
+        self,
+        parse_result: ParseResult,
+        *,
+        include_parse_result: bool = True,
+        include_lexical_spans: bool | None = None,
     ) -> DocumentFacts:
-        lowering_result = lower_parse_result(parse_result, parser=self._parser)
+        if include_lexical_spans is None:
+            include_lexical_spans = include_parse_result
+
+        lowering_result = lower_parse_result(
+            parse_result,
+            parser=self._parser,
+            collect_lexical_spans=include_lexical_spans,
+        )
         collector = _FactCollector(
             parser=self._parser,
             plugin_host=self._plugin_host,
@@ -132,6 +143,7 @@ class FactExtractor:
             lowered_script=lowering_result.script,
             diagnostics=parse_result.diagnostics + lowering_result.diagnostics,
             include_parse_result=include_parse_result,
+            include_lexical_spans=include_lexical_spans,
         )
         return collector.collect()
 
@@ -144,6 +156,7 @@ class _FactCollector:
         '_command_imports',
         '_comment_spans',
         '_diagnostics',
+        '_include_lexical_spans',
         '_include_parse_result',
         '_linked_variables_by_scope',
         '_lowered_script',
@@ -173,12 +186,14 @@ class _FactCollector:
         string_spans: tuple[Span, ...],
         lowered_script: LoweredScript,
         diagnostics: tuple[Diagnostic, ...],
+        include_lexical_spans: bool,
         include_parse_result: bool,
     ) -> None:
         self._parser = parser
         self._plugin_host = plugin_host
         self._parse_result = parse_result
         self._lowered_script = lowered_script
+        self._include_lexical_spans = include_lexical_spans
         self._include_parse_result = include_parse_result
         self._diagnostics: list[Diagnostic] = list(diagnostics)
         self._active_builtin_packages: set[str] = set()
@@ -641,6 +656,7 @@ class _FactCollector:
             Script(span=embedded_command.span, commands=(embedded_command,)),
             parser=self._parser,
             source_id=context.uri,
+            collect_lexical_spans=self._include_lexical_spans,
         )
         self._comment_spans.extend(lowering_result.comment_spans)
         self._string_spans.extend(lowering_result.string_spans)
@@ -985,16 +1001,35 @@ class _FactCollector:
             return
 
         script_text, start_position = embedded_script_text
-        parse_result = self._parser.parse_embedded_script(
-            context.uri,
-            script_text,
-            start_position,
-        )
-        lowering_result = lower_parse_result(parse_result, parser=self._parser)
+        if not self._include_lexical_spans:
+            script = self._parser.parse_embedded_script_for_analysis(
+                context.uri,
+                script_text,
+                start_position,
+                diagnostics=self._diagnostics,
+            )
+            lowering_result = lower_script(
+                script,
+                parser=self._parser,
+                source_id=context.uri,
+                collect_lexical_spans=False,
+            )
+        else:
+            parse_result = self._parser.parse_embedded_script(
+                context.uri,
+                script_text,
+                start_position,
+            )
+            lowering_result = lower_parse_result(
+                parse_result,
+                parser=self._parser,
+                collect_lexical_spans=True,
+            )
+            self._diagnostics.extend(parse_result.diagnostics)
+
         self._comment_spans.extend(lowering_result.comment_spans)
         self._string_spans.extend(lowering_result.string_spans)
         self._operator_spans.extend(lowering_result.operator_spans)
-        self._diagnostics.extend(parse_result.diagnostics)
         self._diagnostics.extend(lowering_result.diagnostics)
         self._collect_lowered_script(lowering_result.script, context)
 

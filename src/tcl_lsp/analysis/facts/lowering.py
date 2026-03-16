@@ -272,31 +272,52 @@ class _SwitchOptionState:
     regexp_binding_words: tuple[Word, ...]
 
 
-def lower_parse_result(parse_result: ParseResult, *, parser: Parser) -> LoweringResult:
+def lower_parse_result(
+    parse_result: ParseResult,
+    *,
+    parser: Parser,
+    collect_lexical_spans: bool = True,
+) -> LoweringResult:
     lowering_result = lower_script(
         parse_result.script,
         parser=parser,
         source_id=parse_result.source_id,
+        collect_lexical_spans=collect_lexical_spans,
     )
     return LoweringResult(
         script=lowering_result.script,
         diagnostics=lowering_result.diagnostics,
-        comment_spans=tuple(
-            token.span for token in parse_result.tokens if token.kind == 'comment'
-        )
-        + lowering_result.comment_spans,
+        comment_spans=(
+            tuple(token.span for token in parse_result.tokens if token.kind == 'comment')
+            + lowering_result.comment_spans
+            if collect_lexical_spans
+            else ()
+        ),
         string_spans=lowering_result.string_spans,
         operator_spans=lowering_result.operator_spans,
     )
 
 
-def lower_script(script: Script, *, parser: Parser, source_id: str) -> LoweringResult:
-    lowerer = _Lowerer(parser=parser, source_id=source_id)
-    string_spans, operator_spans = _script_lexical_spans(
-        script,
+def lower_script(
+    script: Script,
+    *,
+    parser: Parser,
+    source_id: str,
+    collect_lexical_spans: bool = True,
+) -> LoweringResult:
+    lowerer = _Lowerer(
         parser=parser,
         source_id=source_id,
+        collect_lexical_spans=collect_lexical_spans,
     )
+    string_spans: tuple[Span, ...] = ()
+    operator_spans: tuple[Span, ...] = ()
+    if collect_lexical_spans:
+        string_spans, operator_spans = _script_lexical_spans(
+            script,
+            parser=parser,
+            source_id=source_id,
+        )
     return LoweringResult(
         script=lowerer.lower_script(script),
         diagnostics=tuple(lowerer.diagnostics),
@@ -308,6 +329,7 @@ def lower_script(script: Script, *, parser: Parser, source_id: str) -> LoweringR
 
 class _Lowerer:
     __slots__ = (
+        '_collect_lexical_spans',
         '_parser',
         '_source_id',
         'comment_spans',
@@ -316,7 +338,14 @@ class _Lowerer:
         'string_spans',
     )
 
-    def __init__(self, *, parser: Parser, source_id: str) -> None:
+    def __init__(
+        self,
+        *,
+        parser: Parser,
+        source_id: str,
+        collect_lexical_spans: bool,
+    ) -> None:
+        self._collect_lexical_spans = collect_lexical_spans
         self._parser = parser
         self._source_id = source_id
         self.diagnostics: list[Diagnostic] = []
@@ -633,12 +662,32 @@ class _Lowerer:
         return LoweredScriptBody(script=self._lower_embedded_script(text, word.content_span.start))
 
     def _lower_embedded_script(self, text: str, start_position: Position) -> LoweredScript:
+        if not self._collect_lexical_spans:
+            script = self._parser.parse_embedded_script_for_analysis(
+                source_id=self._source_id,
+                text=text,
+                start_position=start_position,
+                diagnostics=self.diagnostics,
+            )
+            lowering_result = lower_script(
+                script,
+                parser=self._parser,
+                source_id=self._source_id,
+                collect_lexical_spans=False,
+            )
+            self.diagnostics.extend(lowering_result.diagnostics)
+            return lowering_result.script
+
         parse_result = self._parser.parse_embedded_script(
             source_id=self._source_id,
             text=text,
             start_position=start_position,
         )
-        lowering_result = lower_parse_result(parse_result, parser=self._parser)
+        lowering_result = lower_parse_result(
+            parse_result,
+            parser=self._parser,
+            collect_lexical_spans=True,
+        )
         self.diagnostics.extend(parse_result.diagnostics)
         self.diagnostics.extend(lowering_result.diagnostics)
         self.comment_spans.extend(lowering_result.comment_spans)

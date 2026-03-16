@@ -62,6 +62,31 @@ def test_analysis_reports_no_diagnostics_for_metadata_files(parser: Parser) -> N
     assert diagnostics_by_uri == {}
 
 
+def test_fact_extractor_skips_lexical_spans_when_parse_result_is_omitted(parser: Parser) -> None:
+    extractor = FactExtractor(parser)
+    parse_result = parser.parse_document(
+        'file:///semantic.tcl',
+        '# doc\n'
+        'proc greet {name} {\n'
+        '    # body\n'
+        '    puts "hello [list ${name}]"\n'
+        '}\n',
+    )
+
+    facts_with_spans = extractor.extract(parse_result)
+    facts_without_spans = extractor.extract(parse_result, include_parse_result=False)
+
+    assert facts_with_spans.comment_spans
+    assert facts_with_spans.string_spans
+    assert facts_with_spans.operator_spans
+
+    assert facts_without_spans.parse_result is None
+    assert facts_without_spans.comment_spans == ()
+    assert facts_without_spans.string_spans == ()
+    assert facts_without_spans.operator_spans == ()
+    assert [procedure.qualified_name for procedure in facts_without_spans.procedures] == ['::greet']
+
+
 def test_analysis_tracks_namespace_resolution(parser: Parser) -> None:
     snapshot = _analyze(
         parser,
