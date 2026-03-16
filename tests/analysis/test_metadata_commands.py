@@ -90,7 +90,7 @@ def test_argument_selectors_allow_fixed_positions_before_late_expansion() -> Non
     assert selected == (0,)
 
 
-def test_core_metadata_parses_return_options() -> None:
+def test_core_metadata_leaves_return_unannotated() -> None:
     metadata_path = metadata_dir() / Path('tcl8.6/tcl.tcl')
     return_command = next(
         command
@@ -98,14 +98,7 @@ def test_core_metadata_parses_return_options() -> None:
         if command.name == 'return'
     )
 
-    assert [(option.name, option.kind) for option in return_command.options] == [
-        ('-code', 'value'),
-        ('-errorcode', 'value'),
-        ('-errorinfo', 'value'),
-        ('-level', 'value'),
-        ('-options', 'value'),
-        ('--', 'stop'),
-    ]
+    assert return_command.options == ()
 
 
 def test_metadata_parses_keyword_value_sets(tmp_path: Path) -> None:

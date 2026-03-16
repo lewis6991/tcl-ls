@@ -15,17 +15,17 @@ def test_analysis_reports_unknown_builtin_option(parser: Parser) -> None:
     assert diagnostic.span.start.character == 7
 
 
-def test_analysis_respects_option_stop_marker(parser: Parser) -> None:
-    snapshot = _analyze(parser, 'file:///return_stop.tcl', 'return -- -code error\n')
+def test_analysis_skips_unknown_option_checks_for_return_result_strings(parser: Parser) -> None:
+    snapshot = _analyze(parser, 'file:///return_dash_result.tcl', 'return -1\nreturn -error\n')
     assert snapshot.analysis.diagnostics == ()
 
 
-def test_analysis_skips_unknown_option_checks_for_expanded_option_values(
+def test_analysis_skips_unknown_option_checks_for_return_option_pairs(
     parser: Parser,
 ) -> None:
     snapshot = _analyze(
         parser,
-        'file:///return_expanded_option_value.tcl',
-        'return -code {*}$args -bogus\n',
+        'file:///return_custom_options.tcl',
+        'return -bogus foo bar\nreturn -code {*}$args -bogus\n',
     )
     assert snapshot.analysis.diagnostics == ()

@@ -1462,14 +1462,7 @@ meta command rename {oldName newName}
 # In its simplest usage, the return command is used without options in the
 # body of a procedure to immediately return control to the caller of the
 # procedure.
-meta command return {args} {
-    option -code value
-    option -errorcode value
-    option -errorinfo value
-    option -level value
-    option -options value
-    option -- stop
-}
+meta command return {args}
 
 # Parse string using conversion specifiers in the style of sscanf.
 meta command scan {string format args} {

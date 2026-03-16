@@ -66,6 +66,11 @@ def command_option_issue(
     command_call: CommandCall,
     command_target: ResolvedCommandTarget,
 ) -> tuple[OptionIssueState, str, Span] | None:
+    # Tcl's `return` accepts arbitrary option/value pairs plus an optional
+    # trailing result, so generic option diagnostics are not sound here.
+    if command_call.name == 'return':
+        return None
+
     if isinstance(command_target, ProcDecl):
         return None
 
