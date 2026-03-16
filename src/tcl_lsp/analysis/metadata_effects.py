@@ -15,7 +15,6 @@ from tcl_lsp.parser import Parser, word_static_text
 from tcl_lsp.workspace import source_id_to_path
 
 _META_DIR = metadata_dir()
-_EFFECTS_METADATA_PATH = _META_DIR / 'tcllib' / 'helper_command_effects.tcl'
 
 type SourceBase = Literal['call-source-directory', 'proc-source-parent']
 
@@ -65,7 +64,7 @@ def metadata_dependency_overlay(
 @lru_cache(maxsize=1)
 def _candidate_effect_command_names() -> frozenset[str]:
     candidates: set[str] = set()
-    for _, qualified_name in _helper_command_effects():
+    for _, qualified_name in _metadata_command_effects():
         tail = qualified_name.rsplit('::', 1)[-1]
         candidates.add(tail)
         candidates.add(qualified_name)
@@ -73,37 +72,41 @@ def _candidate_effect_command_names() -> frozenset[str]:
 
 
 @lru_cache(maxsize=1)
-def _helper_command_effects() -> dict[tuple[str, str], tuple[_CommandEffect, ...]]:
-    metadata_uri = _EFFECTS_METADATA_PATH.as_uri()
-    text = _EFFECTS_METADATA_PATH.read_text(encoding='utf-8')
-    parser = Parser()
-    parse_result = parser.parse_document(path=metadata_uri, text=text)
-    if parse_result.diagnostics:
-        message = '; '.join(diagnostic.message for diagnostic in parse_result.diagnostics)
-        raise RuntimeError(f'Invalid helper command metadata: {message}')
-
+def _metadata_command_effects() -> dict[tuple[str, str], tuple[_CommandEffect, ...]]:
     effects_by_key: dict[tuple[str, str], list[_CommandEffect]] = {}
-    for command in parse_result.script.commands:
-        if word_static_text(command.words[0]) != 'meta':
-            continue
-        if len(command.words) != 4:
-            raise RuntimeError(
-                'Helper command metadata entries must be `meta effect source {spec}`.'
-            )
+    parser = Parser()
+    for metadata_path in sorted(_META_DIR.rglob('*.tcl')):
+        metadata_uri = metadata_path.as_uri()
+        text = metadata_path.read_text(encoding='utf-8')
+        parse_result = parser.parse_document(path=metadata_uri, text=text)
+        if parse_result.diagnostics:
+            message = '; '.join(diagnostic.message for diagnostic in parse_result.diagnostics)
+            raise RuntimeError(f'Invalid metadata file `{metadata_path.name}`: {message}')
 
-        metadata_kind = word_static_text(command.words[1])
-        source_name = word_static_text(command.words[2])
-        spec = word_static_text(command.words[3])
-        if metadata_kind != 'effect' or source_name is None or spec is None:
-            raise RuntimeError(
-                'Helper command metadata entries must be fully static `meta effect source {spec}`.'
-            )
+        for command in parse_result.script.commands:
+            if word_static_text(command.words[0]) != 'meta':
+                continue
 
-        qualified_name, effect = _parse_effect_spec(spec)
-        effects_by_key.setdefault((source_name, qualified_name), []).append(effect)
+            metadata_kind = word_static_text(command.words[1])
+            if metadata_kind != 'effect':
+                continue
+
+            if len(command.words) != 3:
+                raise RuntimeError(
+                    'Metadata effect entries must be `meta effect {spec}`.'
+                )
+
+            spec = word_static_text(command.words[2])
+            if spec is None:
+                raise RuntimeError(
+                    'Metadata effect entries must be fully static `meta effect {spec}`.'
+                )
+
+            qualified_name, effect = _parse_effect_spec(spec)
+            effects_by_key.setdefault((metadata_path.name, qualified_name), []).append(effect)
 
     if not effects_by_key:
-        raise RuntimeError('No helper command metadata entries were loaded.')
+        raise RuntimeError('No metadata effect entries were loaded.')
 
     return {
         key: tuple(effects)
@@ -193,7 +196,7 @@ class _DependencyScanner:
         if procedure_path is None:
             return
 
-        effects = _helper_command_effects().get((procedure_path.name, procedure.qualified_name), ())
+        effects = _metadata_command_effects().get((procedure_path.name, procedure.qualified_name), ())
         for effect in effects:
             if isinstance(effect, _ScriptBodyEffect):
                 script_text = _argument_text(command_call, effect.argument_index)

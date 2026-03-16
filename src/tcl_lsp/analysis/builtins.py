@@ -149,15 +149,18 @@ def _load_metadata_file(
         if command_name != 'meta':
             continue
 
+        metadata_kind = word_static_text(command.words[1]) if len(command.words) > 1 else None
+        if metadata_kind != 'command':
+            continue
+
         if len(command.words) != 4:
             raise RuntimeError(
                 'Builtin command metadata entries must be `meta command name {args}`.'
             )
 
-        metadata_kind = word_static_text(command.words[1])
         builtin_name = word_static_text(command.words[2])
         parameter_list = word_static_text(command.words[3])
-        if metadata_kind != 'command' or builtin_name is None or parameter_list is None:
+        if builtin_name is None or parameter_list is None:
             raise RuntimeError(
                 'Builtin command metadata entries must be fully static `meta command name {args}`.'
             )
