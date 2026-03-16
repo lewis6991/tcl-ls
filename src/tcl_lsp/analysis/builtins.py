@@ -8,7 +8,6 @@ from tcl_lsp.analysis.arity import metadata_signature_arity
 from tcl_lsp.analysis.metadata_commands import (
     MetadataCommand,
     MetadataOption,
-    MetadataValueSet,
     load_metadata_commands,
 )
 from tcl_lsp.analysis.model import CommandArity, DefinitionTarget
@@ -18,18 +17,18 @@ from tcl_lsp.metadata_paths import metadata_dir
 _META_DIR = metadata_dir()
 _CORE_PACKAGE = 'Tcl'
 _TCL_86_DIR = Path('tcl8.6')
-_BUILTIN_METADATA_PATHS: tuple[tuple[str, Path], ...] = (
-    (_CORE_PACKAGE, _TCL_86_DIR / 'tcl.tcl'),
-    ('Tk', _TCL_86_DIR / 'tk.tcl'),
-    ('tcltest', _TCL_86_DIR / 'tcltest.tcl'),
-    ('msgcat', _TCL_86_DIR / 'msgcat.tcl'),
-    ('TclOO', _TCL_86_DIR / 'tcloo.tcl'),
-    ('clay', Path('tcllib/clay.tcl')),
-    ('fileutil', Path('tcllib/fileutil.tcl')),
-    ('cmdline', Path('tcllib/cmdline.tcl')),
-    ('log', Path('tcllib/log.tcl')),
-    ('doctools::text', Path('tcllib/doctools_text.tcl')),
-    ('oo::meta', Path('tcllib/oo_meta.tcl')),
+_BUILTIN_METADATA_PATHS: tuple[tuple[str, tuple[Path, ...]], ...] = (
+    (_CORE_PACKAGE, (Path('meta.tcl'), _TCL_86_DIR / 'tcl.tcl')),
+    ('Tk', (_TCL_86_DIR / 'tk.tcl',)),
+    ('tcltest', (_TCL_86_DIR / 'tcltest.tcl',)),
+    ('msgcat', (_TCL_86_DIR / 'msgcat.tcl',)),
+    ('TclOO', (_TCL_86_DIR / 'tcloo.tcl',)),
+    ('clay', (Path('tcllib/clay.tcl'),)),
+    ('fileutil', (Path('tcllib/fileutil.tcl'),)),
+    ('cmdline', (Path('tcllib/cmdline.tcl'),)),
+    ('log', (Path('tcllib/log.tcl'),)),
+    ('doctools::text', (Path('tcllib/doctools_text.tcl'),)),
+    ('oo::meta', (Path('tcllib/oo_meta.tcl'),)),
 )
 _PACKAGE_ALIASES = {'tcl::oo': 'TclOO'}
 
@@ -40,7 +39,7 @@ class BuiltinOverload:
     signature: str
     arity: CommandArity | None
     options: tuple[MetadataOption, ...]
-    value_sets: tuple[MetadataValueSet, ...]
+    subcommands: tuple[str, ...]
     documentation: str
     location: Location
 
@@ -61,33 +60,36 @@ def builtin_commands() -> dict[str, BuiltinCommand]:
 @lru_cache(maxsize=1)
 def core_annotated_metadata_commands() -> dict[str, MetadataCommand]:
     annotated: dict[str, MetadataCommand] = {}
-    for metadata_command in load_metadata_commands(_META_DIR / _TCL_86_DIR / 'tcl.tcl'):
-        if (
-            not metadata_command.options
-            and not metadata_command.value_sets
-            and not metadata_command.annotations
-        ):
-            continue
-        existing = annotated.get(metadata_command.name)
-        if existing is not None and (
-            existing.options != metadata_command.options
-            or existing.value_sets != metadata_command.value_sets
-            or existing.annotations != metadata_command.annotations
-        ):
-            raise RuntimeError(
-                f'Conflicting metadata annotations for core command `{metadata_command.name}`.'
-            )
-        annotated[metadata_command.name] = metadata_command
+    for metadata_path in _package_metadata_paths(_CORE_PACKAGE):
+        for metadata_command in load_metadata_commands(metadata_path):
+            if metadata_command.context_name is not None:
+                continue
+            if (
+                not metadata_command.options
+                and not metadata_command.subcommands
+                and not metadata_command.annotations
+            ):
+                continue
+            existing = annotated.get(metadata_command.name)
+            if existing is not None and (
+                existing.options != metadata_command.options
+                or existing.subcommands != metadata_command.subcommands
+                or existing.annotations != metadata_command.annotations
+            ):
+                raise RuntimeError(
+                    f'Conflicting metadata annotations for core command `{metadata_command.name}`.'
+                )
+            annotated[metadata_command.name] = metadata_command
     return annotated
 
 
 @lru_cache(maxsize=1)
 def builtin_commands_by_package() -> dict[str, dict[str, BuiltinCommand]]:
     commands_by_package: dict[str, dict[str, BuiltinCommand]] = {}
-    for package_name, metadata_relpath in _BUILTIN_METADATA_PATHS:
-        commands_by_package[package_name] = _load_metadata_file(
+    for package_name, _ in _BUILTIN_METADATA_PATHS:
+        commands_by_package[package_name] = _load_metadata_package(
             package_name=package_name,
-            metadata_path=_META_DIR / metadata_relpath,
+            metadata_paths=_package_metadata_paths(package_name),
         )
     return commands_by_package
 
@@ -171,6 +173,8 @@ def _load_metadata_file(
 ) -> dict[str, BuiltinCommand]:
     commands: dict[str, list[BuiltinOverload]] = {}
     for metadata_command in load_metadata_commands(metadata_path):
+        if metadata_command.context_name is not None:
+            continue
         documentation = metadata_command.documentation
         if not documentation:
             raise RuntimeError(f'Builtin command `{metadata_command.name}` is missing documentation.')
@@ -185,7 +189,7 @@ def _load_metadata_file(
                 signature=_signature(metadata_command.name, metadata_command.signature),
                 arity=metadata_signature_arity(metadata_command.signature),
                 options=metadata_command.options,
-                value_sets=metadata_command.value_sets,
+                subcommands=metadata_command.subcommands,
                 documentation=documentation,
                 location=Location(uri=metadata_command.uri, span=metadata_command.name_span),
             )
@@ -203,6 +207,46 @@ def _load_metadata_file(
         )
         for name, overloads in commands.items()
     }
+
+
+def _package_metadata_paths(package_name: str) -> tuple[Path, ...]:
+    for candidate_package_name, metadata_relpaths in _BUILTIN_METADATA_PATHS:
+        if candidate_package_name != package_name:
+            continue
+        return tuple(_META_DIR / metadata_relpath for metadata_relpath in metadata_relpaths)
+    raise KeyError(package_name)
+
+
+def _load_metadata_package(
+    *,
+    package_name: str,
+    metadata_paths: tuple[Path, ...],
+) -> dict[str, BuiltinCommand]:
+    package_commands: dict[str, BuiltinCommand] = {}
+    for metadata_path in metadata_paths:
+        for name, command in _load_metadata_file(
+            package_name=package_name,
+            metadata_path=metadata_path,
+        ).items():
+            existing = package_commands.get(name)
+            if existing is None:
+                package_commands[name] = command
+                continue
+            if existing.metadata_path_name != command.metadata_path_name:
+                raise RuntimeError(
+                    f'Builtin command `{name}` is declared in multiple metadata files for '
+                    f'package `{package_name}`.'
+                )
+            package_commands[name] = BuiltinCommand(
+                name=name,
+                package=package_name,
+                metadata_path_name=existing.metadata_path_name,
+                overloads=existing.overloads + command.overloads,
+            )
+
+    if not package_commands:
+        raise RuntimeError(f'No builtin command metadata entries were loaded for `{package_name}`.')
+    return package_commands
 
 
 def _signature(name: str, parameter_list: str) -> str:

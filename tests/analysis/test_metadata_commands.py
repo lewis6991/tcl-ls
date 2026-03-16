@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from tcl_lsp.analysis.metadata_commands import (
     MetadataBind,
+    MetadataContext,
+    MetadataProcedure,
     MetadataSelector,
-    MetadataValueSet,
     load_metadata_commands,
     select_argument_indices,
 )
@@ -101,29 +104,7 @@ def test_core_metadata_leaves_return_unannotated() -> None:
     assert return_command.options == ()
 
 
-def test_metadata_parses_keyword_value_sets(tmp_path: Path) -> None:
-    metadata_path = tmp_path / 'keywords.tcl'
-    metadata_path.write_text(
-        '# test metadata\n'
-        'meta command demo {flag value} {\n'
-        '    keyword 2 alpha beta gamma\n'
-        '}\n',
-        encoding='utf-8',
-    )
-
-    command = load_metadata_commands(metadata_path)[0]
-
-    assert command.value_sets == (
-        MetadataValueSet(
-            selector=command.value_sets[0].selector,
-            kind='keyword',
-            values=('alpha', 'beta', 'gamma'),
-        ),
-    )
-    assert command.value_sets[0].selector.start_index == 1
-
-
-def test_core_metadata_derives_subcommand_value_sets() -> None:
+def test_core_metadata_derives_subcommands() -> None:
     metadata_path = metadata_dir() / Path('tcl8.6/tcl.tcl')
     info_command = next(
         command
@@ -131,27 +112,115 @@ def test_core_metadata_derives_subcommand_value_sets() -> None:
         if command.name == 'info'
     )
 
-    subcommand_values = next(
-        value_set.values
-        for value_set in info_command.value_sets
-        if value_set.kind == 'subcommand'
-    )
-
-    assert 'args' in subcommand_values
-    assert 'body' in subcommand_values
-    assert 'class' in subcommand_values
+    assert 'args' in info_command.subcommands
+    assert 'body' in info_command.subcommands
+    assert 'class' in info_command.subcommands
 
 
-def test_builtin_metadata_exposes_derived_subcommand_value_sets() -> None:
+def test_builtin_metadata_exposes_nested_and_derived_subcommands() -> None:
     from tcl_lsp.analysis.builtins import builtin_command
+
+    binary_decode = builtin_command('binary decode')
+    assert binary_decode is not None
 
     namespace_ensemble = builtin_command('namespace ensemble')
     assert namespace_ensemble is not None
 
-    subcommand_values = next(
-        value_set.values
-        for value_set in namespace_ensemble.overloads[0].value_sets
-        if value_set.kind == 'subcommand'
+    assert binary_decode.overloads[0].subcommands == ('base64', 'hex', 'uuencode')
+    assert namespace_ensemble.overloads[0].subcommands == ('create', 'configure', 'exists')
+
+
+def test_core_metadata_models_meta_as_ensemble() -> None:
+    from tcl_lsp.analysis.builtins import builtin_command
+
+    meta_builtin = builtin_command('meta')
+    meta_command_builtin = builtin_command('meta command')
+    meta_context_builtin = builtin_command('meta context')
+
+    assert meta_builtin is not None
+    assert meta_command_builtin is not None
+    assert meta_context_builtin is not None
+    assert meta_builtin.metadata_path_name == 'meta.tcl'
+    assert meta_command_builtin.metadata_path_name == 'meta.tcl'
+    assert meta_context_builtin.metadata_path_name == 'meta.tcl'
+
+    assert meta_builtin.overloads[0].subcommands == ('command', 'context')
+
+    assert meta_command_builtin.overloads[0].arity is not None
+    assert meta_command_builtin.overloads[0].arity.accepts(2) is True
+    assert meta_command_builtin.overloads[0].arity.accepts(3) is True
+
+
+def test_tcloo_metadata_parses_embedded_context_annotations() -> None:
+    metadata_path = metadata_dir() / Path('tcl8.6/tcloo.tcl')
+    commands = load_metadata_commands(metadata_path)
+
+    define_command = next(
+        command
+        for command in commands
+        if command.context_name is None and command.name == 'oo::define'
+    )
+    context_annotation = next(
+        annotation
+        for annotation in define_command.annotations
+        if isinstance(annotation, MetadataContext)
+    )
+    assert context_annotation.context_name == 'tcloo-definition'
+    assert context_annotation.owner_selector.start_index == 0
+    assert context_annotation.body_selector.start_index == 1
+    assert context_annotation.body_selector.all_remaining is True
+
+    method_command = next(
+        command
+        for command in commands
+        if command.context_name == 'tcloo-definition' and command.name == 'method'
+    )
+    procedure_annotation = next(
+        annotation
+        for annotation in method_command.annotations
+        if isinstance(annotation, MetadataProcedure)
+    )
+    assert procedure_annotation.member_name_index == 0
+    assert procedure_annotation.parameter_index == 1
+    assert procedure_annotation.body_index == 2
+    assert procedure_annotation.body_context == 'tcloo-method'
+
+
+def test_builtin_metadata_ignores_context_commands() -> None:
+    from tcl_lsp.analysis.builtins import builtin_commands_by_package
+
+    tcloo_commands = builtin_commands_by_package()['TclOO']
+    assert 'oo::define' in tcloo_commands
+    assert 'method' not in tcloo_commands
+    assert 'my variable' not in tcloo_commands
+
+
+def test_metadata_rejects_spaced_top_level_command_names(tmp_path: Path) -> None:
+    metadata_path = tmp_path / 'bad_meta.tcl'
+    metadata_path.write_text(
+        '# Invalid deprecated syntax.\n'
+        'meta command {file atime} {name ?time?}\n',
+        encoding='utf-8',
     )
 
-    assert subcommand_values == ('create', 'configure', 'exists')
+    with pytest.raises(
+        RuntimeError,
+        match='Metadata command entries must use single command names',
+    ):
+        load_metadata_commands(metadata_path)
+
+
+def test_metadata_rejects_spaced_context_command_names(tmp_path: Path) -> None:
+    metadata_path = tmp_path / 'bad_context_meta.tcl'
+    metadata_path.write_text(
+        'meta context sample {\n'
+        '    command {my variable} {name args}\n'
+        '}\n',
+        encoding='utf-8',
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match='Metadata command entries must use single command names',
+    ):
+        load_metadata_commands(metadata_path)

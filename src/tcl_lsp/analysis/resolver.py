@@ -8,6 +8,10 @@ from tcl_lsp.analysis.builtins import (
     builtin_commands_any,
     builtin_commands_for_packages,
 )
+from tcl_lsp.analysis.embedded_languages import (
+    contextual_resolution_reason,
+    resolves_contextual_command,
+)
 from tcl_lsp.analysis.diagnostics import (
     DiagnosticContext,
     ResolvedCommand,
@@ -295,6 +299,7 @@ class Resolver:
             namespace=command_call.namespace,
             scope_id=command_call.scope_id,
             procedure_symbol_id=command_call.procedure_symbol_id,
+            embedded_language=command_call.embedded_language,
             span=command_call.name_span,
             dynamic=command_call.dynamic,
         )
@@ -314,6 +319,23 @@ class Resolver:
             )
 
         builtin_name = _normalize_command_name(command_call.name)
+        if resolves_contextual_command(command_call.embedded_language, builtin_name):
+            return (
+                ResolutionResult(
+                    reference=reference,
+                    uncertainty=AnalysisUncertainty(
+                        state='resolved',
+                        reason=contextual_resolution_reason(
+                            command_call.embedded_language,
+                            builtin_name,
+                        ),
+                    ),
+                    target_symbol_ids=(),
+                ),
+                None,
+                None,
+            )
+
         builtin_matches = builtin_commands_for_packages(builtin_name, required_packages)
         if len(builtin_matches) == 1:
             builtin = builtin_matches[0]
@@ -573,6 +595,7 @@ class Resolver:
             namespace=variable_reference.namespace,
             scope_id=variable_reference.scope_id,
             procedure_symbol_id=variable_reference.procedure_symbol_id,
+            embedded_language=None,
             span=variable_reference.span,
             dynamic=False,
         )
@@ -672,6 +695,8 @@ def _metadata_var_binding(
 def _annotated_metadata_commands() -> dict[tuple[str, str], MetadataCommand]:
     commands_by_key: dict[tuple[str, str], MetadataCommand] = {}
     for metadata_command in all_metadata_commands():
+        if metadata_command.context_name is not None:
+            continue
         if not any(isinstance(annotation, MetadataBind) for annotation in metadata_command.annotations):
             continue
 

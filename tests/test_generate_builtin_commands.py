@@ -30,7 +30,9 @@ def test_update_metadata_inserts_generated_subcommand_blocks() -> None:
         'dict': (
             '<DT><A NAME="M1"><B>dict get </B><I>dictionaryValue </I>?<I>key ...</I>?'
             '</A><DD>Return a nested value.</DD>'
-            '<DT><A NAME="M2"><B>dict filter </B><I>dictionaryValue </I><B>key</B> '
+            '<DT><A NAME="M2"><B>dict filter </B><I>dictionaryValue filterType arg ?arg ...?</I>'
+            '</A><DD>Filter dictionary values.</DD>'
+            '<DT><A NAME="M3"><B>dict filter </B><I>dictionaryValue </I><B>key</B> '
             '?<I>globPattern ...</I>?</A><DD>Filter dictionary entries by key.</DD>'
         )
     }
@@ -41,10 +43,13 @@ def test_update_metadata_inserts_generated_subcommand_blocks() -> None:
         version_label='8.6',
     )
 
-    assert '# @generated begin subcommands for dict (Tcl 8.6)' in updated
-    assert 'meta command {dict get} {dictionaryValue ? key ... ?}' in updated
-    assert 'meta command {dict filter key} {dictionaryValue ?globPattern ...?}' in updated
-    assert '# @generated end subcommands for dict' in updated
+    assert 'meta command dict {subcommand args} {' in updated
+    assert '    # @generated begin subcommands for dict (Tcl 8.6)' in updated
+    assert '    subcommand get {dictionaryValue ? key ... ?}' in updated
+    assert '    subcommand filter {dictionaryValue filterType arg ?arg ...?} {' in updated
+    assert '        subcommand key {dictionaryValue ?globPattern ...?}' in updated
+    assert '    # @generated end subcommands for dict' in updated
+    assert 'meta command {dict get} {dictionaryValue ? key ... ?}' not in updated
     assert generator.update_metadata(updated, docs_by_command, version_label='8.6') == updated
 
 

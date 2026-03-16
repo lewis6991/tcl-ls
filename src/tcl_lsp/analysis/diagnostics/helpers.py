@@ -5,9 +5,7 @@ from typing import Literal
 from tcl_lsp.analysis.builtins import BuiltinCommand
 from tcl_lsp.analysis.metadata_commands import (
     MetadataOption,
-    MetadataValueSet,
     scan_command_options,
-    select_argument_indices,
 )
 from tcl_lsp.analysis.model import CommandCall, ProcDecl
 from tcl_lsp.common import Span
@@ -101,36 +99,23 @@ def command_subcommand_issue(
     if isinstance(command_target, ProcDecl):
         return None
 
-    shared = builtin_shared_value_sets(command_target)
-    if shared is None:
+    subcommands = builtin_shared_subcommands(command_target)
+    if subcommands is None:
         return None
 
-    value_sets, options = shared
-    for value_set in value_sets:
-        if value_set.kind != 'subcommand':
-            continue
+    if not command_call.arg_texts:
+        return None
+    if command_call.arg_expanded and command_call.arg_expanded[0]:
+        return None
 
-        indices = select_argument_indices(
-            value_set.selector,
-            command_call.arg_texts,
-            options,
-            command_call.arg_expanded,
-        )
-        if indices is None or len(indices) != 1:
-            continue
+    candidate = command_call.arg_texts[0]
+    if candidate is None:
+        return None
+    if _matches_allowed_value(candidate, subcommands):
+        return None
 
-        index = indices[0]
-        if not 0 <= index < len(command_call.arg_texts):
-            continue
-        candidate = command_call.arg_texts[index]
-        if candidate is None:
-            continue
-        if _matches_allowed_value(candidate, value_set.values):
-            continue
-
-        span = command_call.arg_spans[index] if index < len(command_call.arg_spans) else command_call.span
-        return (candidate, span)
-    return None
+    span = command_call.arg_spans[0] if command_call.arg_spans else command_call.span
+    return (candidate, span)
 
 
 def builtin_shared_option_specs(builtin: BuiltinCommand) -> tuple[MetadataOption, ...] | None:
@@ -145,20 +130,18 @@ def builtin_shared_option_specs(builtin: BuiltinCommand) -> tuple[MetadataOption
     return first_options
 
 
-def builtin_shared_value_sets(
+def builtin_shared_subcommands(
     builtin: BuiltinCommand,
-) -> tuple[tuple[MetadataValueSet, ...], tuple[MetadataOption, ...]] | None:
+) -> tuple[str, ...] | None:
     if not builtin.overloads:
         return None
 
-    first_value_sets = builtin.overloads[0].value_sets
-    first_options = builtin.overloads[0].options
-    if any(
-        overload.value_sets != first_value_sets or overload.options != first_options
-        for overload in builtin.overloads[1:]
-    ):
+    first_subcommands = builtin.overloads[0].subcommands
+    if not first_subcommands:
         return None
-    return (first_value_sets, first_options)
+    if any(overload.subcommands != first_subcommands for overload in builtin.overloads[1:]):
+        return None
+    return first_subcommands
 
 
 def _matches_allowed_value(candidate: str, allowed_values: tuple[str, ...]) -> bool:

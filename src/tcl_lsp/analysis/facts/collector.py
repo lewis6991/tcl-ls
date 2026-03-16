@@ -5,6 +5,12 @@ from dataclasses import dataclass
 
 from tcl_lsp.analysis.arity import proc_parameter_arity
 from tcl_lsp.analysis.builtins import builtin_command, core_annotated_metadata_commands
+from tcl_lsp.analysis.embedded_languages import (
+    EmbeddedLanguageName,
+    EmbeddedLanguageEntry,
+    match_embedded_language_command,
+    match_embedded_language_entry,
+)
 from tcl_lsp.analysis.facts.lowering import (
     LoweredCatchCommand,
     LoweredCommand,
@@ -21,16 +27,20 @@ from tcl_lsp.analysis.facts.lowering import (
     LoweredWhileCommand,
     LoweredWordReferences,
     lower_parse_result,
+    lower_script,
 )
 from tcl_lsp.analysis.facts.parsing import ListItem, is_simple_name, split_tcl_list
 from tcl_lsp.analysis.metadata_commands import (
     MetadataBind,
     MetadataCommand,
+    MetadataProcedure,
     MetadataRef,
     MetadataScriptBody,
     select_argument_indices,
 )
 from tcl_lsp.analysis.facts.utils import (
+    body_span,
+    command_documentation,
     extract_ifneeded_source_uri,
     extract_static_source_uri,
     name_tail,
@@ -66,6 +76,7 @@ from tcl_lsp.parser.model import (
     CommandSubstitution,
     LiteralText,
     ParseResult,
+    Script,
     VariableSubstitution,
     Word,
 )
@@ -77,6 +88,8 @@ class _ExtractionContext:
     namespace: str
     scope_id: str
     procedure_symbol_id: str | None
+    embedded_language: EmbeddedLanguageName | None
+    embedded_owner_name: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,6 +235,10 @@ class _FactCollector:
         if isinstance(command, LoweredWhileCommand):
             self._collect_lowered_while(command, context)
             return
+        if self._collect_embedded_language_command(syntax_command, context):
+            return
+        if self._collect_embedded_language_entry(syntax_command, context):
+            return
 
         handler = (
             self._command_handlers.get(normalized_command_name)
@@ -279,6 +296,7 @@ class _FactCollector:
                 namespace=context.namespace,
                 scope_id=context.scope_id,
                 procedure_symbol_id=context.procedure_symbol_id,
+                embedded_language=context.embedded_language,
                 span=command_span,
                 name_span=name_span,
                 dynamic=command_name is None,
@@ -323,8 +341,186 @@ class _FactCollector:
             return
 
         metadata_command, prefix_word_count = matched_command
+        self._collect_selected_metadata_annotations(
+            command,
+            context,
+            metadata_command=metadata_command,
+            prefix_word_count=prefix_word_count,
+        )
+
+    def _collect_embedded_language_command(
+        self,
+        command: Command,
+        context: _ExtractionContext,
+    ) -> bool:
+        matched = match_embedded_language_command(command, context.embedded_language)
+        if matched is None:
+            return False
+
+        handled = False
+        for annotation in matched.metadata_command.annotations:
+            if not isinstance(annotation, MetadataProcedure):
+                continue
+            self._collect_embedded_procedure(
+                command,
+                context,
+                command_name=matched.metadata_command.name,
+                prefix_word_count=matched.prefix_word_count,
+                procedure=annotation,
+            )
+            handled = True
+
+        handled |= self._collect_selected_metadata_annotations(
+            command,
+            context,
+            metadata_command=matched.metadata_command,
+            prefix_word_count=matched.prefix_word_count,
+        )
+        return handled
+
+    def _collect_embedded_language_entry(
+        self,
+        command: Command,
+        context: _ExtractionContext,
+    ) -> bool:
+        entry = match_embedded_language_entry(command, current_namespace=context.namespace)
+        if entry is None:
+            return False
+
+        entry_context = self._embedded_language_context(entry, parent_context=context)
+        handled = False
+        if entry.script_word_index is not None and entry.script_word_index < len(command.words):
+            self._collect_script_body_word(command.words[entry.script_word_index], entry_context)
+            handled = True
+        if (
+            entry.inline_command_start_index is not None
+            and entry.inline_command_start_index < len(command.words)
+        ):
+            self._collect_inline_embedded_command(
+                command.words[entry.inline_command_start_index :],
+                entry_context,
+            )
+            handled = True
+        return handled
+
+    def _embedded_language_context(
+        self,
+        entry: EmbeddedLanguageEntry,
+        *,
+        parent_context: _ExtractionContext,
+    ) -> _ExtractionContext:
+        return _ExtractionContext(
+            uri=parent_context.uri,
+            namespace=entry.namespace,
+            scope_id=parent_context.scope_id,
+            procedure_symbol_id=parent_context.procedure_symbol_id,
+            embedded_language=entry.language,
+            embedded_owner_name=entry.owner_name,
+        )
+
+    def _collect_inline_embedded_command(
+        self,
+        words: tuple[Word, ...],
+        context: _ExtractionContext,
+    ) -> None:
+        if not words:
+            return
+
+        embedded_command = Command(
+            span=Span(start=words[0].span.start, end=words[-1].span.end),
+            words=words,
+        )
+        lowering_result = lower_script(
+            Script(span=embedded_command.span, commands=(embedded_command,)),
+            parser=self._parser,
+            source_id=context.uri,
+        )
+        self._diagnostics.extend(lowering_result.diagnostics)
+        self._collect_lowered_script(lowering_result.script, context)
+
+    def _collect_embedded_procedure(
+        self,
+        command: Command,
+        context: _ExtractionContext,
+        *,
+        command_name: str,
+        prefix_word_count: int,
+        procedure: MetadataProcedure,
+    ) -> None:
+        owner_name = context.embedded_owner_name
+        if owner_name is None:
+            return
+
+        argument_words = command.words[prefix_word_count:]
+        procedure_name, selection_span = self._embedded_procedure_name(
+            command,
+            command_name=command_name,
+            prefix_word_count=prefix_word_count,
+            argument_words=argument_words,
+            procedure=procedure,
+        )
+        if procedure_name is None or selection_span is None:
+            return
+
+        parameter_items = self._embedded_parameter_items(argument_words, procedure)
+        if parameter_items is None:
+            return
+
+        if procedure.body_index >= len(argument_words):
+            return
+        body_word = argument_words[procedure.body_index]
+        body = self._embedded_script_text(body_word)
+        if body is None:
+            return
+
+        qualified_name = self._embedded_procedure_qualified_name(
+            owner_name=owner_name,
+            command_name=command_name,
+            procedure=procedure,
+            procedure_name=procedure_name,
+        )
+        proc_id = proc_symbol_id(context.uri, qualified_name, selection_span.start.offset)
+        proc_decl = ProcDecl(
+            symbol_id=proc_id,
+            uri=context.uri,
+            name=procedure_name,
+            qualified_name=qualified_name,
+            namespace=namespace_for_name(owner_name),
+            span=command.span,
+            name_span=selection_span,
+            parameters=self._parameter_decls_from_items(
+                parameter_items,
+                uri=context.uri,
+                proc_symbol_id=proc_id,
+            ),
+            arity=proc_parameter_arity(parameter_items),
+            documentation=command_documentation(command),
+            body_span=body_span(body_word),
+        )
+        self._procedures.append(proc_decl)
+
+        body_context = _ExtractionContext(
+            uri=proc_decl.uri,
+            namespace=proc_decl.namespace,
+            scope_id=proc_decl.symbol_id,
+            procedure_symbol_id=proc_decl.symbol_id,
+            embedded_language=procedure.body_context,
+            embedded_owner_name=owner_name,
+        )
+        self._record_parameter_bindings(proc_decl.parameters, body_context)
+        self._collect_script_body_word(body_word, body_context)
+
+    def _collect_selected_metadata_annotations(
+        self,
+        command: Command,
+        context: _ExtractionContext,
+        *,
+        metadata_command: MetadataCommand,
+        prefix_word_count: int,
+    ) -> bool:
         argument_words = command.words[prefix_word_count:]
         argument_texts = tuple(word_static_text(word) for word in argument_words)
+        handled = False
         for annotation in metadata_command.annotations:
             if not isinstance(annotation, (MetadataBind, MetadataRef, MetadataScriptBody)):
                 continue
@@ -337,6 +533,7 @@ class _FactCollector:
             if selected_words is None:
                 continue
 
+            handled = True
             if isinstance(annotation, MetadataBind):
                 binding_kind = self._metadata_binding_kind(metadata_command, annotation)
                 for selected_word in selected_words:
@@ -357,6 +554,56 @@ class _FactCollector:
             for selected_word in selected_words:
                 self._collect_script_body_word(selected_word, context)
 
+        return handled
+
+    def _embedded_procedure_name(
+        self,
+        command: Command,
+        *,
+        command_name: str,
+        prefix_word_count: int,
+        argument_words: tuple[Word, ...],
+        procedure: MetadataProcedure,
+    ) -> tuple[str | None, Span | None]:
+        if procedure.member_name_index is None:
+            return command_name.rsplit(' ', maxsplit=1)[-1], command.words[
+                prefix_word_count - 1
+            ].content_span
+
+        if procedure.member_name_index >= len(argument_words):
+            return None, None
+        name_word = argument_words[procedure.member_name_index]
+        name = word_static_text(name_word)
+        if name is None:
+            return None, None
+        return name, name_word.content_span
+
+    def _embedded_parameter_items(
+        self,
+        argument_words: tuple[Word, ...],
+        procedure: MetadataProcedure,
+    ) -> tuple[ListItem, ...] | None:
+        if procedure.parameter_index is None:
+            return ()
+        if procedure.parameter_index >= len(argument_words):
+            return None
+        parameter_word = argument_words[procedure.parameter_index]
+        if word_static_text(parameter_word) is None:
+            return None
+        return self._static_list_items(parameter_word)
+
+    def _embedded_procedure_qualified_name(
+        self,
+        *,
+        owner_name: str,
+        command_name: str,
+        procedure: MetadataProcedure,
+        procedure_name: str,
+    ) -> str:
+        if procedure.member_name_index is None:
+            return f'{owner_name} {command_name}'
+        return f'{owner_name} {command_name} {procedure_name}'
+
     def _metadata_binding_kind(
         self,
         metadata_command: MetadataCommand,
@@ -368,7 +615,7 @@ class _FactCollector:
         inferred_kind = name_tail(metadata_command.name.rsplit(' ', 1)[-1])
         if inferred_kind not in BINDING_KINDS:
             raise RuntimeError(
-                f'Core metadata command `{metadata_command.name}` requires an explicit binding kind.'
+                f'Metadata command `{metadata_command.name}` requires an explicit binding kind.'
             )
         return inferred_kind
 
@@ -952,6 +1199,8 @@ class _FactCollector:
             namespace=namespace,
             scope_id=namespace_scope_id(namespace),
             procedure_symbol_id=None,
+            embedded_language=None,
+            embedded_owner_name=None,
         )
 
     def _procedure_context(self, proc_decl: ProcDecl) -> _ExtractionContext:
@@ -960,6 +1209,8 @@ class _FactCollector:
             namespace=proc_decl.namespace,
             scope_id=proc_decl.symbol_id,
             procedure_symbol_id=proc_decl.symbol_id,
+            embedded_language=None,
+            embedded_owner_name=None,
         )
 
     def _record_variable_reference(

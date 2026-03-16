@@ -58,6 +58,8 @@ def _candidate_effect_command_names() -> frozenset[str]:
 def _metadata_command_effects() -> dict[tuple[str, str], MetadataCommand]:
     effects_by_key: dict[tuple[str, str], MetadataCommand] = {}
     for metadata_command in all_metadata_commands():
+        if metadata_command.context_name is not None:
+            continue
         if not any(
             isinstance(annotation, (MetadataPackage, MetadataScriptBody, MetadataSource))
             for annotation in metadata_command.annotations

@@ -31,6 +31,19 @@ def test_analysis_reports_unknown_nested_builtin_subcommand(parser: Parser) -> N
     )
 
 
+def test_analysis_reports_unknown_explicit_builtin_subcommand(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///unknown_binary_decode_subcommand.tcl',
+        'binary decode frob payload\n',
+    )
+
+    assert [diagnostic.code for diagnostic in snapshot.analysis.diagnostics] == ['unknown-subcommand']
+    assert snapshot.analysis.diagnostics[0].message == (
+        'Unknown subcommand `frob` for command `binary decode`.'
+    )
+
+
 def test_analysis_accepts_unique_builtin_subcommand_abbreviations(parser: Parser) -> None:
     snapshot = _analyze(
         parser,

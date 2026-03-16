@@ -160,6 +160,7 @@ class CommandCall:
     namespace: str
     scope_id: str
     procedure_symbol_id: str | None
+    embedded_language: str | None
     span: Span
     name_span: Span
     dynamic: bool
@@ -187,6 +188,7 @@ class ReferenceSite:
     namespace: str
     scope_id: str
     procedure_symbol_id: str | None
+    embedded_language: str | None
     span: Span
     dynamic: bool
 

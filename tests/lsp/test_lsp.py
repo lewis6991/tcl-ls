@@ -495,11 +495,12 @@ def test_language_server_hover_formats_meta_builtin_command(server: LanguageServ
 
     hover_value = _hover_markdown_value(server, line=0, character=1)
     assert hover_value.startswith(
-        '```tcl\nmeta {kind name signature}\n```\n\nDeclare metadata for Tcl language entities.'
+        '```tcl\nmeta {subcommand args}\n```\n\nMetadata command format for tcl-ls.'
     )
     assert 'structured documentation instead of executable behavior' in hover_value.replace(
         '\n', ' '
     )
+    assert 'option name value' in hover_value
 
 
 def test_language_server_process_message_publishes_diagnostics(server: LanguageServer) -> None:

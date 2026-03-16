@@ -13,6 +13,13 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+_SRC_ROOT = _REPO_ROOT / 'src'
+if str(_SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SRC_ROOT))
+
+from tcl_lsp.parser import Parser, word_static_text
+from tcl_lsp.parser.model import BracedWord, Command, Word
+
 _DEFAULT_METADATA_PATH = _REPO_ROOT / 'meta' / 'tcl8.6' / 'tcl.tcl'
 _DEFAULT_DOC_ROOT_TEMPLATE = 'https://www.tcl-lang.org/man/tcl{series}/TclCmd'
 _GENERATOR_NOTE = (
@@ -23,7 +30,6 @@ _DESCRIPTION_LINE_PATTERN = re.compile(
     r'^# Descriptions are adapted from the Tcl .+ command manual\.$',
     re.MULTILINE,
 )
-_META_COMMAND_NAME_PATTERN = re.compile(r'^meta command (\{[^}]+\}|\S+) ', re.MULTILINE)
 _GENERIC_SUBCOMMAND_PATTERN = re.compile(r'^meta command (\S+) \{subcommand(?: [^}]*)?\}$')
 _DT_PATTERN = re.compile(
     r'<DT><A NAME="[^"]+">(.*?)</A><DD>(.*?)(?=<P><DT><A NAME=|<DT><A NAME=|'
@@ -40,6 +46,13 @@ class GeneratedEntry:
     name: str
     params: str
     documentation: str
+
+
+@dataclass(slots=True)
+class GeneratedNode:
+    segment: str
+    entries: list[GeneratedEntry]
+    children: dict[str, 'GeneratedNode']
 
 
 _MANUAL_ENTRIES: dict[str, tuple[GeneratedEntry, ...]] = {
@@ -202,18 +215,20 @@ def update_metadata(
 
     rendered_lines: list[str] = []
     for line in base_text.splitlines():
-        rendered_lines.append(line)
         match = _GENERIC_SUBCOMMAND_PATTERN.fullmatch(line)
         if match is None:
+            rendered_lines.append(line)
             continue
 
         command = match.group(1)
         generated_entries = generated_entries_by_command.get(command, ())
         if not generated_entries:
+            rendered_lines.append(line)
             continue
 
-        rendered_lines.append('')
+        rendered_lines.append(f'{line} {{')
         rendered_lines.extend(render_generated_block(command, generated_entries, version_label))
+        rendered_lines.append('}')
 
     return '\n'.join(rendered_lines).rstrip() + '\n'
 
@@ -222,27 +237,39 @@ def strip_generated_blocks(source_text: str) -> str:
     result_lines: list[str] = []
     active_command: str | None = None
     skip_leading_blank_after_block = False
+    skip_closing_brace_after_block = False
 
     for line in source_text.splitlines():
-        if line.startswith(_GENERATED_BEGIN_PREFIX):
+        stripped_line = line.strip()
+
+        if stripped_line.startswith(_GENERATED_BEGIN_PREFIX):
             if active_command is not None:
                 raise ValueError(f'Nested generated block for `{active_command}`.')
+            if result_lines and result_lines[-1].endswith(' {'):
+                candidate_line = result_lines[-1][:-2]
+                if _GENERIC_SUBCOMMAND_PATTERN.fullmatch(candidate_line):
+                    result_lines[-1] = candidate_line
             if result_lines and result_lines[-1] == '':
                 result_lines.pop()
-            active_command = line.removeprefix(_GENERATED_BEGIN_PREFIX).split(' ', maxsplit=1)[0]
+            active_command = stripped_line.removeprefix(_GENERATED_BEGIN_PREFIX).split(' ', maxsplit=1)[0]
             continue
 
-        if line.startswith(_GENERATED_END_PREFIX):
-            command = line.removeprefix(_GENERATED_END_PREFIX).split(' ', maxsplit=1)[0]
+        if stripped_line.startswith(_GENERATED_END_PREFIX):
+            command = stripped_line.removeprefix(_GENERATED_END_PREFIX).split(' ', maxsplit=1)[0]
             if active_command != command:
                 raise ValueError(
                     f'Generated block terminator for `{command}` does not match `{active_command}`.'
                 )
             active_command = None
             skip_leading_blank_after_block = True
+            skip_closing_brace_after_block = True
             continue
 
         if active_command is None:
+            if skip_closing_brace_after_block and stripped_line == '}':
+                skip_closing_brace_after_block = False
+                continue
+            skip_closing_brace_after_block = False
             if skip_leading_blank_after_block and line == '':
                 skip_leading_blank_after_block = False
                 continue
@@ -271,12 +298,21 @@ def generic_subcommand_commands(source_text: str) -> tuple[str, ...]:
 
 
 def meta_command_names(source_text: str) -> set[str]:
+    parse_result = Parser().parse_document(path='generator:metadata-names', text=source_text)
+    if parse_result.diagnostics:
+        message = '; '.join(diagnostic.message for diagnostic in parse_result.diagnostics)
+        raise RuntimeError(f'Cannot extract metadata command names: {message}')
+
     names: set[str] = set()
-    for match in _META_COMMAND_NAME_PATTERN.finditer(source_text):
-        name = match.group(1)
-        if name.startswith('{') and name.endswith('}'):
-            name = name[1:-1]
-        names.add(name)
+    for command in parse_result.script.commands:
+        if word_static_text(command.words[0]) != 'meta':
+            continue
+        entry_kind = word_static_text(command.words[1])
+        if entry_kind == 'command':
+            names.update(_collect_metadata_command_names(command))
+            continue
+        if entry_kind == 'context':
+            names.update(_collect_metadata_context_names(command))
     return names
 
 
@@ -348,23 +384,178 @@ def render_generated_block(
     entries: tuple[GeneratedEntry, ...],
     version_label: str,
 ) -> list[str]:
-    lines = [f'{_GENERATED_BEGIN_PREFIX}{command} (Tcl {version_label})', '']
+    indent = '    '
+    lines = [f'{indent}{_GENERATED_BEGIN_PREFIX}{command} (Tcl {version_label})', '']
+    root = _build_generated_tree(command, entries)
+    child_nodes = tuple(root.children.values())
+    for index, child in enumerate(child_nodes):
+        lines.extend(_render_generated_node(child, command=command, indent=indent))
+        if index < len(child_nodes) - 1:
+            lines.append('')
+    if child_nodes:
+        lines.append('')
+    lines.append(f'{indent}{_GENERATED_END_PREFIX}{command}')
+    return lines
 
+
+def _collect_metadata_command_names(
+    command: Command,
+    *,
+    parent_name: str | None = None,
+) -> tuple[str, ...]:
+    if len(command.words) not in {4, 5}:
+        raise RuntimeError('Malformed `meta command` declaration in metadata source.')
+
+    command_name = word_static_text(command.words[2])
+    if command_name is None:
+        raise RuntimeError('Metadata command names must be static.')
+
+    full_name = command_name if parent_name is None else f'{parent_name} {command_name}'
+    names = [full_name]
+
+    if len(command.words) == 5:
+        names.extend(_collect_annotation_subcommand_names(command.words[4], parent_name=full_name))
+
+    return tuple(names)
+
+
+def _collect_metadata_context_names(command: Command) -> tuple[str, ...]:
+    if len(command.words) != 4:
+        raise RuntimeError('Malformed `meta context` declaration in metadata source.')
+
+    body_text = _metadata_body_text(command.words[3])
+    parse_result = Parser().parse_document(path='generator:context', text=body_text)
+    if parse_result.diagnostics:
+        message = '; '.join(diagnostic.message for diagnostic in parse_result.diagnostics)
+        raise RuntimeError(f'Cannot extract metadata context names: {message}')
+
+    names: list[str] = []
+    for nested_command in parse_result.script.commands:
+        if word_static_text(nested_command.words[0]) != 'command':
+            continue
+        names.extend(_collect_context_command_names(nested_command))
+    return tuple(names)
+
+
+def _collect_context_command_names(
+    command: Command,
+    *,
+    parent_name: str | None = None,
+) -> tuple[str, ...]:
+    if len(command.words) not in {3, 4}:
+        raise RuntimeError('Malformed `command` declaration in metadata context.')
+
+    command_name = word_static_text(command.words[1])
+    if command_name is None:
+        raise RuntimeError('Context command names must be static.')
+
+    full_name = command_name if parent_name is None else f'{parent_name} {command_name}'
+    names = [full_name]
+
+    if len(command.words) == 4:
+        names.extend(_collect_annotation_subcommand_names(command.words[3], parent_name=full_name))
+
+    return tuple(names)
+
+
+def _collect_annotation_subcommand_names(
+    annotation_word: Word,
+    *,
+    parent_name: str,
+) -> tuple[str, ...]:
+    body_text = _metadata_body_text(annotation_word)
+    parse_result = Parser().parse_document(path='generator:annotations', text=body_text)
+    if parse_result.diagnostics:
+        message = '; '.join(diagnostic.message for diagnostic in parse_result.diagnostics)
+        raise RuntimeError(f'Cannot extract metadata annotation names: {message}')
+
+    names: list[str] = []
+    for nested_command in parse_result.script.commands:
+        if word_static_text(nested_command.words[0]) != 'subcommand':
+            continue
+        names.extend(_collect_annotation_subcommand_decl_names(nested_command, parent_name=parent_name))
+    return tuple(names)
+
+
+def _collect_annotation_subcommand_decl_names(
+    command: Command,
+    *,
+    parent_name: str,
+) -> tuple[str, ...]:
+    if len(command.words) not in {3, 4}:
+        raise RuntimeError('Malformed `subcommand` declaration in metadata annotations.')
+
+    subcommand_name = word_static_text(command.words[1])
+    if subcommand_name is None:
+        raise RuntimeError('Subcommand names must be static.')
+
+    full_name = f'{parent_name} {subcommand_name}'
+    names = [full_name]
+    if len(command.words) == 4:
+        names.extend(_collect_annotation_subcommand_names(command.words[3], parent_name=full_name))
+    return tuple(names)
+
+
+def _build_generated_tree(command: str, entries: tuple[GeneratedEntry, ...]) -> GeneratedNode:
+    root = GeneratedNode(segment='', entries=[], children={})
+    command_parts = command.split()
     for entry in entries:
+        name_parts = entry.name.split()
+        if name_parts[: len(command_parts)] != command_parts or len(name_parts) <= len(command_parts):
+            raise RuntimeError(f'Generated entry `{entry.name}` does not belong to `{command}`.')
+
+        node = root
+        for part in name_parts[len(command_parts) :]:
+            child = node.children.get(part)
+            if child is None:
+                child = GeneratedNode(segment=part, entries=[], children={})
+                node.children[part] = child
+            node = child
+        node.entries.append(entry)
+    return root
+
+
+def _render_generated_node(
+    node: GeneratedNode,
+    *,
+    command: str,
+    indent: str,
+) -> list[str]:
+    if not node.entries:
+        raise RuntimeError(
+            f'Cannot render generated metadata for `{command} {node.segment}` without a parent entry.'
+        )
+    if len(node.entries) > 1 and node.children:
+        raise RuntimeError(
+            f'Cannot render multiple overloads with nested subcommands for `{command} {node.segment}`.'
+        )
+
+    child_nodes = tuple(node.children.values())
+    lines: list[str] = []
+    for entry_index, entry in enumerate(node.entries):
         lines.extend(
             textwrap.wrap(
                 entry.documentation,
                 width=78,
-                initial_indent='# ',
-                subsequent_indent='# ',
+                initial_indent=f'{indent}# ',
+                subsequent_indent=f'{indent}# ',
             )
         )
-        name_word = f'{{{entry.name}}}' if ' ' in entry.name else entry.name
-        lines.append(f'meta command {name_word} {_tcl_word(entry.params)}')
-        lines.append('')
+        declaration = f'{indent}subcommand {node.segment} {_tcl_word(entry.params)}'
+        if entry_index == len(node.entries) - 1 and child_nodes:
+            lines.append(f'{declaration} {{')
+            lines.append('')
+            for child_index, child in enumerate(child_nodes):
+                lines.extend(_render_generated_node(child, command=entry.name, indent=indent + '    '))
+                if child_index < len(child_nodes) - 1:
+                    lines.append('')
+            lines.append(f'{indent}}}')
+        else:
+            lines.append(declaration)
 
-    lines.append(f'{_GENERATED_END_PREFIX}{command}')
-    lines.append('')
+        if entry_index < len(node.entries) - 1:
+            lines.append('')
+
     return lines
 
 
@@ -467,6 +658,21 @@ def _normalize_unicode(text: str) -> str:
         .replace('’', "'")
         .replace('‘', "'")
     )
+
+
+def _metadata_body_text(word: Word) -> str:
+    if isinstance(word, BracedWord) and not word.expanded:
+        raw_text = word.raw_text
+        if raw_text.startswith('{'):
+            raw_text = raw_text[1:]
+        if raw_text.endswith('}'):
+            raw_text = raw_text[:-1]
+        return raw_text
+
+    text = word_static_text(word)
+    if text is None:
+        raise RuntimeError('Metadata command annotation bodies must be static words.')
+    return text
 
 
 def _tcl_word(text: str) -> str:

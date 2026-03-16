@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from tcl_lsp.analysis import FactExtractor, Resolver, WorkspaceIndex
 from tcl_lsp.analysis.builtins import builtin_command
+from tcl_lsp.metadata_paths import metadata_dir
 from tcl_lsp.parser import Parser
 
 from .support import analyze_document as _analyze
@@ -34,6 +35,31 @@ def test_analysis_resolves_proc_calls_and_parameters(parser: Parser) -> None:
     }
     assert variable_resolutions['name'] == 'resolved'
     assert analysis.diagnostics == ()
+
+
+def test_analysis_reports_no_diagnostics_for_metadata_files(parser: Parser) -> None:
+    extractor = FactExtractor(parser)
+    resolver = Resolver()
+    workspace = WorkspaceIndex()
+    facts_by_uri = {}
+
+    metadata_paths = sorted(metadata_dir().rglob('*.tcl'))
+    assert metadata_paths
+
+    for metadata_path in metadata_paths:
+        text = metadata_path.read_text(encoding='utf-8')
+        parse_result = parser.parse_document(metadata_path.as_uri(), text)
+        facts = extractor.extract(parse_result)
+        workspace.update(facts.uri, facts)
+        facts_by_uri[facts.uri] = facts
+
+    diagnostics_by_uri = {}
+    for uri, facts in facts_by_uri.items():
+        diagnostics = resolver.analyze(uri, facts, workspace).diagnostics
+        if diagnostics:
+            diagnostics_by_uri[uri] = tuple(diagnostic.code for diagnostic in diagnostics)
+
+    assert diagnostics_by_uri == {}
 
 
 def test_analysis_tracks_namespace_resolution(parser: Parser) -> None:
@@ -570,6 +596,91 @@ def test_analysis_resolves_required_tcloo_commands(parser: Parser) -> None:
     assert resolution_by_name['oo::class'] == 'resolved'
     assert resolution_by_name['oo::define'] == 'resolved'
     assert resolution_by_name['oo::objdefine'] == 'resolved'
+    assert analysis.diagnostics == ()
+
+
+def test_analysis_collects_tcloo_methods_from_definition_bodies(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///tcloo_body_methods.tcl',
+        'package require TclOO\n'
+        'oo::class create ::demo::Widget {\n'
+        '    method greet {name} {\n'
+        '        my variable seen\n'
+        '        set seen $name\n'
+        '        next $name\n'
+        '        return [self]\n'
+        '    }\n'
+        '}\n',
+    )
+    facts = snapshot.facts
+    analysis = snapshot.analysis
+
+    assert '::demo::Widget method greet' in {
+        procedure.qualified_name for procedure in facts.procedures
+    }
+
+    resolution_by_name = {
+        resolution.reference.name: resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command'
+    }
+    assert resolution_by_name['method'] == 'resolved'
+    assert resolution_by_name['my'] == 'resolved'
+    assert resolution_by_name['next'] == 'resolved'
+    assert resolution_by_name['self'] == 'resolved'
+
+    variable_resolution_by_name = {
+        resolution.reference.name: resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'variable'
+    }
+    assert variable_resolution_by_name['name'] == 'resolved'
+    assert variable_resolution_by_name['seen'] == 'resolved'
+    assert analysis.diagnostics == ()
+
+
+def test_analysis_collects_inline_tcloo_define_commands(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///tcloo_inline_methods.tcl',
+        'package require TclOO\n'
+        'oo::class create Foo {}\n'
+        'oo::define Foo method greet {name} {\n'
+        '    my variable seen\n'
+        '    set seen $name\n'
+        '    return [self]\n'
+        '}\n'
+        'oo::define Foo constructor {value} {\n'
+        '    set copy $value\n'
+        '}\n',
+    )
+    facts = snapshot.facts
+    analysis = snapshot.analysis
+
+    assert {'::Foo method greet', '::Foo constructor'} <= {
+        procedure.qualified_name for procedure in facts.procedures
+    }
+
+    resolution_by_name = {
+        resolution.reference.name: resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command'
+    }
+    assert resolution_by_name['method'] == 'resolved'
+    assert resolution_by_name['constructor'] == 'resolved'
+    assert resolution_by_name['my'] == 'resolved'
+    assert resolution_by_name['self'] == 'resolved'
+
+    variable_resolution_by_name = {
+        resolution.reference.name: resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'variable'
+    }
+    assert variable_resolution_by_name['name'] == 'resolved'
+    assert variable_resolution_by_name['seen'] == 'resolved'
+    assert variable_resolution_by_name['value'] == 'resolved'
+    assert 'copy' in {binding.name for binding in facts.variable_bindings}
     assert analysis.diagnostics == ()
 
 
@@ -1336,13 +1447,22 @@ def test_analysis_treats_meta_command_as_builtin() -> None:
         for resolution in analysis.resolutions
         if resolution.reference.kind == 'command' and resolution.reference.name == 'meta'
     )
+    meta_command_resolution = next(
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command' and resolution.reference.name == 'meta command'
+    )
     assert meta_resolution.uncertainty.state == 'resolved'
     assert len(meta_resolution.target_symbol_ids) == 1
+    assert meta_command_resolution.uncertainty.state == 'resolved'
+    assert len(meta_command_resolution.target_symbol_ids) == 1
 
     hover_by_offset = {hover.span.start.offset: hover.contents for hover in analysis.hovers}
-    hover = hover_by_offset[facts.command_calls[0].name_span.start.offset]
+    meta_command_call = next(command_call for command_call in facts.command_calls if command_call.name == 'meta command')
+    hover = hover_by_offset[meta_command_call.name_span.start.offset]
     assert hover.startswith(
-        'builtin command meta {kind name signature}\n\nDeclare metadata for Tcl language entities.'
+        'builtin command meta command {name signature ? annotationBody ?}\n\n'
+        'Declare metadata for a command or command prefix.'
     )
-    assert 'structured documentation instead of executable behavior' in hover.replace('\n', ' ')
+    assert 'command or command prefix' in hover.replace('\n', ' ').lower()
     assert analysis.diagnostics == ()

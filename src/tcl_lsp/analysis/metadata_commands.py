@@ -12,13 +12,13 @@ from tcl_lsp.parser import Parser, word_static_text
 from tcl_lsp.parser.model import BracedWord, Command, Token, Word
 
 _META_DIR = metadata_dir()
+_MISSING = object()
 
 type SourceBase = Literal['call-source-directory', 'proc-source-parent']
 type MetadataOptionKind = Literal['flag', 'value', 'stop']
 type OptionScanState = Literal[
     'ok', 'dynamic', 'unstable', 'unknown-option', 'missing-option-value'
 ]
-type MetadataValueSetKind = Literal['keyword', 'subcommand']
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,13 +33,6 @@ class MetadataSelector:
 class MetadataOption:
     name: str
     kind: MetadataOptionKind
-
-
-@dataclass(frozen=True, slots=True)
-class MetadataValueSet:
-    selector: MetadataSelector
-    kind: MetadataValueSetKind
-    values: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,8 +71,29 @@ class MetadataPackage:
     literal_package: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class MetadataContext:
+    body_selector: MetadataSelector
+    context_name: str
+    owner_selector: MetadataSelector
+
+
+@dataclass(frozen=True, slots=True)
+class MetadataProcedure:
+    member_name_index: int | None
+    parameter_index: int | None
+    body_index: int
+    body_context: str | None
+
+
 type MetadataAnnotation = (
-    MetadataBind | MetadataRef | MetadataScriptBody | MetadataSource | MetadataPackage
+    MetadataBind
+    | MetadataRef
+    | MetadataScriptBody
+    | MetadataSource
+    | MetadataPackage
+    | MetadataContext
+    | MetadataProcedure
 )
 
 
@@ -88,11 +102,12 @@ class MetadataCommand:
     metadata_path: Path
     uri: str
     name: str
+    context_name: str | None
     signature: str
     documentation: str | None
     name_span: Span
     options: tuple[MetadataOption, ...]
-    value_sets: tuple[MetadataValueSet, ...]
+    subcommands: tuple[str, ...]
     annotations: tuple[MetadataAnnotation, ...]
 
 
@@ -109,46 +124,24 @@ def load_metadata_commands(metadata_path: Path) -> tuple[MetadataCommand, ...]:
     for command in parse_result.script.commands:
         if word_static_text(command.words[0]) != 'meta':
             continue
-        if word_static_text(command.words[1]) != 'command':
+        entry_kind = word_static_text(command.words[1])
+        if entry_kind == 'command':
+            commands.extend(
+                _parse_metadata_command_entry(
+                    command,
+                    metadata_path=metadata_path,
+                    metadata_uri=metadata_uri,
+                )
+            )
             continue
-
-        if len(command.words) not in {4, 5}:
-            raise RuntimeError(
-                'Metadata command entries must be `meta command name {args}` '
-                'optionally followed by an annotation body.'
+        if entry_kind == 'context':
+            commands.extend(
+                _parse_metadata_context_entry(
+                    command,
+                    metadata_path=metadata_path,
+                    metadata_uri=metadata_uri,
+                )
             )
-
-        command_name = word_static_text(command.words[2])
-        signature = word_static_text(command.words[3])
-        if command_name is None or signature is None:
-            raise RuntimeError(
-                'Metadata command entries must be fully static '
-                '`meta command name {args}` declarations.'
-            )
-
-        options: tuple[MetadataOption, ...] = ()
-        value_sets: tuple[MetadataValueSet, ...] = ()
-        annotations: tuple[MetadataAnnotation, ...] = ()
-        if len(command.words) == 5:
-            options, value_sets, annotations = _parse_annotation_body(
-                metadata_uri=metadata_uri,
-                command_name=command_name,
-                body_text=_metadata_body_text(command.words[4]),
-            )
-
-        commands.append(
-            MetadataCommand(
-                metadata_path=metadata_path,
-                uri=metadata_uri,
-                name=command_name,
-                signature=signature,
-                documentation=_command_documentation(command.leading_comments),
-                name_span=command.words[2].content_span,
-                options=options,
-                value_sets=value_sets,
-                annotations=annotations,
-            )
-        )
 
     if not commands:
         return ()
@@ -160,6 +153,112 @@ def all_metadata_commands() -> tuple[MetadataCommand, ...]:
     commands: list[MetadataCommand] = []
     for metadata_path in sorted(_META_DIR.rglob('*.tcl')):
         commands.extend(load_metadata_commands(metadata_path))
+    return tuple(commands)
+
+
+def _parse_metadata_command_entry(
+    command: Command,
+    *,
+    metadata_path: Path,
+    metadata_uri: str,
+    context_name: str | None = None,
+    parent_name: str | None = None,
+) -> tuple[MetadataCommand, ...]:
+    if context_name is None:
+        if len(command.words) not in {4, 5}:
+            raise RuntimeError(
+                'Metadata command entries must be `meta command name {args}` '
+                'optionally followed by an annotation body.'
+            )
+        command_name = word_static_text(command.words[2])
+        signature = word_static_text(command.words[3])
+        name_word = command.words[2]
+        annotation_word = command.words[4] if len(command.words) == 5 else None
+    else:
+        if len(command.words) not in {3, 4}:
+            raise RuntimeError(
+                'Metadata context command entries must be '
+                '`command name {args}` optionally followed by an annotation body.'
+            )
+        command_name = word_static_text(command.words[1])
+        signature = word_static_text(command.words[2])
+        name_word = command.words[1]
+        annotation_word = command.words[3] if len(command.words) == 4 else None
+
+    if command_name is None or signature is None:
+        raise RuntimeError('Metadata command entries must be fully static declarations.')
+    if ' ' in command_name:
+        raise RuntimeError(
+            'Metadata command entries must use single command names. '
+            'Use nested `subcommand name {signature}` declarations for subcommands.'
+        )
+
+    full_name = command_name if parent_name is None else f'{parent_name} {command_name}'
+    options: tuple[MetadataOption, ...] = ()
+    annotations: tuple[MetadataAnnotation, ...] = ()
+    nested_commands: tuple[MetadataCommand, ...] = ()
+    if annotation_word is not None:
+        options, annotations, nested_commands = _parse_annotation_body(
+            metadata_path=metadata_path,
+            metadata_uri=metadata_uri,
+            command_name=full_name,
+            context_name=context_name,
+            body_text=_metadata_body_text(annotation_word),
+        )
+
+    return (
+        MetadataCommand(
+            metadata_path=metadata_path,
+            uri=metadata_uri,
+            name=full_name,
+            context_name=context_name,
+            signature=signature,
+            documentation=_command_documentation(command.leading_comments),
+            name_span=name_word.content_span,
+            options=options,
+            subcommands=(),
+            annotations=annotations,
+        ),
+        *nested_commands,
+    )
+
+
+def _parse_metadata_context_entry(
+    command: Command,
+    *,
+    metadata_path: Path,
+    metadata_uri: str,
+) -> tuple[MetadataCommand, ...]:
+    if len(command.words) != 4:
+        raise RuntimeError('Metadata context entries must be `meta context name { ... }`.')
+
+    context_name = word_static_text(command.words[2])
+    if context_name is None:
+        raise RuntimeError('Metadata context entries must have a static context name.')
+
+    body_text = _metadata_body_text(command.words[3])
+    parse_result = Parser().parse_document(path=f'{metadata_uri}#context:{context_name}', text=body_text)
+    if parse_result.diagnostics:
+        message = '; '.join(diagnostic.message for diagnostic in parse_result.diagnostics)
+        raise RuntimeError(
+            f'Invalid metadata context `{context_name}` in `{metadata_path.name}`: {message}'
+        )
+
+    commands: list[MetadataCommand] = []
+    for nested_command in parse_result.script.commands:
+        if word_static_text(nested_command.words[0]) != 'command':
+            raise RuntimeError(
+                f'Metadata context `{context_name}` entries must use `command name {{args}}`.'
+            )
+        commands.extend(
+            _parse_metadata_command_entry(
+                nested_command,
+                metadata_path=metadata_path,
+                metadata_uri=metadata_uri,
+                context_name=context_name,
+            )
+        )
+
     return tuple(commands)
 
 
@@ -310,10 +409,12 @@ def _first_expanded_index(
 
 def _parse_annotation_body(
     *,
+    metadata_path: Path,
     metadata_uri: str,
     command_name: str,
+    context_name: str | None,
     body_text: str,
-) -> tuple[tuple[MetadataOption, ...], tuple[MetadataValueSet, ...], tuple[MetadataAnnotation, ...]]:
+) -> tuple[tuple[MetadataOption, ...], tuple[MetadataAnnotation, ...], tuple[MetadataCommand, ...]]:
     annotation_uri = f'{metadata_uri}#{command_name}'
     parse_result = Parser().parse_document(path=annotation_uri, text=body_text)
     if parse_result.diagnostics:
@@ -321,8 +422,8 @@ def _parse_annotation_body(
         raise RuntimeError(f'Invalid metadata command annotations for `{command_name}`: {message}')
 
     options: list[MetadataOption] = []
-    value_sets: list[MetadataValueSet] = []
     annotations: list[MetadataAnnotation] = []
+    nested_commands: list[MetadataCommand] = []
     for command in parse_result.script.commands:
         annotation_name = word_static_text(command.words[0])
         if annotation_name is None:
@@ -333,11 +434,16 @@ def _parse_annotation_body(
         if annotation_name == 'option':
             options.append(_parse_option_annotation(command, command_name))
             continue
-        if annotation_name == 'keyword':
-            value_sets.append(_parse_value_set_annotation(command, command_name, kind='keyword'))
-            continue
         if annotation_name == 'subcommand':
-            value_sets.append(_parse_value_set_annotation(command, command_name, kind='subcommand'))
+            nested_commands.extend(
+                _parse_metadata_subcommand_entry(
+                    command,
+                    metadata_path=metadata_path,
+                    metadata_uri=metadata_uri,
+                    parent_name=command_name,
+                    context_name=context_name,
+                )
+            )
             continue
         if annotation_name == 'bind':
             annotations.append(_parse_bind_annotation(command, command_name))
@@ -354,11 +460,17 @@ def _parse_annotation_body(
         if annotation_name == 'package':
             annotations.append(_parse_package_annotation(command, command_name))
             continue
+        if annotation_name == 'context':
+            annotations.append(_parse_context_annotation(command, command_name))
+            continue
+        if annotation_name == 'procedure':
+            annotations.append(_parse_procedure_annotation(command, command_name))
+            continue
         raise RuntimeError(
             f'Unknown metadata command annotation `{annotation_name}` for `{command_name}`.'
         )
 
-    return tuple(options), tuple(value_sets), tuple(annotations)
+    return tuple(options), tuple(annotations), tuple(nested_commands)
 
 
 def _parse_option_annotation(command: Command, command_name: str) -> MetadataOption:
@@ -375,25 +487,59 @@ def _parse_option_annotation(command: Command, command_name: str) -> MetadataOpt
     )
 
 
-def _parse_value_set_annotation(
+def _parse_metadata_subcommand_entry(
     command: Command,
-    command_name: str,
     *,
-    kind: MetadataValueSetKind,
-) -> MetadataValueSet:
-    words = _annotation_words(command, command_name)
-    selector, consumed = _parse_selector_tokens(words[1:], command_name=command_name)
-    values = tuple(words[consumed + 1 :])
-    if consumed >= len(words) - 1 or not values:
+    metadata_path: Path,
+    metadata_uri: str,
+    parent_name: str,
+    context_name: str | None,
+) -> tuple[MetadataCommand, ...]:
+    if len(command.words) not in {3, 4}:
         raise RuntimeError(
-            f'{kind.title()} annotations for `{command_name}` must be '
-            f'`{kind} selector value ...`.'
+            f'Subcommand annotations for `{parent_name}` must be '
+            '`subcommand name {signature}` optionally followed by an annotation body.'
         )
-    _validate_single_argument_selector(selector, command_name, kind=kind)
-    return MetadataValueSet(
-        selector=selector,
-        kind=kind,
-        values=values,
+
+    subcommand_name = word_static_text(command.words[1])
+    signature = word_static_text(command.words[2])
+    if subcommand_name is None or signature is None:
+        raise RuntimeError(
+            f'Subcommand annotations for `{parent_name}` must be fully static declarations.'
+        )
+    if ' ' in subcommand_name:
+        raise RuntimeError(
+            f'Subcommand annotations for `{parent_name}` must use single subcommand names.'
+        )
+
+    annotation_word = command.words[3] if len(command.words) == 4 else None
+    options: tuple[MetadataOption, ...] = ()
+    annotations: tuple[MetadataAnnotation, ...] = ()
+    nested_commands: tuple[MetadataCommand, ...] = ()
+    full_name = f'{parent_name} {subcommand_name}'
+    if annotation_word is not None:
+        options, annotations, nested_commands = _parse_annotation_body(
+            metadata_path=metadata_path,
+            metadata_uri=metadata_uri,
+            command_name=full_name,
+            context_name=context_name,
+            body_text=_metadata_body_text(annotation_word),
+        )
+
+    return (
+        MetadataCommand(
+            metadata_path=metadata_path,
+            uri=metadata_uri,
+            name=full_name,
+            context_name=context_name,
+            signature=signature,
+            documentation=_command_documentation(command.leading_comments),
+            name_span=command.words[1].content_span,
+            options=options,
+            subcommands=(),
+            annotations=annotations,
+        ),
+        *nested_commands,
     )
 
 
@@ -465,6 +611,174 @@ def _parse_package_annotation(command: Command, command_name: str) -> MetadataPa
     return MetadataPackage(selector=None, literal_package=words[1])
 
 
+def _parse_context_annotation(command: Command, command_name: str) -> MetadataContext:
+    if len(command.words) != 3:
+        raise RuntimeError(
+            f'Context annotations for `{command_name}` must be '
+            '`context context-name { body selector; owner selector }`.'
+        )
+
+    context_name = word_static_text(command.words[1])
+    if context_name is None:
+        raise RuntimeError(
+            f'Context annotations for `{command_name}` must use a static context name.'
+        )
+
+    config_text = _metadata_body_text(command.words[2])
+    annotation_uri = f'context:{command_name}'
+    parse_result = Parser().parse_document(path=annotation_uri, text=config_text)
+    if parse_result.diagnostics:
+        message = '; '.join(diagnostic.message for diagnostic in parse_result.diagnostics)
+        raise RuntimeError(f'Invalid context annotation for `{command_name}`: {message}')
+
+    body_selector: MetadataSelector | None = None
+    owner_selector: MetadataSelector | None = None
+    for nested_command in parse_result.script.commands:
+        nested_words = _annotation_words(nested_command, command_name)
+        nested_name = nested_words[0]
+        if nested_name == 'body':
+            if body_selector is not None:
+                raise RuntimeError(
+                    f'Context annotations for `{command_name}` may only declare one `body`.'
+                )
+            selector, consumed = _parse_selector_tokens(
+                nested_words[1:],
+                command_name=command_name,
+            )
+            if consumed != len(nested_words) - 1:
+                raise RuntimeError(
+                    f'Context body selectors for `{command_name}` must be `body selector`.'
+                )
+            _validate_context_body_selector(selector, command_name)
+            body_selector = selector
+            continue
+        if nested_name == 'owner':
+            if owner_selector is not None:
+                raise RuntimeError(
+                    f'Context annotations for `{command_name}` may only declare one `owner`.'
+                )
+            selector, consumed = _parse_selector_tokens(
+                nested_words[1:],
+                command_name=command_name,
+            )
+            if consumed != len(nested_words) - 1:
+                raise RuntimeError(
+                    f'Context owner selectors for `{command_name}` must be `owner selector`.'
+                )
+            _validate_context_owner_selector(selector, command_name)
+            owner_selector = selector
+            continue
+        raise RuntimeError(
+            f'Unknown context setting `{nested_name}` for `{command_name}`.'
+        )
+
+    if body_selector is None or owner_selector is None:
+        raise RuntimeError(
+            f'Context annotations for `{command_name}` must declare both `body` and `owner`.'
+        )
+
+    return MetadataContext(
+        body_selector=body_selector,
+        context_name=context_name,
+        owner_selector=owner_selector,
+    )
+
+
+def _parse_procedure_annotation(command: Command, command_name: str) -> MetadataProcedure:
+    if len(command.words) != 2:
+        raise RuntimeError(
+            f'Procedure annotations for `{command_name}` must be '
+            '`procedure {{ name index|-; params index|-; body index; ?context body-context? }}`.'
+        )
+
+    config_text = _metadata_body_text(command.words[1])
+    annotation_uri = f'procedure:{command_name}'
+    parse_result = Parser().parse_document(path=annotation_uri, text=config_text)
+    if parse_result.diagnostics:
+        message = '; '.join(diagnostic.message for diagnostic in parse_result.diagnostics)
+        raise RuntimeError(f'Invalid procedure annotation for `{command_name}`: {message}')
+
+    member_name_index: int | None | object = _MISSING
+    parameter_index: int | None | object = _MISSING
+    body_index: int | object = _MISSING
+    body_context: str | None = None
+
+    for nested_command in parse_result.script.commands:
+        nested_words = _annotation_words(nested_command, command_name)
+        nested_name = nested_words[0]
+        if nested_name == 'name':
+            if member_name_index is not _MISSING:
+                raise RuntimeError(
+                    f'Procedure annotations for `{command_name}` may only declare one `name`.'
+                )
+            if len(nested_words) != 2:
+                raise RuntimeError(
+                    f'Procedure name selectors for `{command_name}` must be `name index|-`.'
+                )
+            member_name_index = _parse_optional_procedure_index(
+                nested_words[1],
+                command_name=command_name,
+                role='member name',
+            )
+            continue
+        if nested_name == 'params':
+            if parameter_index is not _MISSING:
+                raise RuntimeError(
+                    f'Procedure annotations for `{command_name}` may only declare one `params`.'
+                )
+            if len(nested_words) != 2:
+                raise RuntimeError(
+                    f'Procedure parameter selectors for `{command_name}` must be `params index|-`.'
+                )
+            parameter_index = _parse_optional_procedure_index(
+                nested_words[1],
+                command_name=command_name,
+                role='parameter',
+            )
+            continue
+        if nested_name == 'body':
+            if body_index is not _MISSING:
+                raise RuntimeError(
+                    f'Procedure annotations for `{command_name}` may only declare one `body`.'
+                )
+            if len(nested_words) != 2:
+                raise RuntimeError(
+                    f'Procedure body selectors for `{command_name}` must be `body index`.'
+                )
+            body_index = _parse_required_procedure_index(
+                nested_words[1],
+                command_name=command_name,
+                role='body',
+            )
+            continue
+        if nested_name == 'context':
+            if body_context is not None:
+                raise RuntimeError(
+                    f'Procedure annotations for `{command_name}` may only declare one `context`.'
+                )
+            if len(nested_words) != 2:
+                raise RuntimeError(
+                    f'Procedure body contexts for `{command_name}` must be `context name`.'
+                )
+            body_context = nested_words[1]
+            continue
+        raise RuntimeError(
+            f'Unknown procedure setting `{nested_name}` for `{command_name}`.'
+        )
+
+    if member_name_index is _MISSING or parameter_index is _MISSING or body_index is _MISSING:
+        raise RuntimeError(
+            f'Procedure annotations for `{command_name}` must declare `name`, `params`, and `body`.'
+        )
+
+    return MetadataProcedure(
+        member_name_index=member_name_index,
+        parameter_index=parameter_index,
+        body_index=body_index,
+        body_context=body_context,
+    )
+
+
 def _validate_package_selector(selector: MetadataSelector, command_name: str) -> None:
     if selector.list_mode or selector.all_remaining:
         raise RuntimeError(
@@ -472,15 +786,17 @@ def _validate_package_selector(selector: MetadataSelector, command_name: str) ->
         )
 
 
-def _validate_single_argument_selector(
-    selector: MetadataSelector,
-    command_name: str,
-    *,
-    kind: MetadataValueSetKind,
-) -> None:
-    if selector.list_mode or selector.all_remaining:
+def _validate_context_body_selector(selector: MetadataSelector, command_name: str) -> None:
+    if selector.list_mode or selector.after_options:
         raise RuntimeError(
-            f'{kind.title()} annotations for `{command_name}` must select a single argument.'
+            f'Context annotations for `{command_name}` must use direct positional selectors.'
+        )
+
+
+def _validate_context_owner_selector(selector: MetadataSelector, command_name: str) -> None:
+    if selector.list_mode or selector.after_options or selector.all_remaining:
+        raise RuntimeError(
+            f'Context annotations for `{command_name}` must select exactly one owner argument.'
         )
 
 
@@ -535,6 +851,31 @@ def _parse_binding_kind(text: str, command_name: str) -> BindingKind:
     return text
 
 
+def _parse_optional_procedure_index(
+    text: str,
+    *,
+    command_name: str,
+    role: str,
+) -> int | None:
+    if text == '-':
+        return None
+    return _parse_required_procedure_index(text, command_name=command_name, role=role)
+
+
+def _parse_required_procedure_index(
+    text: str,
+    *,
+    command_name: str,
+    role: str,
+) -> int:
+    if not text.isdigit() or text == '0':
+        raise RuntimeError(
+            f'Procedure annotations for `{command_name}` must use a positive '
+            f'1-based {role} index or `-`.'
+        )
+    return int(text) - 1
+
+
 def _annotation_words(command: Command, command_name: str) -> list[str]:
     words: list[str] = []
     for word in command.words:
@@ -550,82 +891,60 @@ def _annotation_words(command: Command, command_name: str) -> list[str]:
 def _commands_with_derived_subcommands(
     commands: tuple[MetadataCommand, ...],
 ) -> tuple[MetadataCommand, ...]:
-    child_values_by_name: dict[str, tuple[str, ...]] = {}
-    command_names = tuple(command.name for command in commands)
+    child_values_by_key: dict[tuple[str | None, str], tuple[str, ...]] = {}
+    for context_name in {command.context_name for command in commands}:
+        command_names = tuple(
+            command.name for command in commands if command.context_name == context_name
+        )
+        for command_name in command_names:
+            prefix = command_name + ' '
+            values: dict[str, None] = {}
+            for candidate_name in command_names:
+                if not candidate_name.startswith(prefix):
+                    continue
+                remainder = candidate_name[len(prefix) :]
+                if not remainder:
+                    continue
+                values.setdefault(remainder.split(' ', maxsplit=1)[0], None)
+            if values:
+                child_values_by_key[(context_name, command_name)] = tuple(values)
 
-    for command_name in command_names:
-        prefix = command_name + ' '
-        values: dict[str, None] = {}
-        for candidate_name in command_names:
-            if not candidate_name.startswith(prefix):
-                continue
-            remainder = candidate_name[len(prefix) :]
-            if not remainder:
-                continue
-            values.setdefault(remainder.split(' ', maxsplit=1)[0], None)
-        if values:
-            child_values_by_name[command_name] = tuple(values)
-
-    if not child_values_by_name:
+    if not child_values_by_key:
         return commands
 
-    derived_selector = MetadataSelector(
-        start_index=0,
-        all_remaining=False,
-        list_mode=False,
-        after_options=False,
-    )
     derived_commands: list[MetadataCommand] = []
     for command in commands:
-        derived_values = child_values_by_name.get(command.name)
+        derived_values = child_values_by_key.get((command.context_name, command.name))
         if derived_values is None:
             derived_commands.append(command)
             continue
 
-        existing = next(
-            (
-                value_set
-                for value_set in command.value_sets
-                if value_set.kind == 'subcommand' and value_set.selector == derived_selector
-            ),
-            None,
-        )
-        if existing is None:
-            value_sets = command.value_sets + (
-                MetadataValueSet(
-                    selector=derived_selector,
-                    kind='subcommand',
-                    values=derived_values,
-                ),
-            )
-        else:
-            merged_values = tuple(dict.fromkeys(existing.values + derived_values))
-            value_sets = tuple(
-                MetadataValueSet(
-                    selector=value_set.selector,
-                    kind=value_set.kind,
-                    values=merged_values,
-                )
-                if value_set is existing
-                else value_set
-                for value_set in command.value_sets
-            )
+        subcommands = _merge_subcommands(command.subcommands, derived_values)
 
         derived_commands.append(
             MetadataCommand(
                 metadata_path=command.metadata_path,
                 uri=command.uri,
                 name=command.name,
+                context_name=command.context_name,
                 signature=command.signature,
                 documentation=command.documentation,
                 name_span=command.name_span,
                 options=command.options,
-                value_sets=value_sets,
+                subcommands=subcommands,
                 annotations=command.annotations,
             )
         )
 
     return tuple(derived_commands)
+
+
+def _merge_subcommands(*groups: tuple[str, ...]) -> tuple[str, ...]:
+    merged: dict[str, None] = {}
+    for group in groups:
+        for value in group:
+            merged.setdefault(value, None)
+    return tuple(merged)
 
 
 def _metadata_body_text(word: Word) -> str:
