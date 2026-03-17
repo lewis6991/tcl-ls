@@ -170,7 +170,7 @@ def _hover_markdown_value(
 
 def _write_sample_plugin_bundle(metadata_root: Path) -> Path:
     metadata_root.mkdir(parents=True, exist_ok=True)
-    plugin_path = metadata_root / 'sample.tm'
+    plugin_path = metadata_root / 'sample.tcl'
     plugin_path.write_text(
         'namespace eval ::tcl_lsp::plugins::sample {}\n'
         'proc ::tcl_lsp::plugins::sample::procedure {words info} {\n'
@@ -201,12 +201,12 @@ def _write_sample_plugin_bundle(metadata_root: Path) -> Path:
         '}\n',
         encoding='utf-8',
     )
-    (metadata_root / 'sample.tcl').write_text(
+    (metadata_root / 'sample.meta.tcl').write_text(
         '# Project metadata loaded from project-local plugin configuration.\n'
         'meta module Tcl\n'
         '# Define a procedure using a project-local wrapper command.\n'
         'meta command dsl::define {name params body} {\n'
-        '    plugin sample.tm ::tcl_lsp::plugins::sample::procedure\n'
+        '    plugin sample.tcl ::tcl_lsp::plugins::sample::procedure\n'
         '}\n',
         encoding='utf-8',
     )
@@ -251,7 +251,7 @@ def test_language_service_loads_plugin_metadata_from_tcllsrc(tmp_path: Path) -> 
     project_root = tmp_path / 'workspace'
     _write_sample_plugin_bundle(project_root / '.tcl-ls')
     (project_root / 'tcllsrc.tcl').write_text(
-        'plugin-path .tcl-ls/sample.tm\n',
+        'plugin-path .tcl-ls/sample.tcl\n',
         encoding='utf-8',
     )
     source_path = project_root / 'main.tcl'
@@ -269,12 +269,12 @@ def test_language_service_loads_generated_project_metadata_without_docs(
 ) -> None:
     project_root = tmp_path / 'workspace'
     _write_sample_plugin_bundle(project_root / '.tcl-ls')
-    (project_root / '.tcl-ls' / 'generated.tcl').write_text(
+    (project_root / '.tcl-ls' / 'generated.meta.tcl').write_text(
         'meta module Tcl\nmeta command external {args}\n',
         encoding='utf-8',
     )
     (project_root / 'tcllsrc.tcl').write_text(
-        'plugin-path .tcl-ls/sample.tm\n',
+        'plugin-path .tcl-ls/sample.tcl\n',
         encoding='utf-8',
     )
     source_path = project_root / 'main.tcl'
@@ -297,7 +297,7 @@ def test_language_service_clears_project_metadata_when_plugin_paths_change(
     project_without_plugin = tmp_path / 'without-plugin'
     _write_sample_plugin_bundle(project_with_plugin / '.tcl-ls')
     (project_with_plugin / 'tcllsrc.tcl').write_text(
-        'plugin-path .tcl-ls/sample.tm\n',
+        'plugin-path .tcl-ls/sample.tcl\n',
         encoding='utf-8',
     )
     project_without_plugin.mkdir()

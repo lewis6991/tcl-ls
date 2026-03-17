@@ -1,7 +1,7 @@
 # Metadata command format for tcl-ls.
 #
 # Metadata files use the `meta` ensemble for structured declarations instead of
-# executable behavior.
+# executable behavior and conventionally use the `.meta.tcl` suffix.
 meta module Tcl
 #
 # Top-level declarations:

@@ -26,7 +26,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     build_file_parser = subparsers.add_parser(
         'build-file',
-        help='Build a tcl-ls metadata file using the bundled Tcl helper.',
+        help='Build a `.meta.tcl` metadata file using the bundled Tcl helper.',
     )
     build_file_parser.add_argument('output', type=Path)
 

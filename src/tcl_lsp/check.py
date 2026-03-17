@@ -937,9 +937,10 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         default=[],
         help=(
             'Load project metadata from this path. Accepts a metadata directory, '
-            'a metadata `.tcl` file, or a Tcl plugin `.tm` file. When a plugin '
-            'script is passed, sibling metadata files are discovered from its '
-            'parent directory. Paths from `tcllsrc.tcl` are loaded automatically.'
+            'a metadata `.meta.tcl` file, or a Tcl plugin `.tcl` file. When a '
+            'plugin script is passed, sibling metadata files are discovered from '
+            'its parent directory. Legacy `.tm` plugin scripts are also accepted. '
+            'Paths from `tcllsrc.tcl` are loaded automatically.'
         ),
     )
     return parser.parse_args(argv)

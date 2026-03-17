@@ -10,13 +10,13 @@ Refresh builtin subcommand metadata with:
 python3 scripts/generate_builtin_commands.py
 ```
 
-The generator updates `meta/tcl8.6/tcl.tcl` in place and
+The generator updates `meta/tcl8.6/tcl.meta.tcl` in place and
 supports `--input`, `--output`, `--doc-root`, `--tcl-doc-series`, and
 `--version-label` for versioned metadata workflows.
 
 ## Metadata
 
-Metadata files use `meta command` entries:
+Metadata files use the `*.meta.tcl` suffix and `meta command` entries:
 
 ```tcl
 meta command regexp {args} {
@@ -72,7 +72,7 @@ tcl-meta helper-path
 Then, inside that tool Tcl shell, write metadata directly with:
 
 ```tcl
-tcl-meta build-file output.tcl
+tcl-meta build-file output.meta.tcl
 ```
 
 For local development in this repository, use `uv run ...` when you want to

@@ -1,7 +1,7 @@
 # Tcl builtin command metadata for tcl-ls.
 # This file is parsed as Tcl source so builtin docs live in leading comment blocks.
 # Duplicate command entries intentionally model different builtin overloads and variations.
-# The metadata format itself is declared in meta/meta.tcl.
+# The metadata format itself is declared in meta/meta.meta.tcl.
 # Generated subcommand sections are maintained by scripts/generate_builtin_commands.py.
 # Descriptions are adapted from the Tcl 8.6 command manual.
 meta module Tcl

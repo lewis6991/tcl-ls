@@ -1,7 +1,7 @@
 #!/usr/bin/env tclsh
 
 # Source this file inside a tool Tcl interpreter and run:
-#     tcl-meta build-file path/to/metadata.tcl
+#     tcl-meta build-file path/to/metadata.meta.tcl
 #
 # The helper introspects the current Tcl environment, diffs its command set
 # against a plain child `tclsh`, and writes generic `meta command` /

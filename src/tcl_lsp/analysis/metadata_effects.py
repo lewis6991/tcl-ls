@@ -19,6 +19,7 @@ from tcl_lsp.analysis.metadata_commands import (
 )
 from tcl_lsp.analysis.model import CommandCall, DocumentFacts, ProcDecl
 from tcl_lsp.cache import metadata_lru_cache
+from tcl_lsp.metadata_paths import metadata_lookup_names
 from tcl_lsp.parser import Parser
 from tcl_lsp.workspace import source_id_to_path
 
@@ -66,17 +67,18 @@ def _metadata_command_effects() -> dict[tuple[str, str], MetadataCommand]:
             for annotation in metadata_command.annotations
         ):
             continue
-        key = (metadata_command.metadata_path.name, metadata_command.name)
-        existing = effects_by_key.get(key)
-        if existing is not None and (
-            existing.options != metadata_command.options
-            or existing.annotations != metadata_command.annotations
-        ):
-            raise RuntimeError(
-                f'Conflicting metadata effects for `{metadata_command.name}` in '
-                f'`{metadata_command.metadata_path.name}`.'
-            )
-        effects_by_key[key] = metadata_command
+        for path_name in metadata_lookup_names(metadata_command.metadata_path):
+            key = (path_name, metadata_command.name)
+            existing = effects_by_key.get(key)
+            if existing is not None and (
+                existing.options != metadata_command.options
+                or existing.annotations != metadata_command.annotations
+            ):
+                raise RuntimeError(
+                    f'Conflicting metadata effects for `{metadata_command.name}` in '
+                    f'`{metadata_command.metadata_path.name}`.'
+                )
+            effects_by_key[key] = metadata_command
 
     if not effects_by_key:
         raise RuntimeError('No metadata effect entries were loaded.')

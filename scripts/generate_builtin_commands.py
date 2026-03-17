@@ -20,7 +20,7 @@ if str(_SRC_ROOT) not in sys.path:
 from tcl_lsp.parser import Parser, word_static_text
 from tcl_lsp.parser.model import BracedWord, Command, Word
 
-_DEFAULT_METADATA_PATH = _REPO_ROOT / 'meta' / 'tcl8.6' / 'tcl.tcl'
+_DEFAULT_METADATA_PATH = _REPO_ROOT / 'meta' / 'tcl8.6' / 'tcl.meta.tcl'
 _DEFAULT_DOC_ROOT_TEMPLATE = 'https://www.tcl-lang.org/man/tcl{series}/TclCmd'
 _GENERATOR_NOTE = (
     '# Generated subcommand sections are maintained by scripts/generate_builtin_commands.py.'

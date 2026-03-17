@@ -11,7 +11,7 @@ from tcl_lsp.analysis.tcl_plugins import PluginProcedureEffect, TclPluginHost
 def test_tcl_plugin_host_returns_procedure_effect(tmp_path: Path) -> None:
     plugin = _plugin(
         tmp_path,
-        'simple.tm',
+        'simple.tcl',
         'namespace eval ::test {}\n'
         'proc ::test::emit {words info} {\n'
         '    return [list [list procedure [dict create \\\n'
@@ -48,7 +48,7 @@ def test_tcl_plugin_host_returns_procedure_effect(tmp_path: Path) -> None:
 def test_tcl_plugin_host_returns_declaration_effect(tmp_path: Path) -> None:
     plugin = _plugin(
         tmp_path,
-        'declaration.tm',
+        'declaration.tcl',
         'namespace eval ::test {}\n'
         'proc ::test::emit {words info} {\n'
         '    return [list [list procedure [dict create \\\n'
@@ -83,7 +83,7 @@ def test_tcl_plugin_host_returns_declaration_effect(tmp_path: Path) -> None:
 def test_tcl_plugin_host_blocks_channel_io(tmp_path: Path) -> None:
     plugin = _plugin(
         tmp_path,
-        'puts.tm',
+        'puts.tcl',
         'namespace eval ::test {}\nproc ::test::emit {words info} {\n    puts stdout blocked\n}\n',
     )
     host = TclPluginHost()
@@ -98,7 +98,7 @@ def test_tcl_plugin_host_blocks_channel_io(tmp_path: Path) -> None:
 def test_tcl_plugin_host_blocks_package_loading(tmp_path: Path) -> None:
     plugin = _plugin(
         tmp_path,
-        'package.tm',
+        'package.tcl',
         'namespace eval ::test {}\n'
         'proc ::test::emit {words info} {\n'
         '    package require TclOO\n'
@@ -116,7 +116,7 @@ def test_tcl_plugin_host_blocks_package_loading(tmp_path: Path) -> None:
 def test_tcl_plugin_host_resets_state_between_calls(tmp_path: Path) -> None:
     plugin = _plugin(
         tmp_path,
-        'state.tm',
+        'state.tcl',
         'namespace eval ::test {\n'
         '    variable count 0\n'
         '}\n'

@@ -35,7 +35,7 @@ def test_build_file_dispatches_to_bundled_tcl_helper(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(shutil, 'which', fake_which)
     monkeypatch.setattr(subprocess, 'run', fake_run)
 
-    output_path = Path('/tmp/generated.syntaxdb')
+    output_path = Path('/tmp/generated.meta.tcl')
     result = meta_tools.main(['build-file', str(output_path)])
 
     assert result == 0
@@ -49,7 +49,7 @@ def test_bundled_tcl_helper_generates_metadata(tmp_path: Path) -> None:
     if tclsh_path is None:
         pytest.skip('tclsh is required for bundled Tcl helper tests')
 
-    output_path = tmp_path / 'tool_meta.tcl'
+    output_path = tmp_path / 'tool.meta.tcl'
 
     completed = subprocess.run(
         [

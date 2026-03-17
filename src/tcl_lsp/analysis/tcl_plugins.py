@@ -61,7 +61,7 @@ class TclPluginHost:
         if tclsh_path is None:
             raise RuntimeError('The `tclsh` executable is required for Tcl analysis plugins.')
         self._tclsh_path = tclsh_path
-        self._bridge_path = metadata_dir() / Path('plugins/host.tm')
+        self._bridge_path = metadata_dir() / Path('plugins/host.tcl')
         self._lock = threading.Lock()
         self._process: subprocess.Popen[str] | None = None
         self._stdout_queue: queue.Queue[str | object] | None = None

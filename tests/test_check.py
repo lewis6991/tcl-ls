@@ -11,7 +11,7 @@ from tcl_lsp.check import check_project, format_report, main
 
 def _write_sample_plugin_bundle(metadata_root: Path) -> Path:
     metadata_root.mkdir(parents=True, exist_ok=True)
-    plugin_path = metadata_root / 'sample.tm'
+    plugin_path = metadata_root / 'sample.tcl'
     plugin_path.write_text(
         'namespace eval ::tcl_lsp::plugins::sample {}\n'
         'proc ::tcl_lsp::plugins::sample::procedure {words info} {\n'
@@ -42,12 +42,12 @@ def _write_sample_plugin_bundle(metadata_root: Path) -> Path:
         '}\n',
         encoding='utf-8',
     )
-    (metadata_root / 'sample.tcl').write_text(
+    (metadata_root / 'sample.meta.tcl').write_text(
         '# Project metadata loaded from project-local plugin configuration.\n'
         'meta module Tcl\n'
         '# Define a procedure using a project-local wrapper command.\n'
         'meta command dsl::define {name params body} {\n'
-        '    plugin sample.tm ::tcl_lsp::plugins::sample::procedure\n'
+        '    plugin sample.tcl ::tcl_lsp::plugins::sample::procedure\n'
         '}\n',
         encoding='utf-8',
     )
@@ -56,7 +56,7 @@ def _write_sample_plugin_bundle(metadata_root: Path) -> Path:
 
 def _write_declaration_plugin_bundle(metadata_root: Path) -> Path:
     metadata_root.mkdir(parents=True, exist_ok=True)
-    plugin_path = metadata_root / 'declaration.tm'
+    plugin_path = metadata_root / 'declaration.tcl'
     plugin_path.write_text(
         'namespace eval ::tcl_lsp::plugins::sample {}\n'
         'proc ::tcl_lsp::plugins::sample::declaration {words info} {\n'
@@ -86,12 +86,12 @@ def _write_declaration_plugin_bundle(metadata_root: Path) -> Path:
         '}\n',
         encoding='utf-8',
     )
-    (metadata_root / 'declaration.tcl').write_text(
+    (metadata_root / 'declaration.meta.tcl').write_text(
         '# Project metadata loaded from project-local plugin configuration.\n'
         'meta module Tcl\n'
         '# Declare a procedure using a project-local wrapper command.\n'
         'meta command dsl::declare {name params} {\n'
-        '    plugin declaration.tm ::tcl_lsp::plugins::sample::declaration\n'
+        '    plugin declaration.tcl ::tcl_lsp::plugins::sample::declaration\n'
         '}\n',
         encoding='utf-8',
     )
@@ -333,7 +333,7 @@ def test_check_project_loads_plugin_metadata_from_tcllsrc(tmp_path: Path) -> Non
     package_root.mkdir(parents=True)
 
     (project_root / 'tcllsrc.tcl').write_text(
-        'plugin-path .tcl-ls/sample.tm\n',
+        'plugin-path .tcl-ls/sample.tcl\n',
         encoding='utf-8',
     )
     (package_root / 'main.tcl').write_text(
@@ -351,14 +351,14 @@ def test_check_project_loads_generated_project_metadata_without_docs(tmp_path: P
     project_root = tmp_path / 'workspace'
     package_root = project_root / 'pkg'
     _write_sample_plugin_bundle(project_root / '.tcl-ls')
-    (project_root / '.tcl-ls' / 'generated.tcl').write_text(
+    (project_root / '.tcl-ls' / 'generated.meta.tcl').write_text(
         'meta module Tcl\nmeta command external {args}\n',
         encoding='utf-8',
     )
     package_root.mkdir(parents=True)
 
     (project_root / 'tcllsrc.tcl').write_text(
-        'plugin-path .tcl-ls/sample.tm\n',
+        'plugin-path .tcl-ls/sample.tcl\n',
         encoding='utf-8',
     )
     (package_root / 'main.tcl').write_text(
@@ -376,7 +376,7 @@ def test_check_project_restores_project_metadata_between_calls(tmp_path: Path) -
     project_without_plugin = tmp_path / 'without-plugin'
     _write_sample_plugin_bundle(project_with_plugin / '.tcl-ls')
     (project_with_plugin / 'tcllsrc.tcl').write_text(
-        'plugin-path .tcl-ls/sample.tm\n',
+        'plugin-path .tcl-ls/sample.tcl\n',
         encoding='utf-8',
     )
     project_without_plugin.mkdir()
@@ -404,7 +404,7 @@ def test_check_project_repo_root_uses_pkgindex_workspaces_and_shared_tcllsrc(
     package_root.mkdir(parents=True)
 
     (project_root / 'tcllsrc.tcl').write_text(
-        'plugin-path .tcl-ls/sample.tm\n',
+        'plugin-path .tcl-ls/sample.tcl\n',
         encoding='utf-8',
     )
     (project_root / 'scratch.tcl').write_text(

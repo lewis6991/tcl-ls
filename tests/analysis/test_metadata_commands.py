@@ -17,7 +17,7 @@ from tcl_lsp.metadata_paths import metadata_dir
 
 
 def test_core_metadata_supports_option_aware_selectors() -> None:
-    metadata_path = metadata_dir() / Path('tcl8.6/tcl.tcl')
+    metadata_path = metadata_dir() / Path('tcl8.6/tcl.meta.tcl')
     regexp_command = next(
         command for command in load_metadata_commands(metadata_path) if command.name == 'regexp'
     )
@@ -37,7 +37,7 @@ def test_core_metadata_supports_option_aware_selectors() -> None:
 
 
 def test_core_metadata_option_selectors_allow_dynamic_positionals() -> None:
-    metadata_path = metadata_dir() / Path('tcl8.6/tcl.tcl')
+    metadata_path = metadata_dir() / Path('tcl8.6/tcl.meta.tcl')
     regexp_command = next(
         command for command in load_metadata_commands(metadata_path) if command.name == 'regexp'
     )
@@ -57,7 +57,7 @@ def test_core_metadata_option_selectors_allow_dynamic_positionals() -> None:
 
 
 def test_core_metadata_option_selectors_skip_unstable_expansion_tails() -> None:
-    metadata_path = metadata_dir() / Path('tcl8.6/tcl.tcl')
+    metadata_path = metadata_dir() / Path('tcl8.6/tcl.meta.tcl')
     regexp_command = next(
         command for command in load_metadata_commands(metadata_path) if command.name == 'regexp'
     )
@@ -89,7 +89,7 @@ def test_argument_selectors_allow_fixed_positions_before_late_expansion() -> Non
 
 
 def test_core_metadata_leaves_return_unannotated() -> None:
-    metadata_path = metadata_dir() / Path('tcl8.6/tcl.tcl')
+    metadata_path = metadata_dir() / Path('tcl8.6/tcl.meta.tcl')
     return_command = next(
         command for command in load_metadata_commands(metadata_path) if command.name == 'return'
     )
@@ -98,7 +98,7 @@ def test_core_metadata_leaves_return_unannotated() -> None:
 
 
 def test_core_metadata_derives_subcommands() -> None:
-    metadata_path = metadata_dir() / Path('tcl8.6/tcl.tcl')
+    metadata_path = metadata_dir() / Path('tcl8.6/tcl.meta.tcl')
     info_command = next(
         command for command in load_metadata_commands(metadata_path) if command.name == 'info'
     )
@@ -133,10 +133,10 @@ def test_core_metadata_models_meta_as_ensemble() -> None:
     assert meta_command_builtin is not None
     assert meta_context_builtin is not None
     assert meta_module_builtin is not None
-    assert meta_builtin.metadata_path_name == 'meta.tcl'
-    assert meta_command_builtin.metadata_path_name == 'meta.tcl'
-    assert meta_context_builtin.metadata_path_name == 'meta.tcl'
-    assert meta_module_builtin.metadata_path_name == 'meta.tcl'
+    assert meta_builtin.metadata_path_name == 'meta.meta.tcl'
+    assert meta_command_builtin.metadata_path_name == 'meta.meta.tcl'
+    assert meta_context_builtin.metadata_path_name == 'meta.meta.tcl'
+    assert meta_module_builtin.metadata_path_name == 'meta.meta.tcl'
 
     assert meta_builtin.overloads[0].subcommands == ('module', 'command', 'context')
 
@@ -148,7 +148,7 @@ def test_core_metadata_models_meta_as_ensemble() -> None:
 
 
 def test_tcloo_metadata_parses_embedded_context_annotations() -> None:
-    metadata_path = metadata_dir() / Path('tcl8.6/tcloo.tcl')
+    metadata_path = metadata_dir() / Path('tcl8.6/tcloo.meta.tcl')
     commands = load_metadata_commands(metadata_path)
 
     define_command = next(
@@ -183,7 +183,7 @@ def test_tcloo_metadata_parses_embedded_context_annotations() -> None:
 
 
 def test_tepam_metadata_parses_plugin_annotations() -> None:
-    metadata_path = metadata_dir() / Path('tcllib/tepam.tcl')
+    metadata_path = metadata_dir() / Path('tcllib/tepam.meta.tcl')
     commands = load_metadata_commands(metadata_path)
 
     procedure_command = next(
@@ -196,7 +196,7 @@ def test_tepam_metadata_parses_plugin_annotations() -> None:
         for annotation in procedure_command.annotations
         if isinstance(annotation, MetadataPlugin)
     )
-    assert plugin_annotation.script_path == (metadata_dir() / Path('tcllib/tepam.tm')).resolve(
+    assert plugin_annotation.script_path == (metadata_dir() / Path('tcllib/tepam.tcl')).resolve(
         strict=False
     )
     assert plugin_annotation.proc_name == '::tcl_lsp::plugins::tepam::statementWords'
@@ -214,7 +214,7 @@ def test_builtin_metadata_ignores_context_commands() -> None:
 
 
 def test_metadata_rejects_spaced_top_level_command_names(tmp_path: Path) -> None:
-    metadata_path = tmp_path / 'bad_meta.tcl'
+    metadata_path = tmp_path / 'bad.meta.tcl'
     metadata_path.write_text(
         '# Invalid deprecated syntax.\nmeta command {file atime} {name ?time?}\n',
         encoding='utf-8',
@@ -228,7 +228,7 @@ def test_metadata_rejects_spaced_top_level_command_names(tmp_path: Path) -> None
 
 
 def test_metadata_rejects_spaced_context_command_names(tmp_path: Path) -> None:
-    metadata_path = tmp_path / 'bad_context_meta.tcl'
+    metadata_path = tmp_path / 'bad_context.meta.tcl'
     metadata_path.write_text(
         'meta context sample {\n    command {my variable} {name args}\n}\n',
         encoding='utf-8',

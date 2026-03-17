@@ -45,6 +45,7 @@ from tcl_lsp.analysis.model import (
 )
 from tcl_lsp.cache import metadata_lru_cache
 from tcl_lsp.common import HoverInfo, Location, Span
+from tcl_lsp.metadata_paths import metadata_lookup_names
 from tcl_lsp.workspace import source_id_to_path
 
 
@@ -702,17 +703,18 @@ def _annotated_metadata_commands() -> dict[tuple[str, str], MetadataCommand]:
         ):
             continue
 
-        key = (metadata_command.metadata_path.name, metadata_command.name)
-        existing = commands_by_key.get(key)
-        if existing is not None and (
-            existing.options != metadata_command.options
-            or existing.annotations != metadata_command.annotations
-        ):
-            raise RuntimeError(
-                f'Conflicting metadata binding annotations for `{metadata_command.name}` in '
-                f'`{metadata_command.metadata_path.name}`.'
-            )
-        commands_by_key[key] = metadata_command
+        for path_name in metadata_lookup_names(metadata_command.metadata_path):
+            key = (path_name, metadata_command.name)
+            existing = commands_by_key.get(key)
+            if existing is not None and (
+                existing.options != metadata_command.options
+                or existing.annotations != metadata_command.annotations
+            ):
+                raise RuntimeError(
+                    f'Conflicting metadata binding annotations for `{metadata_command.name}` in '
+                    f'`{metadata_command.metadata_path.name}`.'
+                )
+            commands_by_key[key] = metadata_command
     return commands_by_key
 
 
