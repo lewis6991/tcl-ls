@@ -86,18 +86,6 @@ class LoweredNamespaceEvalCommand(LoweredCommandBase):
 
 
 @dataclass(frozen=True, slots=True)
-class LoweredForeachCommand(LoweredCommandBase):
-    variable_items: tuple[ListItem, ...]
-    body: LoweredScriptBody | None
-
-
-@dataclass(frozen=True, slots=True)
-class LoweredLmapCommand(LoweredCommandBase):
-    variable_items: tuple[ListItem, ...]
-    body: LoweredScriptBody | None
-
-
-@dataclass(frozen=True, slots=True)
 class LoweredForCommand(LoweredCommandBase):
     start_body: LoweredScriptBody | None
     condition: LoweredCondition | None
@@ -374,10 +362,6 @@ class _Lowerer:
             return self._lower_proc(command, command_name, word_references)
         if dispatch_name == 'namespace':
             return self._lower_namespace(command, command_name, word_references)
-        if dispatch_name == 'foreach':
-            return self._lower_foreach(command, command_name, word_references)
-        if dispatch_name == 'lmap':
-            return self._lower_lmap(command, command_name, word_references)
         if dispatch_name == 'for':
             return self._lower_for(command, command_name, word_references)
         if dispatch_name == 'if':
@@ -436,34 +420,6 @@ class _Lowerer:
             namespace_name=word_static_text(namespace_word) if namespace_word is not None else None,
             namespace_span=namespace_word.span if namespace_word is not None else None,
             body=self._lower_script_word(command.words[3] if len(command.words) > 3 else None),
-        )
-
-    def _lower_foreach(
-        self,
-        command: Command,
-        command_name: str | None,
-        word_references: tuple[LoweredWordReferences, ...],
-    ) -> LoweredCommand:
-        return LoweredForeachCommand(
-            command=command,
-            command_name=command_name,
-            word_references=word_references,
-            variable_items=self._lower_loop_variable_items(command),
-            body=self._lower_script_word(command.words[-1] if len(command.words) > 3 else None),
-        )
-
-    def _lower_lmap(
-        self,
-        command: Command,
-        command_name: str | None,
-        word_references: tuple[LoweredWordReferences, ...],
-    ) -> LoweredCommand:
-        return LoweredLmapCommand(
-            command=command,
-            command_name=command_name,
-            word_references=word_references,
-            variable_items=self._lower_loop_variable_items(command),
-            body=self._lower_script_word(command.words[-1] if len(command.words) > 3 else None),
         )
 
     def _lower_for(
@@ -725,12 +681,6 @@ class _Lowerer:
         if static_text is None:
             return ()
         return tuple(split_tcl_list(static_text, word.content_span.start))
-
-    def _lower_loop_variable_items(self, command: Command) -> tuple[ListItem, ...]:
-        items: list[ListItem] = []
-        for index in range(1, len(command.words) - 2, 2):
-            items.extend(self._parse_list_items(command.words[index]))
-        return tuple(items)
 
     def _if_body_index(self, words: tuple[Word, ...], index: int) -> int | None:
         if index < len(words) and word_static_text(words[index]) == 'then':

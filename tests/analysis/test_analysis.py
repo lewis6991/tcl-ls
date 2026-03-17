@@ -1551,6 +1551,7 @@ def test_analysis_tracks_multi_source_foreach_and_lmap_bodies(parser: Parser) ->
         '    }\n'
         '}\n',
     )
+    facts = snapshot.facts
     analysis = snapshot.analysis
 
     helper_calls = [
@@ -1560,6 +1561,17 @@ def test_analysis_tracks_multi_source_foreach_and_lmap_bodies(parser: Parser) ->
     ]
     assert len(helper_calls) == 2
     assert all(resolution.uncertainty.state == 'resolved' for resolution in helper_calls)
+
+    run_proc = next(proc for proc in facts.procedures if proc.qualified_name == '::run')
+    bindings_by_name = {
+        binding.name: binding.kind
+        for binding in facts.variable_bindings
+        if binding.scope_id == run_proc.symbol_id
+    }
+    assert bindings_by_name['value'] == 'lmap'
+    assert bindings_by_name['code'] == 'lmap'
+    assert bindings_by_name['item'] == 'foreach'
+    assert bindings_by_name['weight'] == 'foreach'
 
     variable_resolutions = {
         (

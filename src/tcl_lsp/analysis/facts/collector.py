@@ -21,9 +21,7 @@ from tcl_lsp.analysis.facts.lowering import (
     LoweredCommand,
     LoweredCondition,
     LoweredForCommand,
-    LoweredForeachCommand,
     LoweredIfCommand,
-    LoweredLmapCommand,
     LoweredNamespaceEvalCommand,
     LoweredProcCommand,
     LoweredScript,
@@ -265,12 +263,6 @@ class _FactCollector:
             return
         if isinstance(command, LoweredNamespaceEvalCommand):
             self._collect_lowered_namespace_eval(command, context)
-            return
-        if isinstance(command, LoweredForeachCommand):
-            self._collect_lowered_foreach(command, context)
-            return
-        if isinstance(command, LoweredLmapCommand):
-            self._collect_lowered_lmap(command, context)
             return
         if isinstance(command, LoweredForCommand):
             self._collect_lowered_for(command, context)
@@ -1291,22 +1283,6 @@ class _FactCollector:
             return
         for variable_word in command.words[4:]:
             self._record_simple_binding_word(variable_word, context, kind='scan')
-
-    def _collect_lowered_foreach(
-        self,
-        command: LoweredForeachCommand,
-        context: _ExtractionContext,
-    ) -> None:
-        self._record_list_item_bindings(command.variable_items, context=context, kind='foreach')
-        self._collect_lowered_body(command.body, context)
-
-    def _collect_lowered_lmap(
-        self,
-        command: LoweredLmapCommand,
-        context: _ExtractionContext,
-    ) -> None:
-        self._record_list_item_bindings(command.variable_items, context=context, kind='lmap')
-        self._collect_lowered_body(command.body, context)
 
     def _collect_lowered_for(
         self,

@@ -32,11 +32,16 @@ meta module Tcl
 #   Selectors point at arguments in the declared signature using positive
 #   1-based positions.
 #
-#   1       the first argument
-#   3..     the third argument through the end
-#   list 2  split argument 2 as a Tcl list and select each item
-#   after-options 2
-#           resolve the second positional argument after known options
+#   1               the first argument
+#   3..             the third argument through the end
+#   2..5            arguments 2 through 5 inclusive
+#   last            the final argument
+#   last-1          the argument before the final argument
+#   1..last-1       arguments 1 through the argument before the final argument
+#   list 2          split argument 2 as a Tcl list and select each item
+#   1..last-1 step 2
+#                   select every second argument in the chosen range
+#   after-options 2 resolve the second positional argument after known options
 #
 # Annotation reference:
 #

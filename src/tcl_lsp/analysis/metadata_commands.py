@@ -26,6 +26,18 @@ class MetadataSelector:
     all_remaining: bool
     list_mode: bool
     after_options: bool
+    step: int = 1
+    start_from_end: bool = False
+    end_index: int | None = None
+    end_from_end: bool = False
+
+    @property
+    def has_relative_bounds(self) -> bool:
+        return self.start_from_end or self.end_from_end
+
+    @property
+    def selects_single_argument(self) -> bool:
+        return not self.all_remaining and self.end_index is None and self.step == 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,28 +293,18 @@ def select_argument_indices(
         scan_result = scan_command_options(arg_texts, options, expanded_flags)
         if scan_result.state not in {'ok', 'dynamic', 'unstable'}:
             return None
-        positional_indices = scan_result.positional_indices
-        if selector.start_index >= len(positional_indices):
-            if scan_result.state == 'unstable':
-                return None
-            return ()
-        if selector.all_remaining:
-            if scan_result.state == 'unstable':
-                return None
-            return positional_indices[selector.start_index :]
-        return positional_indices[selector.start_index : selector.start_index + 1]
+        return _select_resolved_argument_indices(
+            selector,
+            scan_result.positional_indices,
+            unstable=scan_result.state == 'unstable',
+        )
 
-    first_expanded_index = _first_expanded_index(expanded_flags)
-    if first_expanded_index is not None and first_expanded_index <= selector.start_index:
-        return None
-
-    if selector.start_index >= len(arg_texts):
-        return ()
-    if selector.all_remaining:
-        if first_expanded_index is not None and first_expanded_index >= selector.start_index:
-            return None
-        return tuple(range(selector.start_index, len(arg_texts)))
-    return (selector.start_index,)
+    return _select_resolved_argument_indices(
+        selector,
+        tuple(range(len(arg_texts))),
+        unstable=False,
+        expanded_flags=expanded_flags,
+    )
 
 
 def scan_command_options(
@@ -818,7 +820,7 @@ def _parse_plugin_annotation(
 
 
 def _validate_package_selector(selector: MetadataSelector, command_name: str) -> None:
-    if selector.list_mode or selector.all_remaining:
+    if selector.list_mode or not selector.selects_single_argument:
         raise RuntimeError(
             f'Package annotations for `{command_name}` must select a single argument.'
         )
@@ -832,7 +834,7 @@ def _validate_context_body_selector(selector: MetadataSelector, command_name: st
 
 
 def _validate_context_owner_selector(selector: MetadataSelector, command_name: str) -> None:
-    if selector.list_mode or selector.after_options or selector.all_remaining:
+    if selector.list_mode or selector.after_options or not selector.selects_single_argument:
         raise RuntimeError(
             f'Context annotations for `{command_name}` must select exactly one owner argument.'
         )
@@ -846,6 +848,7 @@ def _parse_selector_tokens(
     index = 0
     after_options = False
     list_mode = False
+    step = 1
 
     if index < len(words) and words[index] == 'after-options':
         after_options = True
@@ -856,23 +859,175 @@ def _parse_selector_tokens(
     if index >= len(words):
         raise RuntimeError(f'Metadata selector for `{command_name}` is missing an index.')
 
-    token = words[index]
-    all_remaining = token.endswith('..')
-    number_text = token[:-2] if all_remaining else token
-    if not number_text.isdigit() or number_text == '0':
+    start_index, start_from_end, all_remaining, end_index, end_from_end = _parse_selector_range(
+        words[index],
+        command_name=command_name,
+    )
+    index += 1
+
+    if index < len(words) and words[index] == 'step':
+        if index + 1 >= len(words):
+            raise RuntimeError(f'Metadata selector for `{command_name}` must be `selector step N`.')
+        step_text = words[index + 1]
+        if not step_text.isdigit() or step_text == '0':
+            raise RuntimeError(f'Metadata selector for `{command_name}` must use a positive step.')
+        step = int(step_text)
+        index += 2
+
+    if step != 1 and not (all_remaining or end_index is not None):
         raise RuntimeError(
-            f'Metadata selector for `{command_name}` must use a positive 1-based index.'
+            f'Metadata selector for `{command_name}` requires a range before `step`.'
         )
 
     return (
         MetadataSelector(
-            start_index=int(number_text) - 1,
+            start_index=start_index,
             all_remaining=all_remaining,
             list_mode=list_mode,
             after_options=after_options,
+            step=step,
+            start_from_end=start_from_end,
+            end_index=end_index,
+            end_from_end=end_from_end,
         ),
-        index + 1,
+        index,
     )
+
+
+def _select_resolved_argument_indices(
+    selector: MetadataSelector,
+    resolved_indices: tuple[int, ...],
+    *,
+    unstable: bool,
+    expanded_flags: tuple[bool, ...] | None = None,
+) -> tuple[int, ...] | None:
+    if not resolved_indices and unstable:
+        return None
+
+    effective_end = _effective_selector_end(selector, len(resolved_indices))
+    if effective_end is None:
+        if unstable:
+            return None
+    else:
+        if unstable and effective_end >= len(resolved_indices):
+            return None
+        if expanded_flags is not None and _selector_is_unstable(
+            selector,
+            expanded_flags=expanded_flags,
+            resolved_count=len(resolved_indices),
+            effective_end=effective_end,
+        ):
+            return None
+
+    start_index = _resolve_selector_endpoint(
+        selector.start_index,
+        from_end=selector.start_from_end,
+        resolved_count=len(resolved_indices),
+    )
+    if start_index < 0:
+        start_index = 0
+    if start_index >= len(resolved_indices):
+        if unstable:
+            return None
+        return ()
+
+    if effective_end is None:
+        stop_index = len(resolved_indices) - 1
+    else:
+        stop_index = min(effective_end, len(resolved_indices) - 1)
+
+    if stop_index < start_index:
+        return ()
+
+    return tuple(
+        resolved_indices[index] for index in range(start_index, stop_index + 1, selector.step)
+    )
+
+
+def _selector_is_unstable(
+    selector: MetadataSelector,
+    *,
+    expanded_flags: tuple[bool, ...],
+    resolved_count: int,
+    effective_end: int | None,
+) -> bool:
+    first_expanded_index = _first_expanded_index(expanded_flags)
+    if first_expanded_index is None:
+        return False
+    if selector.has_relative_bounds or selector.all_remaining:
+        return True
+    assert effective_end is not None
+    return first_expanded_index <= effective_end
+
+
+def _effective_selector_end(selector: MetadataSelector, resolved_count: int) -> int | None:
+    if selector.all_remaining:
+        return None
+    if selector.end_index is None:
+        return _resolve_selector_endpoint(
+            selector.start_index,
+            from_end=selector.start_from_end,
+            resolved_count=resolved_count,
+        )
+    return _resolve_selector_endpoint(
+        selector.end_index,
+        from_end=selector.end_from_end,
+        resolved_count=resolved_count,
+    )
+
+
+def _resolve_selector_endpoint(
+    index: int,
+    *,
+    from_end: bool,
+    resolved_count: int,
+) -> int:
+    if from_end:
+        return resolved_count - 1 - index
+    return index
+
+
+def _parse_selector_range(
+    token: str,
+    *,
+    command_name: str,
+) -> tuple[int, bool, bool, int | None, bool]:
+    if '..' not in token:
+        start_index, start_from_end = _parse_selector_endpoint(token, command_name=command_name)
+        return start_index, start_from_end, False, None, False
+
+    start_text, end_text = token.split('..', maxsplit=1)
+    start_index, start_from_end = _parse_selector_endpoint(start_text, command_name=command_name)
+    if end_text == '':
+        return start_index, start_from_end, True, None, False
+
+    end_index, end_from_end = _parse_selector_endpoint(end_text, command_name=command_name)
+    return start_index, start_from_end, False, end_index, end_from_end
+
+
+def _parse_selector_endpoint(
+    text: str,
+    *,
+    command_name: str,
+) -> tuple[int, bool]:
+    if text == '':
+        raise RuntimeError(f'Metadata selector for `{command_name}` is missing an index.')
+    if text == 'last':
+        return 0, True
+    if text.startswith('last-'):
+        offset_text = text.removeprefix('last-')
+        if not offset_text.isdigit() or offset_text == '0':
+            raise RuntimeError(
+                f'Metadata selector for `{command_name}` must use `last` or `last-N` '
+                'with a positive integer.'
+            )
+        return int(offset_text), True
+    if not text.isdigit() or text == '0':
+        raise RuntimeError(
+            f'Metadata selector for `{command_name}` must use a positive 1-based index, '
+            '`last`, or `last-N`.'
+        )
+    return int(text) - 1, False
 
 
 def _parse_source_base(text: str) -> SourceBase:

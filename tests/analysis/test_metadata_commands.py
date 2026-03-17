@@ -10,6 +10,7 @@ from tcl_lsp.analysis.metadata_commands import (
     MetadataPlugin,
     MetadataProcedure,
     MetadataSelector,
+    MetadataScriptBody,
     load_metadata_commands,
     select_argument_indices,
 )
@@ -88,6 +89,41 @@ def test_argument_selectors_allow_fixed_positions_before_late_expansion() -> Non
     assert selected == (0,)
 
 
+def test_argument_selectors_support_stepped_last_ranges() -> None:
+    selected = select_argument_indices(
+        MetadataSelector(
+            start_index=0,
+            all_remaining=False,
+            list_mode=False,
+            after_options=False,
+            step=2,
+            end_index=1,
+            end_from_end=True,
+        ),
+        ('a', 'b', 'c', 'd', 'e'),
+        (),
+    )
+
+    assert selected == (0, 2)
+
+
+def test_argument_selectors_reject_relative_tails_after_expansion() -> None:
+    selected = select_argument_indices(
+        MetadataSelector(
+            start_index=0,
+            all_remaining=False,
+            list_mode=False,
+            after_options=False,
+            start_from_end=True,
+        ),
+        ('head', 'body'),
+        (),
+        (True, False),
+    )
+
+    assert selected is None
+
+
 def test_core_metadata_leaves_return_unannotated() -> None:
     metadata_path = metadata_dir() / Path('tcl8.6/tcl.meta.tcl')
     return_command = next(
@@ -106,6 +142,40 @@ def test_core_metadata_derives_subcommands() -> None:
     assert 'args' in info_command.subcommands
     assert 'body' in info_command.subcommands
     assert 'class' in info_command.subcommands
+
+
+def test_core_metadata_parses_foreach_loop_selectors() -> None:
+    metadata_path = metadata_dir() / Path('tcl8.6/tcl.meta.tcl')
+    foreach_command = next(
+        command for command in load_metadata_commands(metadata_path) if command.name == 'foreach'
+    )
+    bind_annotation = next(
+        annotation
+        for annotation in foreach_command.annotations
+        if isinstance(annotation, MetadataBind)
+    )
+    body_annotation = next(
+        annotation
+        for annotation in foreach_command.annotations
+        if isinstance(annotation, MetadataScriptBody)
+    )
+
+    assert bind_annotation.selector.list_mode is True
+    assert bind_annotation.selector.step == 2
+    assert bind_annotation.selector.start_index == 0
+    assert bind_annotation.selector.end_index == 1
+    assert bind_annotation.selector.end_from_end is True
+    assert select_argument_indices(
+        bind_annotation.selector,
+        ('item', 'left', 'weight', 'right', 'body'),
+        (),
+    ) == (0, 2)
+    assert body_annotation.selector.start_from_end is True
+    assert select_argument_indices(
+        body_annotation.selector,
+        ('item', 'left', 'weight', 'right', 'body'),
+        (),
+    ) == (4,)
 
 
 def test_builtin_metadata_exposes_nested_and_derived_subcommands() -> None:

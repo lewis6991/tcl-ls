@@ -724,7 +724,10 @@ meta command for {start test next body}
 # values from one or more lists. In the simplest case there is one loop
 # variable, varname, and one list, list, that is a list of values to assign to
 # varname.
-meta command foreach {varList list args}
+meta command foreach {varList list args} {
+    bind list 1..last-1 step 2
+    script-body last
+}
 
 # Format a string in the style of sprintf.
 meta command format {formatString args}
@@ -1175,7 +1178,10 @@ meta command llength {list}
 # The lmap command implements a loop where the loop variable(s) take on values
 # from one or more lists, and the loop returns a list of results collected
 # from each iteration.
-meta command lmap {varList list args}
+meta command lmap {varList list args} {
+    bind list 1..last-1 step 2
+    script-body last
+}
 
 # Load machine code and initialize new commands.
 # This command loads binary code from a file into the application's address
