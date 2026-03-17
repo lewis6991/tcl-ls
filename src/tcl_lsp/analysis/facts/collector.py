@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 
 from tcl_lsp.analysis.arity import proc_parameter_arity
@@ -21,6 +20,7 @@ from tcl_lsp.analysis.facts.lowering import (
     LoweredCommand,
     LoweredCondition,
     LoweredForCommand,
+    LoweredGenericCommand,
     LoweredIfCommand,
     LoweredNamespaceEvalCommand,
     LoweredProcCommand,
@@ -151,7 +151,6 @@ class _FactCollector:
     __slots__ = (
         '_active_builtin_packages',
         '_command_calls',
-        '_command_handlers',
         '_command_imports',
         '_comment_spans',
         '_diagnostics',
@@ -210,19 +209,6 @@ class _FactCollector:
         self._command_calls: list[CommandCall] = []
         self._variable_references: list[VariableReference] = []
         self._linked_variables_by_scope: dict[str, dict[str, _VariableTarget]] = {}
-        self._command_handlers: dict[str, Callable[[Command, _ExtractionContext], None]] = {
-            'array': self._collect_array,
-            'binary': self._collect_binary,
-            'package': self._collect_package,
-            'namespace': self._collect_namespace,
-            'set': self._collect_set,
-            'global': self._collect_global,
-            'info': self._collect_info,
-            'source': self._collect_source,
-            'upvar': self._collect_upvar,
-            'variable': self._collect_variable,
-            'vwait': self._collect_vwait,
-        }
 
     def collect(self) -> DocumentFacts:
         root_context = self._namespace_context(self._parse_result.source_id, '::')
@@ -256,45 +242,77 @@ class _FactCollector:
     ) -> None:
         syntax_command = command.command
         command_name = self._collect_command_common(command, context)
-        normalized_command_name = (
-            normalize_command_name(command_name) if command_name is not None else None
-        )
-        if isinstance(command, LoweredProcCommand):
-            self._collect_lowered_proc(command, context)
-            return
-        if isinstance(command, LoweredNamespaceEvalCommand):
-            self._collect_lowered_namespace_eval(command, context)
-            return
-        if isinstance(command, LoweredForCommand):
-            self._collect_lowered_for(command, context)
-            return
-        if isinstance(command, LoweredIfCommand):
-            self._collect_lowered_if(command, context)
-            return
-        if isinstance(command, LoweredCatchCommand):
-            self._collect_lowered_catch(command, context)
-            return
-        if isinstance(command, LoweredTryCommand):
-            self._collect_lowered_try(command, context)
-            return
-        if isinstance(command, LoweredSwitchCommand):
-            self._collect_lowered_switch(command, context)
-            return
-        if isinstance(command, LoweredWhileCommand):
-            self._collect_lowered_while(command, context)
+        if type(command) is not LoweredGenericCommand and self._collect_special_lowered_command(
+            command, context
+        ):
             return
         if self._collect_embedded_language_command(syntax_command, context):
             return
         if self._collect_embedded_language_entry(syntax_command, context):
             return
 
-        handler = (
-            self._command_handlers.get(normalized_command_name)
-            if normalized_command_name is not None
-            else None
+        self._collect_builtin_handler_command(
+            syntax_command,
+            normalize_command_name(command_name) if command_name is not None else None,
+            context,
         )
-        if handler is not None:
-            handler(syntax_command, context)
+
+    def _collect_special_lowered_command(
+        self,
+        command: LoweredCommand,
+        context: _ExtractionContext,
+    ) -> bool:
+        if isinstance(command, LoweredProcCommand):
+            self._collect_lowered_proc(command, context)
+        elif isinstance(command, LoweredNamespaceEvalCommand):
+            self._collect_lowered_namespace_eval(command, context)
+        elif isinstance(command, LoweredForCommand):
+            self._collect_lowered_for(command, context)
+        elif isinstance(command, LoweredIfCommand):
+            self._collect_lowered_if(command, context)
+        elif isinstance(command, LoweredCatchCommand):
+            self._collect_lowered_catch(command, context)
+        elif isinstance(command, LoweredTryCommand):
+            self._collect_lowered_try(command, context)
+        elif isinstance(command, LoweredSwitchCommand):
+            self._collect_lowered_switch(command, context)
+        elif isinstance(command, LoweredWhileCommand):
+            self._collect_lowered_while(command, context)
+        else:
+            return False
+        return True
+
+    def _collect_builtin_handler_command(
+        self,
+        command: Command,
+        normalized_command_name: str | None,
+        context: _ExtractionContext,
+    ) -> None:
+        match normalized_command_name:
+            case 'array':
+                self._collect_array(command, context)
+            case 'binary':
+                self._collect_binary(command, context)
+            case 'package':
+                self._collect_package(command, context)
+            case 'namespace':
+                self._collect_namespace(command, context)
+            case 'set':
+                self._collect_set(command, context)
+            case 'global':
+                self._collect_global(command, context)
+            case 'info':
+                self._collect_info(command, context)
+            case 'source':
+                self._collect_source(command, context)
+            case 'upvar':
+                self._collect_upvar(command, context)
+            case 'variable':
+                self._collect_variable(command, context)
+            case 'vwait':
+                self._collect_vwait(command, context)
+            case _:
+                pass
 
     def _collect_command_common(
         self,
