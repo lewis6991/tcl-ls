@@ -189,6 +189,60 @@ namespace eval ::tcl_meta {
         return [dict get $subcommand_map $path]
     }
 
+    proc absolute_command_name {name} {
+        if {[string match ::* $name]} {
+            return $name
+        }
+        return ::$name
+    }
+
+    proc proc_signature {name signature_var} {
+        upvar 1 $signature_var signature
+
+        set command [absolute_command_name $name]
+        if {[catch {info args $command} parameters]} {
+            return 0
+        }
+
+        set signature {}
+        set last_index [expr {[llength $parameters] - 1}]
+        for {set index 0} {$index < [llength $parameters]} {incr index} {
+            set parameter [lindex $parameters $index]
+            if {[catch {info default $command $parameter default_value} has_default]} {
+                return 0
+            }
+
+            # `args` is only representable in metadata when it keeps Tcl's
+            # usual trailing varargs meaning.
+            if {$parameter eq "args"} {
+                if {!$has_default && $index == $last_index} {
+                    lappend signature args
+                    continue
+                }
+                return 0
+            }
+
+            if {$has_default} {
+                lappend signature ? $parameter ?
+                continue
+            }
+
+            lappend signature $parameter
+        }
+
+        return 1
+    }
+
+    proc command_signature {name has_children} {
+        if {[proc_signature $name signature]} {
+            return $signature
+        }
+        if {$has_children} {
+            return {subcommand args}
+        }
+        return {args}
+    }
+
     proc emit_subcommand {ch subcommand_map path indent} {
         set segment [lindex [split $path] end]
         set children [lookup_subcommands $subcommand_map $path]
@@ -206,12 +260,13 @@ namespace eval ::tcl_meta {
 
     proc emit_root_command {ch subcommand_map command} {
         set children [lookup_subcommands $subcommand_map $command]
+        set signature [command_signature $command [expr {[llength $children] != 0}]]
         if {[llength $children] == 0} {
-            puts $ch "meta command [list $command] {args}"
+            puts $ch "meta command [list $command] [list $signature]"
             return
         }
 
-        puts $ch "meta command [list $command] {subcommand args} {"
+        puts $ch "meta command [list $command] [list $signature] {"
         foreach child $children {
             emit_subcommand $ch $subcommand_map "$command $child" "    "
         }
