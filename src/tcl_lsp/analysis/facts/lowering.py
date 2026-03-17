@@ -105,6 +105,19 @@ class LoweredCatchCommand(LoweredCommandBase):
 
 
 @dataclass(frozen=True, slots=True)
+class LoweredTryHandler:
+    binding_word: Word | None
+    body: LoweredScriptBody | None
+
+
+@dataclass(frozen=True, slots=True)
+class LoweredTryCommand(LoweredCommandBase):
+    body: LoweredScriptBody | None
+    handlers: tuple[LoweredTryHandler, ...]
+    finally_body: LoweredScriptBody | None
+
+
+@dataclass(frozen=True, slots=True)
 class LoweredSwitchCommand(LoweredCommandBase):
     regexp_binding_words: tuple[Word, ...]
     branch_bodies: tuple[LoweredScriptBody, ...]
@@ -368,6 +381,8 @@ class _Lowerer:
             return self._lower_if(command, command_name, word_references)
         if dispatch_name == 'catch':
             return self._lower_catch(command, command_name, word_references)
+        if dispatch_name == 'try':
+            return self._lower_try(command, command_name, word_references)
         if dispatch_name == 'switch':
             return self._lower_switch(command, command_name, word_references)
         if dispatch_name == 'while':
@@ -533,6 +548,58 @@ class _Lowerer:
             command_name=command_name,
             word_references=word_references,
             body=self._lower_script_word(command.words[1] if len(command.words) > 1 else None),
+        )
+
+    def _lower_try(
+        self,
+        command: Command,
+        command_name: str | None,
+        word_references: tuple[LoweredWordReferences, ...],
+    ) -> LoweredCommand:
+        handlers: list[LoweredTryHandler] = []
+        finally_body: LoweredScriptBody | None = None
+
+        index = 2
+        while index < len(command.words):
+            clause_word = command.words[index]
+            if clause_word.expanded:
+                break
+
+            clause_name = word_static_text(clause_word)
+            if clause_name == 'finally':
+                body_word = (
+                    command.words[index + 1]
+                    if index + 1 < len(command.words) and not command.words[index + 1].expanded
+                    else None
+                )
+                finally_body = self._lower_script_word(body_word)
+                break
+
+            if clause_name not in {'on', 'trap'}:
+                break
+            if index + 3 >= len(command.words):
+                break
+            if any(command.words[offset].expanded for offset in range(index, index + 4)):
+                break
+
+            handlers.append(
+                LoweredTryHandler(
+                    binding_word=command.words[index + 2],
+                    body=self._lower_script_word(command.words[index + 3]),
+                )
+            )
+            index += 4
+
+        body_word = (
+            command.words[1] if len(command.words) > 1 and not command.words[1].expanded else None
+        )
+        return LoweredTryCommand(
+            command=command,
+            command_name=command_name,
+            word_references=word_references,
+            body=self._lower_script_word(body_word),
+            handlers=tuple(handlers),
+            finally_body=finally_body,
         )
 
     def _lower_switch(

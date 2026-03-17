@@ -27,6 +27,7 @@ from tcl_lsp.analysis.facts.lowering import (
     LoweredScript,
     LoweredScriptBody,
     LoweredSwitchCommand,
+    LoweredTryCommand,
     LoweredWhileCommand,
     LoweredWordReferences,
     lower_parse_result,
@@ -272,6 +273,9 @@ class _FactCollector:
             return
         if isinstance(command, LoweredCatchCommand):
             self._collect_lowered_catch(command, context)
+            return
+        if isinstance(command, LoweredTryCommand):
+            self._collect_lowered_try(command, context)
             return
         if isinstance(command, LoweredSwitchCommand):
             self._collect_lowered_switch(command, context)
@@ -1319,6 +1323,18 @@ class _FactCollector:
         self._collect_lowered_body(command.body, context)
         for variable_word in command.command.words[2:4]:
             self._record_simple_binding_word(variable_word, context, kind='catch')
+
+    def _collect_lowered_try(
+        self,
+        command: LoweredTryCommand,
+        context: _ExtractionContext,
+    ) -> None:
+        self._collect_lowered_body(command.body, context)
+        for handler in command.handlers:
+            if handler.binding_word is not None:
+                self._record_list_binding_word(handler.binding_word, context, kind='catch')
+            self._collect_lowered_body(handler.body, context)
+        self._collect_lowered_body(command.finally_body, context)
 
     def _collect_global(self, command: Command, context: _ExtractionContext) -> None:
         if context.procedure_symbol_id is None:

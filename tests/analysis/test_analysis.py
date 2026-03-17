@@ -228,6 +228,53 @@ def test_analysis_treats_upvar_aliases_as_local_bindings(parser: Parser) -> None
     assert analysis.diagnostics == ()
 
 
+def test_analysis_tracks_try_handlers_and_finally(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///try.tcl',
+        'proc run {} {\n'
+        '    try {\n'
+        '        set status ok\n'
+        '    } trap {POSIX EACCES} {message options} {\n'
+        '        puts $message\n'
+        '        dict get $options -errorcode\n'
+        '    } on ok {value} {\n'
+        '        puts $value\n'
+        '    } finally {\n'
+        '        puts $status\n'
+        '    }\n'
+        '}\n',
+    )
+    facts = snapshot.facts
+    analysis = snapshot.analysis
+
+    run_proc = next(proc for proc in facts.procedures if proc.qualified_name == '::run')
+    run_bindings = [
+        binding for binding in facts.variable_bindings if binding.scope_id == run_proc.symbol_id
+    ]
+    assert {(binding.name, binding.kind) for binding in run_bindings} >= {
+        ('status', 'set'),
+        ('message', 'catch'),
+        ('options', 'catch'),
+        ('value', 'catch'),
+    }
+
+    try_resolutions = [
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'variable'
+        and resolution.reference.name in {'message', 'options', 'status', 'value'}
+    ]
+    assert {resolution.reference.name for resolution in try_resolutions} == {
+        'message',
+        'options',
+        'status',
+        'value',
+    }
+    assert all(resolution.uncertainty.state == 'resolved' for resolution in try_resolutions)
+    assert analysis.diagnostics == ()
+
+
 def test_analysis_resolves_commands_via_namespace_import(parser: Parser) -> None:
     snapshot = _analyze(
         parser,
