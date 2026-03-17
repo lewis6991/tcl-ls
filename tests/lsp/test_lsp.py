@@ -168,6 +168,51 @@ def _hover_markdown_value(
     return cast(str, hover_contents['value'])
 
 
+def _write_sample_plugin_bundle(metadata_root: Path) -> Path:
+    metadata_root.mkdir(parents=True, exist_ok=True)
+    plugin_path = metadata_root / 'sample.tm'
+    plugin_path.write_text(
+        'namespace eval ::tcl_lsp::plugins::sample {}\n'
+        'proc ::tcl_lsp::plugins::sample::procedure {words info} {\n'
+        '    if {[llength $words] < 4} {\n'
+        '        return {}\n'
+        '    }\n'
+        '    return [list [list procedure [dict create \\\n'
+        '        name-index 1 \\\n'
+        '        params-word-index 2 \\\n'
+        '        params [::tcl_lsp::plugins::sample::parameterNames [lindex $words 2]] \\\n'
+        '        body-index 3 \\\n'
+        '    ]]]\n'
+        '}\n'
+        'proc ::tcl_lsp::plugins::sample::parameterNames {parameter_list} {\n'
+        '    set names {}\n'
+        '    if {[catch {\n'
+        '        foreach arg_def $parameter_list {\n'
+        '            set name [lindex $arg_def 0]\n'
+        '            if {$name eq ""} {\n'
+        '                continue\n'
+        '            }\n'
+        '            lappend names $name\n'
+        '        }\n'
+        '    }]} {\n'
+        '        return {}\n'
+        '    }\n'
+        '    return $names\n'
+        '}\n',
+        encoding='utf-8',
+    )
+    (metadata_root / 'sample.tcl').write_text(
+        '# Project metadata loaded from project-local plugin configuration.\n'
+        'meta module Tcl\n'
+        '# Define a procedure using a project-local wrapper command.\n'
+        'meta command dsl::define {name params body} {\n'
+        '    plugin sample.tm ::tcl_lsp::plugins::sample::procedure\n'
+        '}\n',
+        encoding='utf-8',
+    )
+    return plugin_path
+
+
 def test_language_service_cross_document_navigation(service: LanguageService) -> None:
     service.open_document('file:///defs.tcl', 'proc greet {name} {puts $name}\n', 1)
     service.open_document('file:///use.tcl', 'greet World\n', 1)
@@ -200,6 +245,77 @@ def test_language_service_hover_includes_proc_comment_blocks(service: LanguageSe
     hover = service.hover('file:///use.tcl', 0, 1)
     assert hover is not None
     assert hover.contents == 'proc ::greet(name)\n\nGreets a user by name.\nReturns nothing.'
+
+
+def test_language_service_loads_plugin_metadata_from_tcllsrc(tmp_path: Path) -> None:
+    project_root = tmp_path / 'workspace'
+    _write_sample_plugin_bundle(project_root / '.tcl-ls')
+    (project_root / 'tcllsrc.tcl').write_text(
+        'plugin-path .tcl-ls/sample.tm\n',
+        encoding='utf-8',
+    )
+    source_path = project_root / 'main.tcl'
+    source_text = 'dsl::define greet {{name}} {puts $name}\ngreet World\n'
+    source_path.write_text(source_text, encoding='utf-8')
+
+    service = LanguageService()
+    diagnostics = service.open_document(source_path.as_uri(), source_text, 1)
+
+    assert diagnostics == ()
+
+
+def test_language_service_loads_generated_project_metadata_without_docs(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / 'workspace'
+    _write_sample_plugin_bundle(project_root / '.tcl-ls')
+    (project_root / '.tcl-ls' / 'generated.tcl').write_text(
+        'meta module Tcl\nmeta command external {args}\n',
+        encoding='utf-8',
+    )
+    (project_root / 'tcllsrc.tcl').write_text(
+        'plugin-path .tcl-ls/sample.tm\n',
+        encoding='utf-8',
+    )
+    source_path = project_root / 'main.tcl'
+    source_text = 'external run\n'
+    source_path.write_text(source_text, encoding='utf-8')
+
+    service = LanguageService()
+    diagnostics = service.open_document(source_path.as_uri(), source_text, 1)
+
+    assert diagnostics == ()
+    hover = service.hover(source_path.as_uri(), 0, 1)
+    assert hover is not None
+    assert hover.contents == 'builtin command external {args}'
+
+
+def test_language_service_clears_project_metadata_when_plugin_paths_change(
+    tmp_path: Path,
+) -> None:
+    project_with_plugin = tmp_path / 'with-plugin'
+    project_without_plugin = tmp_path / 'without-plugin'
+    _write_sample_plugin_bundle(project_with_plugin / '.tcl-ls')
+    (project_with_plugin / 'tcllsrc.tcl').write_text(
+        'plugin-path .tcl-ls/sample.tm\n',
+        encoding='utf-8',
+    )
+    project_without_plugin.mkdir()
+
+    source_text = 'dsl::define greet {{name}} {puts $name}\ngreet World\n'
+    source_with_plugin = project_with_plugin / 'main.tcl'
+    source_with_plugin.write_text(source_text, encoding='utf-8')
+    source_without_plugin = project_without_plugin / 'main.tcl'
+    source_without_plugin.write_text(source_text, encoding='utf-8')
+
+    service = LanguageService()
+    assert service.open_document(source_with_plugin.as_uri(), source_text, 1) == ()
+
+    service.close_document(source_with_plugin.as_uri())
+    diagnostics = service.open_document(source_without_plugin.as_uri(), source_text, 1)
+
+    assert len(diagnostics) == 2
+    assert all(diagnostic.code == 'unresolved-command' for diagnostic in diagnostics)
 
 
 def test_language_service_definition_resolves_builtin_command_metadata(
@@ -319,9 +435,7 @@ def test_language_server_hover_uses_markdown_code_fences_for_signatures(
 
 def test_language_server_initialize_advertises_semantic_tokens(server: LanguageServer) -> None:
     response = _as_dict(
-        server.process_message({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {}})[
-            0
-        ]
+        server.process_message({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {}})[0]
     )
 
     capabilities = _as_dict(_as_dict(response['result'])['capabilities'])
@@ -479,11 +593,7 @@ def test_language_server_returns_semantic_tokens_for_blocks_and_quoted_strings(
 ) -> None:
     _open_server_document(
         server,
-        'proc greet {name} {\n'
-        '    if {1} {\n'
-        '        puts "hello [string trim $name]"\n'
-        '    }\n'
-        '}\n',
+        'proc greet {name} {\n    if {1} {\n        puts "hello [string trim $name]"\n    }\n}\n',
     )
 
     token_types, token_modifiers = _semantic_tokens_legend(server)
@@ -556,8 +666,7 @@ def test_language_server_returns_semantic_tokens_for_braced_variable_substitutio
 ) -> None:
     _open_server_document(
         server,
-        'set value ${name}\n'
-        'puts ${value}\n',
+        'set value ${name}\nputs ${value}\n',
     )
 
     token_types, token_modifiers = _semantic_tokens_legend(server)
@@ -845,9 +954,8 @@ def test_language_server_hover_formats_meta_builtin_command(server: LanguageServ
     _open_server_document(server, 'meta command after {ms}\n')
 
     hover_value = _hover_markdown_value(server, line=0, character=1)
-    assert hover_value.startswith(
-        '```tcl\nmeta {subcommand args}\n```\n\nMetadata command format for tcl-ls.'
-    )
+    assert hover_value.startswith('```tcl\nmeta {subcommand args}\n```\n\n')
+    assert 'Top-level declarations:' in hover_value
     assert 'structured documentation instead of executable behavior' in hover_value.replace(
         '\n', ' '
     )

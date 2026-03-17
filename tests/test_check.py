@@ -9,6 +9,95 @@ import pytest
 from tcl_lsp.check import check_project, format_report, main
 
 
+def _write_sample_plugin_bundle(metadata_root: Path) -> Path:
+    metadata_root.mkdir(parents=True, exist_ok=True)
+    plugin_path = metadata_root / 'sample.tm'
+    plugin_path.write_text(
+        'namespace eval ::tcl_lsp::plugins::sample {}\n'
+        'proc ::tcl_lsp::plugins::sample::procedure {words info} {\n'
+        '    if {[llength $words] < 4} {\n'
+        '        return {}\n'
+        '    }\n'
+        '    return [list [list procedure [dict create \\\n'
+        '        name-index 1 \\\n'
+        '        params-word-index 2 \\\n'
+        '        params [::tcl_lsp::plugins::sample::parameterNames [lindex $words 2]] \\\n'
+        '        body-index 3 \\\n'
+        '    ]]]\n'
+        '}\n'
+        'proc ::tcl_lsp::plugins::sample::parameterNames {parameter_list} {\n'
+        '    set names {}\n'
+        '    if {[catch {\n'
+        '        foreach arg_def $parameter_list {\n'
+        '            set name [lindex $arg_def 0]\n'
+        '            if {$name eq ""} {\n'
+        '                continue\n'
+        '            }\n'
+        '            lappend names $name\n'
+        '        }\n'
+        '    }]} {\n'
+        '        return {}\n'
+        '    }\n'
+        '    return $names\n'
+        '}\n',
+        encoding='utf-8',
+    )
+    (metadata_root / 'sample.tcl').write_text(
+        '# Project metadata loaded from project-local plugin configuration.\n'
+        'meta module Tcl\n'
+        '# Define a procedure using a project-local wrapper command.\n'
+        'meta command dsl::define {name params body} {\n'
+        '    plugin sample.tm ::tcl_lsp::plugins::sample::procedure\n'
+        '}\n',
+        encoding='utf-8',
+    )
+    return plugin_path
+
+
+def _write_declaration_plugin_bundle(metadata_root: Path) -> Path:
+    metadata_root.mkdir(parents=True, exist_ok=True)
+    plugin_path = metadata_root / 'declaration.tm'
+    plugin_path.write_text(
+        'namespace eval ::tcl_lsp::plugins::sample {}\n'
+        'proc ::tcl_lsp::plugins::sample::declaration {words info} {\n'
+        '    if {[llength $words] < 3} {\n'
+        '        return {}\n'
+        '    }\n'
+        '    return [list [list procedure [dict create \\\n'
+        '        name-index 1 \\\n'
+        '        params-word-index 2 \\\n'
+        '        params [::tcl_lsp::plugins::sample::parameterNames [lindex $words 2]] \\\n'
+        '    ]]]\n'
+        '}\n'
+        'proc ::tcl_lsp::plugins::sample::parameterNames {parameter_list} {\n'
+        '    set names {}\n'
+        '    if {[catch {\n'
+        '        foreach arg_def $parameter_list {\n'
+        '            set name [lindex $arg_def 0]\n'
+        '            if {$name eq ""} {\n'
+        '                continue\n'
+        '            }\n'
+        '            lappend names $name\n'
+        '        }\n'
+        '    }]} {\n'
+        '        return {}\n'
+        '    }\n'
+        '    return $names\n'
+        '}\n',
+        encoding='utf-8',
+    )
+    (metadata_root / 'declaration.tcl').write_text(
+        '# Project metadata loaded from project-local plugin configuration.\n'
+        'meta module Tcl\n'
+        '# Declare a procedure using a project-local wrapper command.\n'
+        'meta command dsl::declare {name params} {\n'
+        '    plugin declaration.tm ::tcl_lsp::plugins::sample::declaration\n'
+        '}\n',
+        encoding='utf-8',
+    )
+    return plugin_path
+
+
 def test_check_project_resolves_cross_file_procedures(tmp_path: Path) -> None:
     project_root = tmp_path / 'workspace'
     project_root.mkdir()
@@ -48,9 +137,10 @@ def test_check_project_uses_pkgindex_metadata(tmp_path: Path) -> None:
         encoding='utf-8',
     )
 
-    report = check_project(modules_root)
+    report = check_project(app_dir / 'main.tcl')
 
-    assert report.source_count == 3
+    assert report.source_count == 1
+    assert report.background_source_count == 1
     assert report.diagnostics == ()
 
 
@@ -186,6 +276,154 @@ def test_check_project_loads_transitive_static_source_commands(tmp_path: Path) -
 
     assert report.source_count == 1
     assert report.background_source_count == 2
+    assert report.diagnostics == ()
+
+
+def test_check_project_loads_external_plugin_metadata_from_plugin_path(tmp_path: Path) -> None:
+    metadata_root = tmp_path / 'metadata'
+    plugin_path = _write_sample_plugin_bundle(metadata_root)
+
+    project_root = tmp_path / 'workspace'
+    project_root.mkdir()
+    (project_root / 'main.tcl').write_text(
+        'dsl::define greet {{name}} {puts $name}\ngreet World\n',
+        encoding='utf-8',
+    )
+
+    baseline_report = check_project(project_root)
+    plugin_report = check_project(project_root, threads=2, plugin_paths=(plugin_path,))
+    restored_report = check_project(project_root)
+
+    assert [item.diagnostic.code for item in baseline_report.diagnostics] == [
+        'unresolved-command',
+        'unresolved-command',
+    ]
+    assert plugin_report.diagnostics == ()
+    assert [item.diagnostic.code for item in restored_report.diagnostics] == [
+        'unresolved-command',
+        'unresolved-command',
+    ]
+
+
+def test_check_project_loads_external_declaration_plugin_metadata(tmp_path: Path) -> None:
+    metadata_root = tmp_path / 'metadata'
+    plugin_path = _write_declaration_plugin_bundle(metadata_root)
+
+    project_root = tmp_path / 'workspace'
+    project_root.mkdir()
+    (project_root / 'main.tcl').write_text(
+        'dsl::declare greet {{name}}\ngreet World\n',
+        encoding='utf-8',
+    )
+
+    baseline_report = check_project(project_root)
+    plugin_report = check_project(project_root, threads=2, plugin_paths=(plugin_path,))
+
+    assert [item.diagnostic.code for item in baseline_report.diagnostics] == [
+        'unresolved-command',
+        'unresolved-command',
+    ]
+    assert plugin_report.diagnostics == ()
+
+
+def test_check_project_loads_plugin_metadata_from_tcllsrc(tmp_path: Path) -> None:
+    project_root = tmp_path / 'workspace'
+    package_root = project_root / 'pkg'
+    plugin_path = _write_sample_plugin_bundle(project_root / '.tcl-ls')
+    package_root.mkdir(parents=True)
+
+    (project_root / 'tcllsrc.tcl').write_text(
+        'plugin-path .tcl-ls/sample.tm\n',
+        encoding='utf-8',
+    )
+    (package_root / 'main.tcl').write_text(
+        'dsl::define greet {{name}} {puts $name}\ngreet World\n',
+        encoding='utf-8',
+    )
+
+    report = check_project(package_root)
+
+    assert plugin_path.is_file()
+    assert report.diagnostics == ()
+
+
+def test_check_project_loads_generated_project_metadata_without_docs(tmp_path: Path) -> None:
+    project_root = tmp_path / 'workspace'
+    package_root = project_root / 'pkg'
+    _write_sample_plugin_bundle(project_root / '.tcl-ls')
+    (project_root / '.tcl-ls' / 'generated.tcl').write_text(
+        'meta module Tcl\nmeta command external {args}\n',
+        encoding='utf-8',
+    )
+    package_root.mkdir(parents=True)
+
+    (project_root / 'tcllsrc.tcl').write_text(
+        'plugin-path .tcl-ls/sample.tm\n',
+        encoding='utf-8',
+    )
+    (package_root / 'main.tcl').write_text(
+        'external run\n',
+        encoding='utf-8',
+    )
+
+    report = check_project(package_root)
+
+    assert report.diagnostics == ()
+
+
+def test_check_project_restores_project_metadata_between_calls(tmp_path: Path) -> None:
+    project_with_plugin = tmp_path / 'with-plugin'
+    project_without_plugin = tmp_path / 'without-plugin'
+    _write_sample_plugin_bundle(project_with_plugin / '.tcl-ls')
+    (project_with_plugin / 'tcllsrc.tcl').write_text(
+        'plugin-path .tcl-ls/sample.tm\n',
+        encoding='utf-8',
+    )
+    project_without_plugin.mkdir()
+
+    source_text = 'dsl::define greet {{name}} {puts $name}\ngreet World\n'
+    source_with_plugin = project_with_plugin / 'main.tcl'
+    source_with_plugin.write_text(source_text, encoding='utf-8')
+    source_without_plugin = project_without_plugin / 'main.tcl'
+    source_without_plugin.write_text(source_text, encoding='utf-8')
+
+    assert check_project(source_with_plugin).diagnostics == ()
+
+    report = check_project(source_without_plugin)
+
+    assert len(report.diagnostics) == 2
+    assert all(item.diagnostic.code == 'unresolved-command' for item in report.diagnostics)
+
+
+def test_check_project_repo_root_uses_pkgindex_workspaces_and_shared_tcllsrc(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / 'workspace'
+    package_root = project_root / 'pkg'
+    plugin_path = _write_sample_plugin_bundle(project_root / '.tcl-ls')
+    package_root.mkdir(parents=True)
+
+    (project_root / 'tcllsrc.tcl').write_text(
+        'plugin-path .tcl-ls/sample.tm\n',
+        encoding='utf-8',
+    )
+    (project_root / 'scratch.tcl').write_text(
+        'missing_command\n',
+        encoding='utf-8',
+    )
+    (package_root / 'pkgIndex.tcl').write_text(
+        'package ifneeded demo 1.0 [list source [file join $dir main.tcl]]\n',
+        encoding='utf-8',
+    )
+    (package_root / 'main.tcl').write_text(
+        'package provide demo 1.0\ndsl::define greet {{name}} {puts $name}\ngreet World\n',
+        encoding='utf-8',
+    )
+
+    report = check_project(project_root)
+
+    assert plugin_path.is_file()
+    assert report.source_count == 2
     assert report.diagnostics == ()
 
 

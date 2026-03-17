@@ -9,7 +9,9 @@ from tcl_lsp.analysis.builtins import builtin_definition_targets
 from tcl_lsp.analysis.model import DefinitionTarget, DocumentFacts
 from tcl_lsp.common import Diagnostic, DocumentSymbol, HoverInfo, Location
 from tcl_lsp.lsp.semantic_tokens import encode_document_semantic_tokens
+from tcl_lsp.metadata_paths import configure_metadata_paths
 from tcl_lsp.parser import Parser, ParseResult
+from tcl_lsp.project_config import configured_plugin_paths
 from tcl_lsp.workspace import candidate_package_roots, read_source_file, source_id_to_path
 
 
@@ -28,7 +30,9 @@ class LanguageService:
         '_documents',
         '_extractor',
         '_failed_background_documents',
+        '_open_document_uris',
         '_parser',
+        '_plugin_paths_by_uri',
         '_resolver',
         '_scanned_package_roots',
         '_workspace_index',
@@ -41,6 +45,7 @@ class LanguageService:
         workspace_index: WorkspaceIndex | None = None,
         resolver: Resolver | None = None,
     ) -> None:
+        configure_metadata_paths(())
         self._parser = Parser() if parser is None else parser
         self._extractor = FactExtractor(self._parser) if extractor is None else extractor
         self._workspace_index = WorkspaceIndex() if workspace_index is None else workspace_index
@@ -48,6 +53,8 @@ class LanguageService:
         self._documents: dict[str, ManagedDocument] = {}
         self._scanned_package_roots: set[Path] = set()
         self._failed_background_documents: set[str] = set()
+        self._open_document_uris: set[str] = set()
+        self._plugin_paths_by_uri: dict[str, tuple[Path, ...]] = {}
 
     def open_document(self, uri: str, text: str, version: int) -> tuple[Diagnostic, ...]:
         self.load_documents(((uri, text, version),))
@@ -60,8 +67,17 @@ class LanguageService:
     def close_document(self, uri: str) -> tuple[Diagnostic, ...]:
         if uri not in self._documents:
             return ()
+
+        previous_plugin_paths = self._active_plugin_paths()
+        self._open_document_uris.discard(uri)
+        self._plugin_paths_by_uri.pop(uri, None)
         del self._documents[uri]
         self._workspace_index.remove(uri)
+
+        if self._active_plugin_paths() != previous_plugin_paths:
+            self._rebuild_documents()
+            return ()
+
         self._ensure_background_documents_loaded()
         self._recompute_workspace_analyses()
         return ()
@@ -142,13 +158,22 @@ class LanguageService:
         return self._documents.get(uri)
 
     def load_documents(self, documents: Iterable[tuple[str, str, int]]) -> None:
-        loaded_any = False
-        for uri, text, version in documents:
+        pending_documents = tuple(documents)
+        if not pending_documents:
+            return
+
+        previous_plugin_paths = self._active_plugin_paths()
+        for uri, _, _ in pending_documents:
+            self._open_document_uris.add(uri)
+            self._plugin_paths_by_uri[uri] = self._configured_plugin_paths(uri)
+
+        if self._active_plugin_paths() != previous_plugin_paths:
+            self._rebuild_documents(pending_documents)
+            return
+
+        for uri, text, version in pending_documents:
             self._index_document(uri=uri, text=text, version=version)
             self._discover_package_roots(uri)
-            loaded_any = True
-        if not loaded_any:
-            return
         self._ensure_background_documents_loaded()
         self._recompute_workspace_analyses()
 
@@ -246,6 +271,39 @@ class LanguageService:
                 facts=document.facts,
                 analysis=analysis,
             )
+
+    def _configured_plugin_paths(self, uri: str) -> tuple[Path, ...]:
+        path = source_id_to_path(uri)
+        if path is None:
+            return ()
+        return configured_plugin_paths(path)
+
+    def _active_plugin_paths(self) -> tuple[Path, ...]:
+        active_paths: dict[Path, None] = {}
+        for uri in self._open_document_uris:
+            for plugin_path in self._plugin_paths_by_uri.get(uri, ()):
+                active_paths.setdefault(plugin_path, None)
+        return tuple(active_paths)
+
+    def _rebuild_documents(self, pending_documents: Iterable[tuple[str, str, int]] = ()) -> None:
+        snapshots = {
+            uri: (document.text, document.version) for uri, document in self._documents.items()
+        }
+        for uri, text, version in pending_documents:
+            snapshots[uri] = (text, version)
+
+        configure_metadata_paths(self._active_plugin_paths())
+        self._documents = {}
+        self._workspace_index = WorkspaceIndex()
+        self._scanned_package_roots = set()
+        self._failed_background_documents = set()
+
+        for uri, (text, version) in snapshots.items():
+            self._index_document(uri=uri, text=text, version=version)
+            self._discover_package_roots(uri)
+
+        self._ensure_background_documents_loaded()
+        self._recompute_workspace_analyses()
 
     def _symbol_ids_at_position(self, uri: str, line: int, character: int) -> tuple[str, ...]:
         document = self._documents.get(uri)

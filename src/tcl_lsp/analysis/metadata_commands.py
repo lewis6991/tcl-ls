@@ -1,17 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 from typing import Literal, cast
 
 from tcl_lsp.analysis.model import BINDING_KINDS, BindingKind
+from tcl_lsp.cache import metadata_lru_cache
 from tcl_lsp.common import Span
-from tcl_lsp.metadata_paths import metadata_dir
+from tcl_lsp.metadata_paths import metadata_files
 from tcl_lsp.parser import Parser, word_static_text
 from tcl_lsp.parser.model import BracedWord, Command, Token, Word
 
-_META_DIR = metadata_dir()
 _MISSING = object()
 
 type SourceBase = Literal['call-source-directory', 'proc-source-parent']
@@ -118,7 +117,7 @@ class MetadataCommand:
     annotations: tuple[MetadataAnnotation, ...]
 
 
-@lru_cache(maxsize=None)
+@metadata_lru_cache(maxsize=None)
 def load_metadata_commands(metadata_path: Path) -> tuple[MetadataCommand, ...]:
     metadata_uri = metadata_path.as_uri()
     text = metadata_path.read_text(encoding='utf-8')
@@ -155,10 +154,10 @@ def load_metadata_commands(metadata_path: Path) -> tuple[MetadataCommand, ...]:
     return _commands_with_derived_subcommands(tuple(commands))
 
 
-@lru_cache(maxsize=1)
+@metadata_lru_cache(maxsize=1)
 def all_metadata_commands() -> tuple[MetadataCommand, ...]:
     commands: list[MetadataCommand] = []
-    for metadata_path in sorted(_META_DIR.rglob('*.tcl')):
+    for metadata_path in metadata_files():
         commands.extend(load_metadata_commands(metadata_path))
     return tuple(commands)
 

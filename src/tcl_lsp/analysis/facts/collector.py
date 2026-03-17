@@ -549,9 +549,7 @@ class _FactCollector:
         context: _ExtractionContext,
         effect: PluginProcedureEffect,
     ) -> None:
-        if effect.name_word_index >= len(command.words) or effect.body_word_index >= len(
-            command.words
-        ):
+        if effect.name_word_index >= len(command.words):
             return
 
         name_word = command.words[effect.name_word_index]
@@ -559,9 +557,13 @@ class _FactCollector:
         if procedure_name is None:
             return
 
-        body_word = command.words[effect.body_word_index]
-        if self._embedded_script_text(body_word) is None:
-            return
+        body_word: Word | None = None
+        if effect.body_word_index is not None:
+            if effect.body_word_index >= len(command.words):
+                return
+            body_word = command.words[effect.body_word_index]
+            if self._embedded_script_text(body_word) is None:
+                return
 
         qualified_name = qualify_name(procedure_name, context.namespace)
         proc_id = proc_symbol_id(context.uri, qualified_name, name_word.content_span.start.offset)
@@ -586,9 +588,12 @@ class _FactCollector:
             ),
             arity=None,
             documentation=command_documentation(command),
-            body_span=body_span(body_word),
+            body_span=body_span(body_word) if body_word is not None else None,
         )
         self._procedures.append(proc_decl)
+
+        if body_word is None:
+            return
 
         body_context = _ExtractionContext(
             uri=proc_decl.uri,

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 
 from tcl_lsp.analysis.arity import metadata_signature_arity
@@ -11,11 +10,11 @@ from tcl_lsp.analysis.metadata_commands import (
     load_metadata_commands,
 )
 from tcl_lsp.analysis.model import CommandArity, DefinitionTarget
+from tcl_lsp.cache import metadata_lru_cache
 from tcl_lsp.common import Location
-from tcl_lsp.metadata_paths import metadata_dir
+from tcl_lsp.metadata_paths import metadata_files
 from tcl_lsp.parser import Parser, word_static_text
 
-_META_DIR = metadata_dir()
 _CORE_PACKAGE = 'Tcl'
 _PACKAGE_ALIASES = {'tcl::oo': 'TclOO'}
 
@@ -27,7 +26,7 @@ class BuiltinOverload:
     arity: CommandArity | None
     options: tuple[MetadataOption, ...]
     subcommands: tuple[str, ...]
-    documentation: str
+    documentation: str | None
     location: Location
 
 
@@ -39,17 +38,17 @@ class BuiltinCommand:
     overloads: tuple[BuiltinOverload, ...]
 
 
-@lru_cache(maxsize=1)
+@metadata_lru_cache(maxsize=1)
 def builtin_commands() -> dict[str, BuiltinCommand]:
     return builtin_commands_by_package()[_CORE_PACKAGE]
 
 
-@lru_cache(maxsize=1)
+@metadata_lru_cache(maxsize=1)
 def core_annotated_metadata_commands() -> dict[str, MetadataCommand]:
     return annotated_metadata_commands_by_package()[_CORE_PACKAGE]
 
 
-@lru_cache(maxsize=1)
+@metadata_lru_cache(maxsize=1)
 def annotated_metadata_commands_by_package() -> dict[str, dict[str, MetadataCommand]]:
     commands_by_package: dict[str, dict[str, MetadataCommand]] = {}
     for package_name, metadata_paths in _builtin_metadata_paths_by_package().items():
@@ -60,7 +59,7 @@ def annotated_metadata_commands_by_package() -> dict[str, dict[str, MetadataComm
     return commands_by_package
 
 
-@lru_cache(maxsize=None)
+@metadata_lru_cache(maxsize=None)
 def annotated_metadata_commands_for_packages(
     required_packages: frozenset[str],
 ) -> dict[str, tuple[MetadataCommand, ...]]:
@@ -79,7 +78,7 @@ def annotated_metadata_commands_for_packages(
     return {name: tuple(matches) for name, matches in matches_by_name.items()}
 
 
-@lru_cache(maxsize=1)
+@metadata_lru_cache(maxsize=1)
 def builtin_commands_by_package() -> dict[str, dict[str, BuiltinCommand]]:
     commands_by_package: dict[str, dict[str, BuiltinCommand]] = {}
     for package_name, metadata_paths in _builtin_metadata_paths_by_package().items():
@@ -146,7 +145,7 @@ def canonical_builtin_package_name(package_name: str) -> str:
     return _canonical_package_name(package_name)
 
 
-@lru_cache(maxsize=1)
+@metadata_lru_cache(maxsize=1)
 def builtin_definition_targets() -> tuple[DefinitionTarget, ...]:
     definitions: list[DefinitionTarget] = []
     for package_commands in builtin_commands_by_package().values():
@@ -173,12 +172,6 @@ def _load_metadata_file(
     for metadata_command in load_metadata_commands(metadata_path):
         if metadata_command.context_name is not None:
             continue
-        documentation = metadata_command.documentation
-        if not documentation:
-            raise RuntimeError(
-                f'Builtin command `{metadata_command.name}` is missing documentation.'
-            )
-
         commands.setdefault(metadata_command.name, []).append(
             BuiltinOverload(
                 symbol_id=_builtin_symbol_id(
@@ -190,7 +183,7 @@ def _load_metadata_file(
                 arity=metadata_signature_arity(metadata_command.signature),
                 options=metadata_command.options,
                 subcommands=metadata_command.subcommands,
-                documentation=documentation,
+                documentation=metadata_command.documentation,
                 location=Location(uri=metadata_command.uri, span=metadata_command.name_span),
             )
         )
@@ -271,10 +264,10 @@ def _load_annotated_metadata_package(
     return annotated
 
 
-@lru_cache(maxsize=1)
+@metadata_lru_cache(maxsize=1)
 def _builtin_metadata_paths_by_package() -> dict[str, tuple[Path, ...]]:
     paths_by_package: dict[str, list[Path]] = {}
-    for metadata_path in sorted(_META_DIR.rglob('*.tcl')):
+    for metadata_path in metadata_files():
         package_name = _declared_builtin_module_name(metadata_path)
         if package_name is None:
             continue
@@ -289,7 +282,7 @@ def _builtin_metadata_paths_by_package() -> dict[str, tuple[Path, ...]]:
     }
 
 
-@lru_cache(maxsize=None)
+@metadata_lru_cache(maxsize=None)
 def _declared_builtin_module_name(metadata_path: Path) -> str | None:
     parse_result = Parser().parse_document(
         path=metadata_path.as_uri(),

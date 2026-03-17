@@ -66,11 +66,7 @@ def test_fact_extractor_skips_lexical_spans_when_parse_result_is_omitted(parser:
     extractor = FactExtractor(parser)
     parse_result = parser.parse_document(
         'file:///semantic.tcl',
-        '# doc\n'
-        'proc greet {name} {\n'
-        '    # body\n'
-        '    puts "hello [list ${name}]"\n'
-        '}\n',
+        '# doc\nproc greet {name} {\n    # body\n    puts "hello [list ${name}]"\n}\n',
     )
 
     facts_with_spans = extractor.extract(parse_result)

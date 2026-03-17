@@ -32,10 +32,16 @@ The optional body is declarative analysis metadata. Current annotations are:
 
 ## Diagnostics
 
+Install the package first so the CLI entry points are available:
+
+```sh
+python3 -m pip install .
+```
+
 Analyze a Tcl file or project tree with:
 
 ```sh
-uv run tcl-check path/to/project
+tcl-check path/to/project
 ```
 
 In an interactive terminal, the checker prepares package-scoped workspaces
@@ -55,3 +61,19 @@ Pass extra checker flags through `make` with:
 ```sh
 make check-tcllib TCL_CHECK_ARGS="--context-lines=1 --fail-on-diagnostics"
 ```
+
+To build metadata inside a tool-specific Tcl shell, source the bundled helper
+reported by:
+
+```sh
+tcl-meta helper-path
+```
+
+Then, inside that tool Tcl shell, write metadata directly with:
+
+```tcl
+tcl-meta build-file output.tcl
+```
+
+For local development in this repository, use `uv run ...` when you want to
+run the CLI without installing it first.

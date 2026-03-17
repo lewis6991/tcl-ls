@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import lru_cache
 
 from tcl_lsp.analysis.facts.utils import namespace_for_name, normalize_command_name, qualify_name
 from tcl_lsp.analysis.metadata_commands import (
@@ -12,6 +11,7 @@ from tcl_lsp.analysis.metadata_commands import (
     all_metadata_commands,
     select_argument_indices,
 )
+from tcl_lsp.cache import metadata_lru_cache
 from tcl_lsp.parser import word_static_text
 from tcl_lsp.parser.model import Command, Word
 
@@ -42,7 +42,7 @@ class _EmbeddedLanguage:
     binding_roots: frozenset[str]
 
 
-@lru_cache(maxsize=1)
+@metadata_lru_cache(maxsize=1)
 def _embedded_languages() -> dict[EmbeddedLanguageName, _EmbeddedLanguage]:
     commands_by_language: dict[str, dict[str, list[MetadataCommand]]] = {}
     root_commands_by_language: dict[str, set[str]] = {}
@@ -81,7 +81,7 @@ def _embedded_languages() -> dict[EmbeddedLanguageName, _EmbeddedLanguage]:
     }
 
 
-@lru_cache(maxsize=1)
+@metadata_lru_cache(maxsize=1)
 def _context_entry_commands() -> tuple[MetadataCommand, ...]:
     return tuple(
         metadata_command
@@ -93,7 +93,7 @@ def _context_entry_commands() -> tuple[MetadataCommand, ...]:
     )
 
 
-@lru_cache(maxsize=1)
+@metadata_lru_cache(maxsize=1)
 def _context_entry_command_index() -> dict[str, tuple[MetadataCommand, ...]]:
     return _command_index(_context_entry_commands())
 

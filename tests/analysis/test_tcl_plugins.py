@@ -45,6 +45,41 @@ def test_tcl_plugin_host_returns_procedure_effect(tmp_path: Path) -> None:
     )
 
 
+def test_tcl_plugin_host_returns_declaration_effect(tmp_path: Path) -> None:
+    plugin = _plugin(
+        tmp_path,
+        'declaration.tm',
+        'namespace eval ::test {}\n'
+        'proc ::test::emit {words info} {\n'
+        '    return [list [list procedure [dict create \\\n'
+        '        name-index 1 \\\n'
+        '        params-word-index 2 \\\n'
+        '        params {left right} \\\n'
+        '    ]]]\n'
+        '}\n',
+    )
+    host = TclPluginHost()
+
+    try:
+        effects = host.call_plugin(
+            plugin,
+            words=('dsl::declare', 'demo', 'attrs'),
+            info={'metadata-command': 'dsl::declare'},
+        )
+    finally:
+        host.close()
+
+    assert effects == (
+        PluginProcedureEffect(
+            name_word_index=1,
+            parameter_word_index=2,
+            parameter_names=('left', 'right'),
+            body_word_index=None,
+            body_context=None,
+        ),
+    )
+
+
 def test_tcl_plugin_host_blocks_channel_io(tmp_path: Path) -> None:
     plugin = _plugin(
         tmp_path,

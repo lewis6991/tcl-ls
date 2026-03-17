@@ -18,6 +18,7 @@ from tcl_lsp.analysis.metadata_commands import (
     select_argument_indices,
 )
 from tcl_lsp.analysis.model import CommandCall, DocumentFacts, ProcDecl
+from tcl_lsp.cache import metadata_lru_cache
 from tcl_lsp.parser import Parser
 from tcl_lsp.workspace import source_id_to_path
 
@@ -44,7 +45,7 @@ def metadata_dependency_overlay(
     )
 
 
-@lru_cache(maxsize=1)
+@metadata_lru_cache(maxsize=1)
 def _candidate_effect_command_names() -> frozenset[str]:
     candidates: set[str] = set()
     for _, metadata_command in _metadata_command_effects().items():
@@ -54,7 +55,7 @@ def _candidate_effect_command_names() -> frozenset[str]:
     return frozenset(candidates)
 
 
-@lru_cache(maxsize=1)
+@metadata_lru_cache(maxsize=1)
 def _metadata_command_effects() -> dict[tuple[str, str], MetadataCommand]:
     effects_by_key: dict[tuple[str, str], MetadataCommand] = {}
     for metadata_command in all_metadata_commands():

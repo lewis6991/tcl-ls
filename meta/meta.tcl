@@ -111,6 +111,7 @@ meta module Tcl
 #           params-word-index N
 #           params {name ...}
 #           body-index N
+#           # `body-index` may be omitted for declaration-only procedures.
 #           context body-context
 #       }
 #

@@ -36,7 +36,7 @@ class PluginProcedureEffect:
     name_word_index: int
     parameter_word_index: int | None
     parameter_names: tuple[str, ...]
-    body_word_index: int
+    body_word_index: int | None
     body_context: str | None
 
 
@@ -296,12 +296,12 @@ def _parse_plugin_procedure_effect(config_item: ListItem) -> PluginProcedureEffe
 
     try:
         name_index_item = values['name-index']
-        body_index_item = values['body-index']
         params_item = values['params']
     except KeyError as error:
         missing_key = error.args[0]
         raise RuntimeError(f'Procedure plugin effects must declare `{missing_key}`.') from error
 
+    body_index_item = values.get('body-index')
     parameter_word_item = values.get('params-word-index')
     context_item = values.get('context')
     parameter_names = tuple(
@@ -315,7 +315,11 @@ def _parse_plugin_procedure_effect(config_item: ListItem) -> PluginProcedureEffe
             else None
         ),
         parameter_names=parameter_names,
-        body_word_index=_parse_non_negative_int(body_index_item.text, key='body-index'),
+        body_word_index=(
+            _parse_non_negative_int(body_index_item.text, key='body-index')
+            if body_index_item is not None
+            else None
+        ),
         body_context=context_item.text if context_item is not None else None,
     )
 

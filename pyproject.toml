@@ -11,6 +11,7 @@ dependencies = [
 [project.scripts]
 tcl-ls = "tcl_lsp.__main__:main"
 tcl-check = "tcl_lsp.check:main"
+tcl-meta = "tcl_lsp.meta_tools:main"
 
 [dependency-groups]
 dev = [
@@ -28,6 +29,7 @@ packages = ["src/tcl_lsp"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "meta" = "tcl_lsp/meta"
+"src/tcl_lsp/tools/tcl_meta.tcl" = "tcl_lsp/tools/tcl_meta.tcl"
 
 [tool.ruff]
 target-version = "py314"

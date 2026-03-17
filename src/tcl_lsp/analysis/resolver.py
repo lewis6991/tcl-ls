@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import lru_cache
 
 from tcl_lsp.analysis.builtins import (
     BuiltinCommand,
@@ -44,6 +43,7 @@ from tcl_lsp.analysis.model import (
     VarBinding,
     VariableReference,
 )
+from tcl_lsp.cache import metadata_lru_cache
 from tcl_lsp.common import HoverInfo, Location, Span
 from tcl_lsp.workspace import source_id_to_path
 
@@ -691,7 +691,7 @@ def _metadata_var_binding(
     )
 
 
-@lru_cache(maxsize=1)
+@metadata_lru_cache(maxsize=1)
 def _annotated_metadata_commands() -> dict[tuple[str, str], MetadataCommand]:
     commands_by_key: dict[tuple[str, str], MetadataCommand] = {}
     for metadata_command in all_metadata_commands():
@@ -773,11 +773,17 @@ def _proc_hover(proc: ProcDecl) -> str:
 def _builtin_hover(builtin: BuiltinCommand) -> str:
     if len(builtin.overloads) == 1:
         overload = builtin.overloads[0]
-        return f'builtin command {_builtin_signature_heading(overload.signature)}\n\n{overload.documentation}'
+        heading = f'builtin command {_builtin_signature_heading(overload.signature)}'
+        if not overload.documentation:
+            return heading
+        return f'{heading}\n\n{overload.documentation}'
 
-    sections = [
-        f'`{overload.signature}`\n{overload.documentation}' for overload in builtin.overloads
-    ]
+    sections: list[str] = []
+    for overload in builtin.overloads:
+        section = f'`{overload.signature}`'
+        if overload.documentation:
+            section = f'{section}\n{overload.documentation}'
+        sections.append(section)
     return f'builtin command {builtin.name}\n\n' + '\n\n'.join(sections)
 
 

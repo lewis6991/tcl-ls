@@ -21,7 +21,9 @@ from tcl_lsp.analysis import (
 )
 from tcl_lsp.analysis.metadata_effects import metadata_dependency_overlay
 from tcl_lsp.common import Diagnostic
+from tcl_lsp.metadata_paths import configure_metadata_paths, metadata_paths_context
 from tcl_lsp.parser import Parser
+from tcl_lsp.project_config import configured_plugin_paths
 from tcl_lsp.workspace import (
     candidate_package_roots,
     discover_tcl_sources,
@@ -292,8 +294,13 @@ class _StreamReporter:
         self._status_visible = False
 
 
-def check_project(path: Path, *, threads: int = _DEFAULT_WORKER_COUNT) -> CheckReport:
-    return _run_check(path, threads=threads)
+def check_project(
+    path: Path,
+    *,
+    threads: int = _DEFAULT_WORKER_COUNT,
+    plugin_paths: Sequence[Path | str] = (),
+) -> CheckReport:
+    return _run_check(path, threads=threads, plugin_paths=plugin_paths)
 
 
 def format_report(
@@ -439,7 +446,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     try:
-        report = _run_check(target, reporter=reporter, threads=args.threads)
+        report = _run_check(
+            target,
+            reporter=reporter,
+            threads=args.threads,
+            plugin_paths=args.plugin_paths,
+        )
     except KeyboardInterrupt:
         reporter.abort()
         print('Interrupted.', file=sys.stderr)
@@ -459,102 +471,109 @@ def _run_check(
     reporter: _StreamReporter | None = None,
     *,
     threads: int = 1,
+    plugin_paths: Sequence[Path | str] = (),
 ) -> CheckReport:
-    worker_count = _worker_count(threads)
-    started = time.monotonic()
     target = path.expanduser().resolve(strict=False)
-    units = _discover_analysis_units(target)
-    if not units:
-        raise ValueError(f'No Tcl sources found under {path.expanduser()}')
+    active_plugin_paths = (*configured_plugin_paths(target), *plugin_paths)
+    with metadata_paths_context(active_plugin_paths):
+        worker_count = _worker_count(threads)
+        started = time.monotonic()
+        units = _discover_analysis_units(target)
+        if not units:
+            raise ValueError(f'No Tcl sources found under {path.expanduser()}')
 
-    parser = Parser()
-    extractor = FactExtractor(parser)
-    package_index_catalog = _build_package_index_catalog(
-        target,
-        parser=parser,
-        extractor=extractor,
-    )
-
-    source_count = sum(len(unit.source_paths) for unit in units)
-    source_text_by_path: dict[Path, str] = {}
-    diagnostics: list[ProjectDiagnostic] = []
-    background_source_paths: set[Path] = set()
-    analyzed_sources = 0
-    analysis_started = False
-
-    if reporter is not None:
-        reporter.start_indexing(len(units))
-
-    parent_document_cache = _DocumentCache(parser=parser, extractor=extractor)
-    parent_resolver = Resolver()
-    executor = _create_unit_executor(worker_count, package_index_catalog)
-    executor_context = executor if executor is not None else nullcontext(None)
-    with executor_context as executor:
-        futures = (
-            [executor.submit(_analyze_unit_worker, unit) for unit in units]
-            if executor is not None
-            else None
+        parser = Parser()
+        extractor = FactExtractor(parser)
+        package_index_catalog = _build_package_index_catalog(
+            target,
+            parser=parser,
+            extractor=extractor,
         )
 
-        for unit_index, unit in enumerate(units, start=1):
-            if reporter is not None:
-                reporter.workspace_started(
-                    unit_index,
-                    len(units),
-                    unit.root,
-                    len(unit.source_paths),
-                )
+        source_count = sum(len(unit.source_paths) for unit in units)
+        source_text_by_path: dict[Path, str] = {}
+        diagnostics: list[ProjectDiagnostic] = []
+        background_source_paths: set[Path] = set()
+        analyzed_sources = 0
+        analysis_started = False
 
-            if futures is None:
-                unit_report = _analyze_unit(
-                    unit,
-                    document_cache=parent_document_cache,
-                    resolver=parent_resolver,
-                    package_index_catalog=package_index_catalog,
-                )
-            else:
-                unit_report = futures[unit_index - 1].result()
+        if reporter is not None:
+            reporter.start_indexing(len(units))
 
-            for background_path in unit_report.background_source_paths:
-                if background_path in background_source_paths:
-                    continue
-                background_source_paths.add(background_path)
+        parent_document_cache = _DocumentCache(parser=parser, extractor=extractor)
+        parent_resolver = Resolver()
+        executor = _create_unit_executor(
+            worker_count,
+            package_index_catalog,
+            active_plugin_paths,
+        )
+        executor_context = executor if executor is not None else nullcontext(None)
+        with executor_context as executor:
+            futures = (
+                [executor.submit(_analyze_unit_worker, unit) for unit in units]
+                if executor is not None
+                else None
+            )
+
+            for unit_index, unit in enumerate(units, start=1):
                 if reporter is not None:
-                    reporter.background_source_loaded(background_path)
-
-            if reporter is not None:
-                reporter.source_indexed(unit_index, len(units))
-                if not analysis_started:
-                    reporter.start_analysis(source_count)
-                    analysis_started = True
-
-            for source_report in unit_report.source_reports:
-                source_text_by_path[source_report.path] = source_report.text
-                diagnostics.extend(
-                    ProjectDiagnostic(path=source_report.path, diagnostic=diagnostic)
-                    for diagnostic in source_report.diagnostics
-                )
-                analyzed_sources += 1
-                if reporter is not None:
-                    reporter.source_analyzed(
-                        current=analyzed_sources,
-                        total=source_count,
-                        path=source_report.path,
-                        text=source_report.text,
-                        diagnostics=source_report.diagnostics,
+                    reporter.workspace_started(
+                        unit_index,
+                        len(units),
+                        unit.root,
+                        len(unit.source_paths),
                     )
 
-    report = CheckReport(
-        root=target,
-        source_count=source_count,
-        background_source_count=len(background_source_paths),
-        diagnostics=tuple(diagnostics),
-        source_text_by_path=source_text_by_path,
-        elapsed_seconds=time.monotonic() - started,
-    )
-    if reporter is not None:
-        reporter.finish(report)
-    return report
+                if futures is None:
+                    unit_report = _analyze_unit(
+                        unit,
+                        document_cache=parent_document_cache,
+                        resolver=parent_resolver,
+                        package_index_catalog=package_index_catalog,
+                    )
+                else:
+                    unit_report = futures[unit_index - 1].result()
+
+                for background_path in unit_report.background_source_paths:
+                    if background_path in background_source_paths:
+                        continue
+                    background_source_paths.add(background_path)
+                    if reporter is not None:
+                        reporter.background_source_loaded(background_path)
+
+                if reporter is not None:
+                    reporter.source_indexed(unit_index, len(units))
+                    if not analysis_started:
+                        reporter.start_analysis(source_count)
+                        analysis_started = True
+
+                for source_report in unit_report.source_reports:
+                    source_text_by_path[source_report.path] = source_report.text
+                    diagnostics.extend(
+                        ProjectDiagnostic(path=source_report.path, diagnostic=diagnostic)
+                        for diagnostic in source_report.diagnostics
+                    )
+                    analyzed_sources += 1
+                    if reporter is not None:
+                        reporter.source_analyzed(
+                            current=analyzed_sources,
+                            total=source_count,
+                            path=source_report.path,
+                            text=source_report.text,
+                            diagnostics=source_report.diagnostics,
+                        )
+
+        report = CheckReport(
+            root=target,
+            source_count=source_count,
+            background_source_count=len(background_source_paths),
+            diagnostics=tuple(diagnostics),
+            source_text_by_path=source_text_by_path,
+            elapsed_seconds=time.monotonic() - started,
+        )
+        if reporter is not None:
+            reporter.finish(report)
+        return report
 
 
 def _prepare_unit(
@@ -717,6 +736,18 @@ def _discover_analysis_units(target: Path) -> tuple[_AnalysisUnit, ...]:
             unit_root = resolved_target
         return (_AnalysisUnit(root=unit_root, source_paths=source_paths),)
 
+    workspace_roots = _workspace_roots_under(target)
+    if workspace_roots:
+        return tuple(
+            _AnalysisUnit(
+                root=workspace_root,
+                source_paths=tuple(
+                    path.resolve(strict=False) for path in discover_tcl_sources(workspace_root)
+                ),
+            )
+            for workspace_root in workspace_roots
+        )
+
     source_paths = tuple(path.resolve(strict=False) for path in discover_tcl_sources(target))
     units_by_root: dict[Path, list[Path]] = {}
     for source_path in source_paths:
@@ -747,6 +778,19 @@ def _nearest_package_workspace_root(source_path: Path) -> Path | None:
         if (directory / 'pkgIndex.tcl').is_file():
             return directory
     return None
+
+
+def _workspace_roots_under(target: Path) -> tuple[Path, ...]:
+    if not target.is_dir():
+        return ()
+    return tuple(
+        sorted(
+            {
+                pkg_index_path.parent.resolve(strict=False)
+                for pkg_index_path in target.rglob('pkgIndex.tcl')
+            }
+        )
+    )
 
 
 def _is_package_unit(unit: _AnalysisUnit) -> bool:
@@ -884,6 +928,18 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         default=_DEFAULT_WORKER_COUNT,
         help=(
             f'Index documents with this many worker processes. Defaults to {_DEFAULT_WORKER_COUNT}.'
+        ),
+    )
+    parser.add_argument(
+        '--plugin-path',
+        action='append',
+        dest='plugin_paths',
+        default=[],
+        help=(
+            'Load project metadata from this path. Accepts a metadata directory, '
+            'a metadata `.tcl` file, or a Tcl plugin `.tm` file. When a plugin '
+            'script is passed, sibling metadata files are discovered from its '
+            'parent directory. Paths from `tcllsrc.tcl` are loaded automatically.'
         ),
     )
     return parser.parse_args(argv)
@@ -1032,8 +1088,10 @@ def _analyze_source_document(
 
 def _initialize_unit_worker(
     package_index_catalog: tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...],
+    plugin_paths: tuple[str, ...],
 ) -> None:
     global _worker_document_cache, _worker_package_index_catalog, _worker_resolver
+    configure_metadata_paths(plugin_paths)
     parser = Parser()
     extractor = FactExtractor(parser)
     _worker_document_cache = _DocumentCache(parser=parser, extractor=extractor)
@@ -1058,7 +1116,7 @@ def _worker_services() -> tuple[
 ]:
     global _worker_document_cache, _worker_package_index_catalog, _worker_resolver
     if _worker_document_cache is None or _worker_resolver is None:
-        _initialize_unit_worker(())
+        _initialize_unit_worker((), ())
     assert _worker_document_cache is not None
     assert _worker_resolver is not None
     return (_worker_document_cache, _worker_resolver, _worker_package_index_catalog)
@@ -1084,6 +1142,7 @@ def _index_package_index(
 def _create_unit_executor(
     worker_count: int,
     package_index_catalog: tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...],
+    plugin_paths: Sequence[Path | str],
 ) -> ProcessPoolExecutor | None:
     if worker_count <= 1:
         return None
@@ -1091,7 +1150,10 @@ def _create_unit_executor(
         return ProcessPoolExecutor(
             max_workers=worker_count,
             initializer=_initialize_unit_worker,
-            initargs=(package_index_catalog,),
+            initargs=(
+                package_index_catalog,
+                tuple(str(path) for path in plugin_paths),
+            ),
         )
     except NotImplementedError, PermissionError, OSError:
         return None

@@ -105,9 +105,7 @@ def encode_document_semantic_tokens(
                 first_token = False
             else:
                 delta_line = line - previous_line
-                delta_character = (
-                    character if delta_line else character - previous_character
-                )
+                delta_character = character if delta_line else character - previous_character
 
             encoded.extend(
                 (
@@ -132,9 +130,7 @@ def _collect_semantic_tokens(
 ) -> tuple[_SemanticToken, ...]:
     tokens_by_span: dict[tuple[int, int], _SemanticToken] = {}
     parameter_symbol_ids = {
-        parameter.symbol_id
-        for procedure in facts.procedures
-        for parameter in procedure.parameters
+        parameter.symbol_id for procedure in facts.procedures for parameter in procedure.parameters
     }
     resolution_by_key = {
         _resolution_key(resolution): resolution for resolution in analysis.resolutions
@@ -185,8 +181,10 @@ def _collect_semantic_tokens(
         token_type = 'function'
         modifier_bits = 0
         normalized_name = _normalized_command_name(command_call.name)
-        if resolution is not None and resolution.target_symbol_ids and all(
-            symbol_id.startswith('builtin::') for symbol_id in resolution.target_symbol_ids
+        if (
+            resolution is not None
+            and resolution.target_symbol_ids
+            and all(symbol_id.startswith('builtin::') for symbol_id in resolution.target_symbol_ids)
         ):
             if normalized_name in _KEYWORD_COMMANDS:
                 token_type = 'keyword'
