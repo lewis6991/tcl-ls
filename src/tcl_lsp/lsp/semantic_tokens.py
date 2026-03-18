@@ -58,6 +58,7 @@ _KEYWORD_COMMANDS = frozenset(
         'package provide',
         'package require',
         'proc',
+        'return',
         'set',
         'source',
         'switch',

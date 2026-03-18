@@ -717,6 +717,28 @@ def test_language_server_returns_semantic_tokens_for_blocks_and_quoted_strings(
         assert expected_token in decoded
 
 
+def test_language_server_returns_semantic_tokens_for_return_keyword(
+    server: LanguageServer,
+) -> None:
+    _open_server_document(
+        server,
+        'proc greet {} {\n    return ok\n}\n',
+    )
+
+    token_types, token_modifiers = _semantic_tokens_legend(server)
+    response = _server_document_request(server, method='textDocument/semanticTokens/full')
+    result = _as_dict(response['result'])
+    data = cast(list[int], result['data'])
+
+    decoded = _decode_semantic_tokens(
+        data,
+        token_types=token_types,
+        token_modifiers=token_modifiers,
+    )
+
+    assert _semantic_token(line=1, character=4, length=6, token_type='keyword') in decoded
+
+
 def test_language_server_returns_semantic_tokens_for_nested_delimiters_in_braced_words(
     server: LanguageServer,
 ) -> None:
