@@ -1136,7 +1136,7 @@ def test_language_server_returns_semantic_tokens_for_braced_variable_substitutio
         ),
         (
             'set value 1\n',
-            '```tcl\nset {varName args}\n```\n\nRead and write variables.',
+            '```tcl\nset {varName ? newValue ?}\n```\n\nRead and write variables.',
             ('With one argument, return the current value of varName.',),
         ),
         (

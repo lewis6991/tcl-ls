@@ -557,7 +557,9 @@ def test_analysis_includes_single_builtin_signature_when_arguments_exist(
 
     hover_by_offset = {hover.span.start.offset: hover.contents for hover in analysis.hovers}
     hover = hover_by_offset[facts.command_calls[0].name_span.start.offset]
-    assert hover.startswith('builtin command set {varName args}\n\nRead and write variables.')
+    assert hover.startswith(
+        'builtin command set {varName ? newValue ?}\n\nRead and write variables.'
+    )
     assert 'With one argument, return the current value of varName.' in hover
 
     command_resolution = next(
