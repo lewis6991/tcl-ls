@@ -148,6 +148,7 @@ class VarBinding:
     procedure_symbol_id: str | None
     kind: BindingKind
     span: Span
+    exact_values: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +179,7 @@ class VariableReference:
     scope_id: str
     procedure_symbol_id: str | None
     span: Span
+    exact_values: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,6 +215,7 @@ class DefinitionTarget:
     kind: SymbolKind
     location: Location
     detail: str
+    exact_values: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

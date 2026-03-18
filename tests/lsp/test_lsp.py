@@ -543,6 +543,117 @@ def test_language_service_definition_resolves_variable_alias_sites(
     assert namespace_write_definition_locations[0].span.start.character == 13
 
 
+def test_language_service_definition_resolves_dynamic_set_targets_from_foreach_domains(
+    service: LanguageService,
+) -> None:
+    source_text = (
+        'proc run {strategy} {\n'
+        '    foreach v {mode run_limit engines} {\n'
+        '        set $v [dict get $strategy $v]\n'
+        '    }\n'
+        '    return [list $mode $run_limit $engines]\n'
+        '}\n'
+    )
+    assert service.open_document(_MAIN_URI, source_text, 1) == ()
+
+    return_line = source_text.splitlines()[4]
+    target_character = return_line.index('$engines') + 1
+    definition_locations = service.definition(_MAIN_URI, 4, target_character)
+    assert len(definition_locations) == 1
+    assert definition_locations[0].uri == _MAIN_URI
+    assert definition_locations[0].span.start.line == 2
+    assert definition_locations[0].span.start.character == source_text.splitlines()[2].index('$v')
+
+    hover = service.hover(_MAIN_URI, 4, target_character)
+    assert hover is not None
+    assert hover.contents == 'set engines'
+
+    binding_hover = service.hover(_MAIN_URI, 2, source_text.splitlines()[2].index('$v') + 1)
+    assert binding_hover is not None
+    assert binding_hover.contents == 'set mode\nset run_limit\nset engines'
+
+
+def test_language_service_definition_resolves_dynamic_set_targets_from_variable_backed_foreach_domains(
+    service: LanguageService,
+) -> None:
+    source_text = (
+        'proc run {strategy} {\n'
+        '    set names {mode run_limit engines}\n'
+        '    set slots $names\n'
+        '    foreach v $slots {\n'
+        '        set $v [dict get $strategy $v]\n'
+        '    }\n'
+        '    return [list $mode $run_limit $engines]\n'
+        '}\n'
+    )
+    assert service.open_document(_MAIN_URI, source_text, 1) == ()
+
+    return_line = source_text.splitlines()[6]
+    target_character = return_line.index('$engines') + 1
+    definition_locations = service.definition(_MAIN_URI, 6, target_character)
+    assert len(definition_locations) == 1
+    assert definition_locations[0].uri == _MAIN_URI
+    assert definition_locations[0].span.start.line == 4
+    assert definition_locations[0].span.start.character == source_text.splitlines()[4].index('$v')
+
+    hover = service.hover(_MAIN_URI, 6, target_character)
+    assert hover is not None
+    assert hover.contents == 'set engines'
+
+
+def test_language_service_hover_shows_branch_narrowed_values(
+    service: LanguageService,
+) -> None:
+    source_text = (
+        'proc run {} {\n'
+        '    foreach kind {prove lint scan} {\n'
+        '        if {$kind eq "prove"} {\n'
+        '            puts $kind\n'
+        '        } elseif {$kind eq "lint"} {\n'
+        '            puts $kind\n'
+        '        } else {\n'
+        '            puts $kind\n'
+        '        }\n'
+        '    }\n'
+        '}\n'
+    )
+    assert service.open_document(_MAIN_URI, source_text, 1) == ()
+
+    then_hover = service.hover(_MAIN_URI, 3, source_text.splitlines()[3].index('$kind') + 1)
+    assert then_hover is not None
+    assert then_hover.contents == 'foreach kind: "prove"'
+
+    elseif_hover = service.hover(_MAIN_URI, 5, source_text.splitlines()[5].index('$kind') + 1)
+    assert elseif_hover is not None
+    assert elseif_hover.contents == 'foreach kind: "lint"'
+
+    else_hover = service.hover(_MAIN_URI, 7, source_text.splitlines()[7].index('$kind') + 1)
+    assert else_hover is not None
+    assert else_hover.contents == 'foreach kind: "scan"'
+
+
+def test_language_service_hover_shows_expr_ternary_assignment_domains(
+    service: LanguageService,
+) -> None:
+    source_text = (
+        'proc run {} {\n'
+        '    foreach bg {0 1} {\n'
+        '        set bg_opt [expr {$bg == 1 ? "a" : "b"}]\n'
+        '        puts $bg_opt\n'
+        '    }\n'
+        '}\n'
+    )
+    assert service.open_document(_MAIN_URI, source_text, 1) == ()
+
+    hover = service.hover(_MAIN_URI, 3, source_text.splitlines()[3].index('$bg_opt') + 1)
+    assert hover is not None
+    assert hover.contents == 'set bg_opt: "a" | "b"'
+
+    binding_hover = service.hover(_MAIN_URI, 2, source_text.splitlines()[2].index('bg_opt') + 1)
+    assert binding_hover is not None
+    assert binding_hover.contents == 'set bg_opt: "a" | "b"'
+
+
 def test_language_service_rename_updates_proc_declaration_and_calls(
     service: LanguageService,
 ) -> None:
@@ -928,6 +1039,26 @@ def test_language_server_hover_formats_builtin_commands(
     assert hover_value.startswith(expected_prefix)
     for fragment in expected_fragments:
         assert fragment in hover_value
+
+
+def test_language_server_hover_formats_dynamic_binding_sets_as_code_block(
+    server: LanguageServer,
+) -> None:
+    source_text = (
+        'proc run {strategy} {\n'
+        '    foreach v {mode run_limit engines} {\n'
+        '        set $v [dict get $strategy $v]\n'
+        '    }\n'
+        '}\n'
+    )
+    _open_server_document(server, source_text)
+
+    hover_value = _hover_markdown_value(
+        server,
+        line=2,
+        character=source_text.splitlines()[2].index('$v') + 1,
+    )
+    assert hover_value == '```tcl\nset mode\nset run_limit\nset engines\n```'
 
 
 @pytest.mark.parametrize(

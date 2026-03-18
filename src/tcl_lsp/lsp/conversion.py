@@ -59,4 +59,7 @@ def _hover_markdown(hover: HoverInfo) -> str:
             return f'```tcl\n{command_name}\n```'
         return f'```tcl\n{command_name}\n```\n\n{remainder}'
 
+    if '\n' in hover.contents and not separator:
+        return f'```tcl\n{hover.contents}\n```'
+
     return hover.contents

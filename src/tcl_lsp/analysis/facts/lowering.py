@@ -46,6 +46,7 @@ class LoweredWordReferences:
 
 @dataclass(frozen=True, slots=True)
 class LoweredCondition:
+    text: str
     variable_substitutions: tuple[ConditionVariableSubstitution, ...]
     command_substitutions: tuple[LoweredScript, ...]
 
@@ -674,6 +675,7 @@ class _Lowerer:
             )
 
         return LoweredCondition(
+            text=_braced_word_raw_content(word),
             variable_substitutions=tuple(variable_substitutions),
             command_substitutions=tuple(command_substitutions),
         )

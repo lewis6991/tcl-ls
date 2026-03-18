@@ -1675,6 +1675,239 @@ def test_analysis_tracks_multi_source_foreach_and_lmap_bodies(parser: Parser) ->
     assert analysis.diagnostics == ()
 
 
+def test_analysis_infers_dynamic_set_targets_from_foreach_domains(parser: Parser) -> None:
+    source = (
+        'proc run {strategy} {\n'
+        '    foreach v {mode run_limit engines} {\n'
+        '        set $v [dict get $strategy $v]\n'
+        '    }\n'
+        '    return [list $mode $run_limit $engines]\n'
+        '}\n'
+    )
+    snapshot = _analyze(
+        parser,
+        'file:///dynamic_set_targets.tcl',
+        source,
+    )
+    facts = snapshot.facts
+    analysis = snapshot.analysis
+
+    run_proc = next(proc for proc in facts.procedures if proc.qualified_name == '::run')
+    bindings_by_name = {
+        binding.name: binding.kind
+        for binding in facts.variable_bindings
+        if binding.scope_id == run_proc.symbol_id
+    }
+    assert bindings_by_name['mode'] == 'set'
+    assert bindings_by_name['run_limit'] == 'set'
+    assert bindings_by_name['engines'] == 'set'
+
+    variable_resolutions = {
+        resolution.reference.name: resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'variable'
+        and resolution.reference.name in {'mode', 'run_limit', 'engines'}
+    }
+    assert variable_resolutions == {
+        'mode': 'resolved',
+        'run_limit': 'resolved',
+        'engines': 'resolved',
+    }
+    assert not any(diagnostic.code == 'unresolved-variable' for diagnostic in analysis.diagnostics)
+
+    source_lines = source.splitlines(keepends=True)
+    dynamic_target_offset = (
+        len(source_lines[0]) + len(source_lines[1]) + source_lines[2].index('$v')
+    )
+    matching_hovers = [
+        hover for hover in analysis.hovers if hover.span.start.offset == dynamic_target_offset
+    ]
+    assert (
+        min(
+            matching_hovers,
+            key=lambda hover: hover.span.end.offset - hover.span.start.offset,
+        ).contents
+        == 'set mode\nset run_limit\nset engines'
+    )
+
+
+def test_analysis_infers_dynamic_set_targets_from_variable_backed_foreach_domains(
+    parser: Parser,
+) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///dynamic_set_targets_from_list_variables.tcl',
+        'proc run {strategy} {\n'
+        '    set names {mode run_limit engines}\n'
+        '    set slots $names\n'
+        '    foreach v $slots {\n'
+        '        set $v [dict get $strategy $v]\n'
+        '    }\n'
+        '    return [list $mode $run_limit $engines]\n'
+        '}\n',
+    )
+    facts = snapshot.facts
+    analysis = snapshot.analysis
+
+    run_proc = next(proc for proc in facts.procedures if proc.qualified_name == '::run')
+    bindings_by_name = {
+        binding.name: binding.kind
+        for binding in facts.variable_bindings
+        if binding.scope_id == run_proc.symbol_id
+    }
+    assert bindings_by_name['mode'] == 'set'
+    assert bindings_by_name['run_limit'] == 'set'
+    assert bindings_by_name['engines'] == 'set'
+
+    variable_resolutions = {
+        resolution.reference.name: resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'variable'
+        and resolution.reference.name in {'mode', 'run_limit', 'engines'}
+    }
+    assert variable_resolutions == {
+        'mode': 'resolved',
+        'run_limit': 'resolved',
+        'engines': 'resolved',
+    }
+    assert not any(diagnostic.code == 'unresolved-variable' for diagnostic in analysis.diagnostics)
+
+
+def test_analysis_resolves_dynamic_variable_sites_from_exact_value_domains(
+    parser: Parser,
+) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///dynamic_variable_sites.tcl',
+        'proc run {} {\n'
+        '    set name counter\n'
+        '    set alias $name\n'
+        '    set $alias 1\n'
+        '    if {[info exists $name]} {\n'
+        '        set value [set $alias]\n'
+        '    }\n'
+        '    unset $name\n'
+        '}\n',
+    )
+    analysis = snapshot.analysis
+
+    counter_sites = {
+        resolution.reference.span.start.offset: resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'variable' and resolution.reference.name == 'counter'
+    }
+    assert len(counter_sites) == 3
+    assert set(counter_sites.values()) == {'resolved'}
+    assert not any(diagnostic.code == 'unresolved-variable' for diagnostic in analysis.diagnostics)
+
+
+def test_analysis_does_not_infer_dynamic_targets_from_unknown_value_domains(
+    parser: Parser,
+) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///dynamic_unknown_targets.tcl',
+        'proc run {strategy names} {\n'
+        '    foreach v $names {\n'
+        '        set $v [dict get $strategy $v]\n'
+        '    }\n'
+        '    return $engines\n'
+        '}\n',
+    )
+
+    unresolved_variables = [
+        diagnostic
+        for diagnostic in snapshot.analysis.diagnostics
+        if diagnostic.code == 'unresolved-variable'
+    ]
+    assert len(unresolved_variables) == 1
+    assert unresolved_variables[0].message == 'Unresolved variable `engines`.'
+
+
+def test_analysis_shows_branch_narrowed_values_in_variable_hovers(parser: Parser) -> None:
+    source = (
+        'proc run {} {\n'
+        '    foreach kind {prove lint scan} {\n'
+        '        if {$kind eq "prove"} {\n'
+        '            puts $kind\n'
+        '        } elseif {$kind eq "lint"} {\n'
+        '            puts $kind\n'
+        '        } else {\n'
+        '            puts $kind\n'
+        '        }\n'
+        '    }\n'
+        '}\n'
+    )
+    snapshot = _analyze(parser, 'file:///if_branch_narrowing.tcl', source)
+
+    hover_by_offset = {
+        hover.span.start.offset: hover.contents for hover in snapshot.analysis.hovers
+    }
+    source_lines = source.splitlines(keepends=True)
+    line_offsets: list[int] = []
+    total_offset = 0
+    for line in source_lines:
+        line_offsets.append(total_offset)
+        total_offset += len(line)
+
+    then_offset = line_offsets[3] + source_lines[3].index('$kind')
+    elseif_offset = line_offsets[5] + source_lines[5].index('$kind')
+    else_offset = line_offsets[7] + source_lines[7].index('$kind')
+
+    assert hover_by_offset[then_offset] == 'foreach kind: "prove"'
+    assert hover_by_offset[elseif_offset] == 'foreach kind: "lint"'
+    assert hover_by_offset[else_offset] == 'foreach kind: "scan"'
+
+
+def test_analysis_tracks_expr_ternary_assignment_domains(parser: Parser) -> None:
+    source = (
+        'proc run {} {\n'
+        '    foreach bg {0 1} {\n'
+        '        set bg_opt [expr {$bg == 1 ? "a" : "b"}]\n'
+        '        puts $bg_opt\n'
+        '    }\n'
+        '}\n'
+    )
+    snapshot = _analyze(parser, 'file:///expr_ternary_domains.tcl', source)
+
+    bg_opt_resolutions = [
+        resolution
+        for resolution in snapshot.analysis.resolutions
+        if resolution.reference.kind == 'variable' and resolution.reference.name == 'bg_opt'
+    ]
+    assert len(bg_opt_resolutions) == 1
+    assert bg_opt_resolutions[0].uncertainty.state == 'resolved'
+
+    hover_by_offset = {
+        hover.span.start.offset: hover.contents for hover in snapshot.analysis.hovers
+    }
+    binding_offset = source.index('bg_opt')
+    assert hover_by_offset[binding_offset] == 'set bg_opt: "a" | "b"'
+    bg_opt_offset = source.index('$bg_opt')
+    assert hover_by_offset[bg_opt_offset] == 'set bg_opt: "a" | "b"'
+
+
+def test_analysis_narrows_expr_ternary_assignment_domains_from_exact_conditions(
+    parser: Parser,
+) -> None:
+    source = (
+        'proc run {} {\n'
+        '    set bg 1\n'
+        '    set bg_opt [expr {$bg == 1 ? "a" : "b"}]\n'
+        '    puts $bg_opt\n'
+        '}\n'
+    )
+    snapshot = _analyze(parser, 'file:///expr_ternary_exact.tcl', source)
+
+    hover_by_offset = {
+        hover.span.start.offset: hover.contents for hover in snapshot.analysis.hovers
+    }
+    binding_offset = source.index('bg_opt')
+    assert hover_by_offset[binding_offset] == 'set bg_opt: "a"'
+    bg_opt_offset = source.index('$bg_opt')
+    assert hover_by_offset[bg_opt_offset] == 'set bg_opt: "a"'
+
+
 def test_analysis_tracks_dict_for_bodies(parser: Parser) -> None:
     snapshot = _analyze(
         parser,

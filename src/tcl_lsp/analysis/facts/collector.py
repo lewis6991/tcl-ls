@@ -15,6 +15,17 @@ from tcl_lsp.analysis.embedded_languages import (
     match_embedded_language_command,
     match_embedded_language_entry,
 )
+from tcl_lsp.analysis.flow import (
+    VariableFlowState,
+    condition_branch_flow_states,
+    dynamic_variable_target_names,
+    exact_word_values,
+    normalize_variable_name,
+    script_body_flow_state,
+    state_with_set_command,
+    state_with_unset_command,
+    unset_target_words,
+)
 from tcl_lsp.analysis.facts.lowering import (
     LoweredCatchCommand,
     LoweredCommand,
@@ -96,6 +107,7 @@ class _ExtractionContext:
     procedure_symbol_id: str | None
     embedded_language: EmbeddedLanguageName | None
     embedded_owner_name: str | None
+    flow_state: VariableFlowState
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,28 +245,42 @@ class _FactCollector:
             diagnostics=tuple(self._diagnostics),
         )
 
-    def _collect_lowered_script(self, script: LoweredScript, context: _ExtractionContext) -> None:
+    def _collect_lowered_script(
+        self,
+        script: LoweredScript,
+        context: _ExtractionContext,
+    ) -> _ExtractionContext:
+        current_context = context
         for command in script.commands:
-            self._collect_lowered_command(command, context)
+            current_context = self._collect_lowered_command(command, current_context)
+        return current_context
 
     def _collect_lowered_command(
         self, command: LoweredCommand, context: _ExtractionContext
-    ) -> None:
+    ) -> _ExtractionContext:
         syntax_command = command.command
         command_name = self._collect_command_common(command, context)
         if type(command) is not LoweredGenericCommand and self._collect_special_lowered_command(
             command, context
         ):
-            return
+            return context
         if self._collect_embedded_language_command(syntax_command, context):
-            return
+            return context
         if self._collect_embedded_language_entry(syntax_command, context):
-            return
+            return context
 
+        normalized_command_name = (
+            normalize_command_name(command_name) if command_name is not None else None
+        )
         self._collect_builtin_handler_command(
             syntax_command,
-            normalize_command_name(command_name) if command_name is not None else None,
+            normalized_command_name,
             context,
+        )
+        return self._updated_context_after_command(
+            syntax_command,
+            normalized_command_name=normalized_command_name,
+            context=context,
         )
 
     def _collect_special_lowered_command(
@@ -305,6 +331,8 @@ class _FactCollector:
                 self._collect_info(command, context)
             case 'source':
                 self._collect_source(command, context)
+            case 'unset':
+                self._collect_unset(command, context)
             case 'upvar':
                 self._collect_upvar(command, context)
             case 'variable':
@@ -553,6 +581,7 @@ class _FactCollector:
             procedure_symbol_id=proc_decl.symbol_id,
             embedded_language=procedure.body_context,
             embedded_owner_name=None,
+            flow_state=VariableFlowState.empty(),
         )
         self._record_parameter_bindings(proc_decl.parameters, body_context)
         self._collect_script_body_word(body_word, body_context)
@@ -616,6 +645,7 @@ class _FactCollector:
             procedure_symbol_id=proc_decl.symbol_id,
             embedded_language=effect.body_context,
             embedded_owner_name=None,
+            flow_state=VariableFlowState.empty(),
         )
         self._record_parameter_bindings(proc_decl.parameters, body_context)
         self._collect_script_body_word(body_word, body_context)
@@ -657,6 +687,7 @@ class _FactCollector:
             procedure_symbol_id=parent_context.procedure_symbol_id,
             embedded_language=entry.language,
             embedded_owner_name=entry.owner_name,
+            flow_state=parent_context.flow_state,
         )
 
     def _collect_inline_embedded_command(
@@ -751,6 +782,7 @@ class _FactCollector:
             procedure_symbol_id=proc_decl.symbol_id,
             embedded_language=procedure.body_context,
             embedded_owner_name=owner_name,
+            flow_state=VariableFlowState.empty(),
         )
         self._record_parameter_bindings(proc_decl.parameters, body_context)
         self._collect_script_body_word(body_word, body_context)
@@ -797,9 +829,36 @@ class _FactCollector:
                 continue
 
             for selected_word in selected_words:
-                self._collect_script_body_word(selected_word, context)
+                self._collect_script_body_word(
+                    selected_word,
+                    self._metadata_script_body_context(
+                        command,
+                        context,
+                        metadata_command=metadata_command,
+                        prefix_word_count=prefix_word_count,
+                        selected_word=selected_word,
+                    ),
+                )
 
         return handled
+
+    def _metadata_script_body_context(
+        self,
+        command: Command,
+        context: _ExtractionContext,
+        *,
+        metadata_command: MetadataCommand,
+        prefix_word_count: int,
+        selected_word: Word,
+    ) -> _ExtractionContext:
+        argument_words = command.words[prefix_word_count:]
+        next_flow_state = script_body_flow_state(
+            context.flow_state,
+            metadata_command_name=metadata_command.name,
+            argument_words=argument_words,
+            selected_word=selected_word,
+        )
+        return self._context_with_flow_state(context, next_flow_state)
 
     def _procedure_name(
         self,
@@ -1259,28 +1318,62 @@ class _FactCollector:
     def _collect_set(self, command: Command, context: _ExtractionContext) -> None:
         if len(command.words) < 2:
             return
-        variable_name = self._simple_variable_name(command.words[1])
+        variable_word = command.words[1]
+        assigned_values = (
+            exact_word_values(command.words[2], context.flow_state)
+            if len(command.words) >= 3
+            else ()
+        )
+        variable_name = self._simple_variable_name(variable_word)
         if variable_name is None:
+            dynamic_names = dynamic_variable_target_names(variable_word, context.flow_state)
+            if not dynamic_names:
+                return
+
+            if len(command.words) >= 3:
+                for name in dynamic_names:
+                    self._record_variable_binding(
+                        name=name,
+                        span=variable_word.span,
+                        context=context,
+                        kind='set',
+                        exact_values=assigned_values,
+                    )
+                    if context.procedure_symbol_id is None:
+                        self._record_variable_reference(
+                            name=name,
+                            span=variable_word.span,
+                            context=context,
+                        )
+                return
+
+            for name in dynamic_names:
+                self._record_variable_reference(
+                    name=name,
+                    span=variable_word.span,
+                    context=context,
+                )
             return
 
         if len(command.words) >= 3:
             self._record_variable_binding(
                 name=variable_name,
-                span=command.words[1].span,
+                span=variable_word.span,
                 context=context,
                 kind='set',
+                exact_values=assigned_values,
             )
             if context.procedure_symbol_id is None:
                 self._record_variable_reference(
                     name=variable_name,
-                    span=command.words[1].span,
+                    span=variable_word.span,
                     context=context,
                 )
             return
 
         self._record_variable_reference(
             name=variable_name,
-            span=command.words[1].span,
+            span=variable_word.span,
             context=context,
         )
 
@@ -1321,17 +1414,55 @@ class _FactCollector:
             return
         if word_static_text(command.words[1]) != 'exists':
             return
-        self._record_simple_reference_word(command.words[2], context)
+        variable_word = command.words[2]
+        variable_name = self._simple_variable_name(variable_word)
+        if variable_name is not None:
+            self._record_variable_reference(
+                name=variable_name,
+                span=variable_word.span,
+                context=context,
+            )
+            return
+
+        for dynamic_name in dynamic_variable_target_names(variable_word, context.flow_state):
+            self._record_variable_reference(
+                name=dynamic_name,
+                span=variable_word.span,
+                context=context,
+            )
+
+    def _collect_unset(self, command: Command, context: _ExtractionContext) -> None:
+        for variable_word in unset_target_words(command):
+            variable_name = self._simple_variable_name(variable_word)
+            if variable_name is not None:
+                self._record_variable_reference(
+                    name=variable_name,
+                    span=variable_word.span,
+                    context=context,
+                )
+                continue
+
+            for dynamic_name in dynamic_variable_target_names(variable_word, context.flow_state):
+                self._record_variable_reference(
+                    name=dynamic_name,
+                    span=variable_word.span,
+                    context=context,
+                )
 
     def _collect_lowered_if(
         self,
         command: LoweredIfCommand,
         context: _ExtractionContext,
     ) -> None:
+        remaining_context = context
         for clause in command.clauses:
-            self._collect_lowered_condition(clause.condition, context)
-            self._collect_lowered_body(clause.body, context)
-        self._collect_lowered_body(command.else_body, context)
+            self._collect_lowered_condition(clause.condition, remaining_context)
+            clause_context, remaining_context = self._if_clause_contexts(
+                clause.condition,
+                remaining_context,
+            )
+            self._collect_lowered_body(clause.body, clause_context)
+        self._collect_lowered_body(command.else_body, remaining_context)
 
     def _collect_lowered_catch(
         self,
@@ -1543,6 +1674,7 @@ class _FactCollector:
             procedure_symbol_id=None,
             embedded_language=None,
             embedded_owner_name=None,
+            flow_state=VariableFlowState.empty(),
         )
 
     def _procedure_context(self, proc_decl: ProcDecl) -> _ExtractionContext:
@@ -1553,6 +1685,60 @@ class _FactCollector:
             procedure_symbol_id=proc_decl.symbol_id,
             embedded_language=None,
             embedded_owner_name=None,
+            flow_state=VariableFlowState.empty(),
+        )
+
+    def _updated_context_after_command(
+        self,
+        command: Command,
+        *,
+        normalized_command_name: str | None,
+        context: _ExtractionContext,
+    ) -> _ExtractionContext:
+        if normalized_command_name == 'set':
+            return self._context_with_flow_state(
+                context,
+                state_with_set_command(context.flow_state, command),
+            )
+        if normalized_command_name == 'unset':
+            return self._context_with_flow_state(
+                context,
+                state_with_unset_command(context.flow_state, command),
+            )
+        return context
+
+    def _context_with_flow_state(
+        self,
+        context: _ExtractionContext,
+        flow_state: VariableFlowState,
+    ) -> _ExtractionContext:
+        if flow_state == context.flow_state:
+            return context
+        return _ExtractionContext(
+            uri=context.uri,
+            namespace=context.namespace,
+            scope_id=context.scope_id,
+            procedure_symbol_id=context.procedure_symbol_id,
+            embedded_language=context.embedded_language,
+            embedded_owner_name=context.embedded_owner_name,
+            flow_state=flow_state,
+        )
+
+    def _if_clause_contexts(
+        self,
+        condition: LoweredCondition | None,
+        context: _ExtractionContext,
+    ) -> tuple[_ExtractionContext, _ExtractionContext]:
+        if condition is None:
+            return context, context
+
+        true_state, false_state = condition_branch_flow_states(
+            context.flow_state,
+            condition.text,
+        )
+        return (
+            self._context_with_flow_state(context, true_state),
+            self._context_with_flow_state(context, false_state),
         )
 
     def _record_variable_reference(
@@ -1561,7 +1747,8 @@ class _FactCollector:
         span: Span,
         context: _ExtractionContext,
     ) -> None:
-        name = _normalize_variable_name(name)
+        name = normalize_variable_name(name)
+        exact_values = context.flow_state.exact_values(name)
         if self._linked_variable(context.scope_id, name) is not None:
             self._record_custom_variable_reference(
                 name=name,
@@ -1570,6 +1757,7 @@ class _FactCollector:
                 scope_id=context.scope_id,
                 procedure_symbol_id=context.procedure_symbol_id,
                 uri=context.uri,
+                exact_values=exact_values,
             )
             return
 
@@ -1586,6 +1774,7 @@ class _FactCollector:
                 scope_id=direct_target.scope_id,
                 procedure_symbol_id=None,
                 uri=context.uri,
+                exact_values=exact_values,
             )
             return
 
@@ -1596,6 +1785,7 @@ class _FactCollector:
             scope_id=context.scope_id,
             procedure_symbol_id=context.procedure_symbol_id,
             uri=context.uri,
+            exact_values=exact_values,
         )
 
     def _record_variable_binding(
@@ -1604,8 +1794,11 @@ class _FactCollector:
         span: Span,
         context: _ExtractionContext,
         kind: BindingKind,
+        exact_values: tuple[str, ...] | None = None,
     ) -> None:
-        name = _normalize_variable_name(name)
+        name = normalize_variable_name(name)
+        if exact_values is None:
+            exact_values = context.flow_state.exact_values(name)
         linked_target = self._linked_variable(context.scope_id, name)
         if linked_target is not None:
             self._record_custom_variable_binding(
@@ -1617,6 +1810,7 @@ class _FactCollector:
                 symbol_id=linked_target.symbol_id,
                 uri=context.uri,
                 kind=kind,
+                exact_values=exact_values,
             )
             return
 
@@ -1627,7 +1821,11 @@ class _FactCollector:
         )
         if direct_target is not None:
             self._record_namespace_binding(
-                target=direct_target, span=span, uri=context.uri, kind=kind
+                target=direct_target,
+                span=span,
+                uri=context.uri,
+                kind=kind,
+                exact_values=exact_values,
             )
             return
 
@@ -1640,6 +1838,7 @@ class _FactCollector:
             symbol_id=variable_symbol_id(context.uri, context.scope_id, name),
             uri=context.uri,
             kind=kind,
+            exact_values=exact_values,
         )
 
     def _record_custom_variable_reference(
@@ -1651,6 +1850,7 @@ class _FactCollector:
         scope_id: str,
         procedure_symbol_id: str | None,
         uri: str,
+        exact_values: tuple[str, ...] = (),
     ) -> None:
         self._variable_references.append(
             VariableReference(
@@ -1660,6 +1860,7 @@ class _FactCollector:
                 scope_id=scope_id,
                 procedure_symbol_id=procedure_symbol_id,
                 span=span,
+                exact_values=exact_values,
             )
         )
 
@@ -1674,6 +1875,7 @@ class _FactCollector:
         symbol_id: str,
         uri: str,
         kind: BindingKind,
+        exact_values: tuple[str, ...] = (),
     ) -> None:
         self._variable_bindings.append(
             VarBinding(
@@ -1685,6 +1887,7 @@ class _FactCollector:
                 procedure_symbol_id=procedure_symbol_id,
                 kind=kind,
                 span=span,
+                exact_values=exact_values,
             )
         )
 
@@ -1695,6 +1898,7 @@ class _FactCollector:
         span: Span,
         uri: str,
         kind: BindingKind,
+        exact_values: tuple[str, ...] = (),
     ) -> None:
         self._record_custom_variable_binding(
             name=target.name,
@@ -1705,6 +1909,7 @@ class _FactCollector:
             symbol_id=target.symbol_id,
             uri=uri,
             kind=kind,
+            exact_values=exact_values,
         )
 
     def _simple_variable_name(self, word: Word) -> str | None:
@@ -1998,24 +2203,10 @@ class _FactCollector:
         return symbols
 
 
-def _normalize_variable_name(name: str) -> str:
-    while name.endswith(':') and not name.endswith('::'):
-        name = name[:-1]
-
-    open_paren = name.find('(')
-    if open_paren <= 0 or not name.endswith(')'):
-        return name
-
-    base_name = name[:open_paren]
-    if not is_simple_name(base_name):
-        return name
-    return base_name
-
-
 def _word_variable_name(word: Word) -> str | None:
     variable_name = word_static_text(word)
     if variable_name is not None:
-        return _normalize_variable_name(variable_name)
+        return normalize_variable_name(variable_name)
 
     if isinstance(word, BracedWord):
         return None
@@ -2035,7 +2226,7 @@ def _word_variable_name(word: Word) -> str | None:
     if not saw_open_paren:
         return None
 
-    variable_name = _normalize_variable_name(''.join(pieces))
+    variable_name = normalize_variable_name(''.join(pieces))
     if not is_simple_name(variable_name):
         return None
     return variable_name

@@ -214,6 +214,7 @@ class Resolver:
                     kind='variable',
                     location=Location(uri=binding.uri, span=binding.span),
                     detail=f'{binding.kind} {binding.name}',
+                    exact_values=binding.exact_values,
                 )
             )
 
@@ -238,10 +239,43 @@ class Resolver:
         return result
 
     def _build_definition_hovers(self, definitions: list[DefinitionTarget]) -> list[HoverInfo]:
-        return [
-            HoverInfo(span=definition.location.span, contents=definition.detail)
-            for definition in definitions
-        ]
+        grouped_definitions: dict[tuple[str, int, int], list[DefinitionTarget]] = {}
+        ordered_keys: list[tuple[str, int, int]] = []
+        for definition in definitions:
+            key = (
+                definition.location.uri,
+                definition.location.span.start.offset,
+                definition.location.span.end.offset,
+            )
+            if key not in grouped_definitions:
+                ordered_keys.append(key)
+            grouped_definitions.setdefault(key, []).append(definition)
+
+        hovers: list[HoverInfo] = []
+        for key in ordered_keys:
+            group = grouped_definitions[key]
+            if len(group) == 1 or any(definition.kind != 'variable' for definition in group):
+                hovers.extend(
+                    HoverInfo(
+                        span=definition.location.span,
+                        contents=_definition_hover_detail(definition),
+                    )
+                    for definition in group
+                )
+                continue
+
+            details = tuple(
+                dict.fromkeys(_definition_hover_detail(definition) for definition in group)
+            )
+            hovers.append(
+                HoverInfo(
+                    span=group[0].location.span,
+                    contents='\n\n'.join(details)
+                    if any('\n\n' in detail for detail in details)
+                    else '\n'.join(details),
+                )
+            )
+        return hovers
 
     def _metadata_bindings(
         self,
@@ -700,7 +734,13 @@ class Resolver:
         if len(symbol_ids) == 1:
             definition = definition_by_symbol.get(symbol_ids[0])
             if definition is not None:
-                hover = HoverInfo(span=variable_reference.span, contents=definition.detail)
+                hover = HoverInfo(
+                    span=variable_reference.span,
+                    contents=_variable_hover_detail(
+                        definition.detail,
+                        variable_reference.exact_values,
+                    ),
+                )
         state = 'resolved' if len(symbol_ids) == 1 else 'ambiguous'
         reason = (
             'Resolved to a unique variable binding.'
@@ -760,6 +800,20 @@ class Resolver:
             return ()
 
         return builtin_commands_any(f'tcltest::{_normalize_command_name(command_call.name)}')
+
+
+def _variable_hover_detail(detail: str, exact_values: tuple[str, ...]) -> str:
+    if not exact_values:
+        return detail
+
+    rendered_values = ' | '.join(f'"{value}"' for value in exact_values)
+    return f'{detail}: {rendered_values}'
+
+
+def _definition_hover_detail(definition: DefinitionTarget) -> str:
+    if definition.kind != 'variable':
+        return definition.detail
+    return _variable_hover_detail(definition.detail, definition.exact_values)
 
 
 def _metadata_var_binding(
