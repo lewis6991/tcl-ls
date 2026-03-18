@@ -54,6 +54,38 @@ def _write_sample_plugin_bundle(metadata_root: Path) -> Path:
     return plugin_path
 
 
+def _write_sample_library_root(library_root: Path) -> Path:
+    package_root = library_root / 'modules' / 'samplelib'
+    package_root.mkdir(parents=True, exist_ok=True)
+    (package_root / 'pkgIndex.tcl').write_text(
+        'package ifneeded samplelib 1.0 [list source [file join $dir samplelib.tcl]]\n',
+        encoding='utf-8',
+    )
+    (package_root / 'samplelib.tcl').write_text(
+        'package provide samplelib 1.0\nproc samplelib::greet {} {return ok}\n',
+        encoding='utf-8',
+    )
+    return package_root
+
+
+def _write_transitive_package_workspace(workspace_root: Path) -> Path:
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    (workspace_root / 'pkgIndex.tcl').write_text(
+        'package ifneeded helper 1.0 [list source [file join $dir helper.tcl]]\n',
+        encoding='utf-8',
+    )
+    (workspace_root / 'helper.tcl').write_text(
+        'package require json\npackage provide helper 1.0\n',
+        encoding='utf-8',
+    )
+    source_path = workspace_root / 'main.tcl'
+    source_path.write_text(
+        'package require helper\njson::json2dict {}\n',
+        encoding='utf-8',
+    )
+    return source_path
+
+
 def _write_declaration_plugin_bundle(metadata_root: Path) -> Path:
     metadata_root.mkdir(parents=True, exist_ok=True)
     plugin_path = metadata_root / 'declaration.tcl'
@@ -344,6 +376,34 @@ def test_check_project_loads_plugin_metadata_from_tcllsrc(tmp_path: Path) -> Non
     report = check_project(package_root)
 
     assert plugin_path.is_file()
+    assert report.diagnostics == ()
+
+
+def test_check_project_loads_package_indexes_from_tcllsrc_lib_path(tmp_path: Path) -> None:
+    project_root = tmp_path / 'workspace'
+    package_root = project_root / 'pkg'
+    _write_sample_library_root(tmp_path / 'tcllib')
+    package_root.mkdir(parents=True)
+
+    (project_root / 'tcllsrc.tcl').write_text(
+        'lib-path ../tcllib\n',
+        encoding='utf-8',
+    )
+    (package_root / 'main.tcl').write_text(
+        'package require samplelib\nsamplelib::greet\n',
+        encoding='utf-8',
+    )
+
+    report = check_project(package_root)
+
+    assert report.diagnostics == ()
+
+
+def test_check_project_resolves_transitive_required_packages(tmp_path: Path) -> None:
+    source_path = _write_transitive_package_workspace(tmp_path / 'workspace')
+
+    report = check_project(source_path)
+
     assert report.diagnostics == ()
 
 

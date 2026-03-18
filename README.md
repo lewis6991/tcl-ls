@@ -62,6 +62,17 @@ Pass extra checker flags through `make` with:
 make check-tcllib TCL_CHECK_ARGS="--context-lines=1 --fail-on-diagnostics"
 ```
 
+Project-local config can live in `tcllsrc.tcl`. Supported commands are:
+
+```tcl
+plugin-path .tcl-ls/sample.tcl
+lib-path ../tcllib
+```
+
+Configured paths are resolved relative to the config file. `lib-path` roots are
+scanned for `pkgIndex.tcl` files so external library trees can satisfy
+`package require` without moving them into the project.
+
 To build metadata inside a tool-specific Tcl shell, source the bundled helper
 reported by:
 

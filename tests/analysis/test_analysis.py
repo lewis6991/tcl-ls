@@ -62,6 +62,40 @@ def test_analysis_reports_no_diagnostics_for_metadata_files(parser: Parser) -> N
     assert diagnostics_by_uri == {}
 
 
+def test_analysis_resolves_tcllib_metadata_from_umbrella_packages(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///tcllib_umbrella_packages.tcl',
+        'package require json\n'
+        'package require struct\n'
+        'proc run {} {\n'
+        '    struct::set include seen alpha\n'
+        '    puts $seen\n'
+        '}\n'
+        'json::json2dict {}\n',
+    )
+    analysis = snapshot.analysis
+
+    resolution_by_name = {
+        resolution.reference.name: resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command'
+        and resolution.reference.name in {'json::json2dict', 'struct::set include'}
+    }
+    assert resolution_by_name == {
+        'json::json2dict': 'resolved',
+        'struct::set include': 'resolved',
+    }
+
+    variable_states = {
+        resolution.reference.name: resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'variable' and resolution.reference.name == 'seen'
+    }
+    assert variable_states == {'seen': 'resolved'}
+    assert analysis.diagnostics == ()
+
+
 def test_fact_extractor_skips_lexical_spans_when_parse_result_is_omitted(parser: Parser) -> None:
     extractor = FactExtractor(parser)
     parse_result = parser.parse_document(

@@ -19,11 +19,14 @@ from tcl_lsp.analysis import (
     Resolver,
     WorkspaceIndex,
 )
-from tcl_lsp.analysis.metadata_effects import metadata_dependency_overlay
+from tcl_lsp.analysis.metadata_effects import (
+    dependency_required_packages,
+    metadata_dependency_overlay,
+)
 from tcl_lsp.common import Diagnostic
 from tcl_lsp.metadata_paths import configure_metadata_paths, metadata_paths_context
 from tcl_lsp.parser import Parser
-from tcl_lsp.project_config import configured_plugin_paths
+from tcl_lsp.project_config import configured_library_paths, configured_plugin_paths
 from tcl_lsp.workspace import (
     candidate_package_roots,
     discover_tcl_sources,
@@ -475,6 +478,7 @@ def _run_check(
 ) -> CheckReport:
     target = path.expanduser().resolve(strict=False)
     active_plugin_paths = (*configured_plugin_paths(target), *plugin_paths)
+    active_library_paths = configured_library_paths(target)
     with metadata_paths_context(active_plugin_paths):
         worker_count = _worker_count(threads)
         started = time.monotonic()
@@ -488,6 +492,7 @@ def _run_check(
             target,
             parser=parser,
             extractor=extractor,
+            library_paths=active_library_paths,
         )
 
         source_count = sum(len(unit.source_paths) for unit in units)
@@ -682,10 +687,11 @@ def _build_package_index_catalog(
     *,
     parser: Parser,
     extractor: FactExtractor,
+    library_paths: Sequence[Path] = (),
 ) -> tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...]:
     seen_paths: set[Path] = set()
     catalog_entries: list[tuple[str, tuple[PackageIndexEntry, ...]]] = []
-    for root in _package_index_scan_roots(target):
+    for root in _package_index_scan_roots(target, library_paths=library_paths):
         for pkg_index_path in sorted(root.rglob('pkgIndex.tcl')):
             resolved_path = pkg_index_path.resolve(strict=False)
             if resolved_path in seen_paths:
@@ -709,17 +715,22 @@ def _apply_package_index_catalog(
         workspace_index.update_package_index(pkg_index_uri, package_index_entries)
 
 
-def _package_index_scan_roots(target: Path) -> tuple[Path, ...]:
-    roots = tuple(
-        dict.fromkeys(
-            package_root.resolve(strict=False) for package_root in candidate_package_roots(target)
-        )
-    )
-    if roots:
-        return roots
-    if target.is_dir():
-        return (target,)
-    return ()
+def _package_index_scan_roots(
+    target: Path,
+    *,
+    library_paths: Sequence[Path] = (),
+) -> tuple[Path, ...]:
+    roots: dict[Path, None] = {}
+    candidate_roots = tuple(candidate_package_roots(target))
+    if candidate_roots:
+        for package_root in candidate_roots:
+            roots.setdefault(package_root.resolve(strict=False), None)
+    elif target.is_dir():
+        roots.setdefault(target, None)
+
+    for library_path in library_paths:
+        roots.setdefault(library_path.resolve(strict=False), None)
+    return tuple(roots)
 
 
 def _discover_analysis_units(target: Path) -> tuple[_AnalysisUnit, ...]:
@@ -1064,7 +1075,7 @@ def _analyze_source_document(
     resolver: Resolver,
     workspace_index: WorkspaceIndex,
 ) -> _UnitSourceReport:
-    dependency_overlay = metadata_dependency_overlay(
+    required_packages = dependency_required_packages(
         document.path,
         document.facts,
         workspace_index,
@@ -1075,7 +1086,7 @@ def _analyze_source_document(
                 uri=document.uri,
                 facts=document.facts,
                 workspace_index=workspace_index,
-                additional_required_packages=dependency_overlay.required_packages,
+                additional_required_packages=required_packages,
             ).diagnostics,
             key=_diagnostic_key,
         )

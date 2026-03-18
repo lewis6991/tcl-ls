@@ -16,7 +16,12 @@ from tcl_lsp.metadata_paths import metadata_files
 from tcl_lsp.parser import Parser, word_static_text
 
 _CORE_PACKAGE = 'Tcl'
-_PACKAGE_ALIASES = {'tcl::oo': 'TclOO'}
+_PACKAGE_ALIASES = {
+    # Some bundled tcllib metadata is shipped for specific subpackages even when
+    # callers commonly `package require` the umbrella package.
+    'struct': 'struct::set',
+    'tcl::oo': 'TclOO',
+}
 
 
 @dataclass(frozen=True, slots=True)

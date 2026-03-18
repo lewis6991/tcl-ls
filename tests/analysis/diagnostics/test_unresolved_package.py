@@ -15,3 +15,13 @@ def test_analysis_reports_unresolved_packages(parser: Parser) -> None:
 
     assert [diagnostic.code for diagnostic in analysis.diagnostics] == ['unresolved-package']
     assert analysis.diagnostics[0].message == 'Unresolved package `missing`.'
+
+
+def test_analysis_accepts_tcllib_package_aliases_with_bundled_metadata(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///tcllib_package_aliases.tcl',
+        'package require json\npackage require struct\n',
+    )
+
+    assert snapshot.analysis.diagnostics == ()

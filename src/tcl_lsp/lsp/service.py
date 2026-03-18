@@ -6,12 +6,13 @@ from pathlib import Path
 
 from tcl_lsp.analysis import AnalysisResult, FactExtractor, Resolver, WorkspaceIndex
 from tcl_lsp.analysis.builtins import builtin_definition_targets
+from tcl_lsp.analysis.metadata_effects import dependency_required_packages
 from tcl_lsp.analysis.model import DefinitionTarget, DocumentFacts
 from tcl_lsp.common import Diagnostic, DocumentSymbol, HoverInfo, Location
 from tcl_lsp.lsp.semantic_tokens import encode_document_semantic_tokens
 from tcl_lsp.metadata_paths import configure_metadata_paths
 from tcl_lsp.parser import Parser, ParseResult
-from tcl_lsp.project_config import configured_plugin_paths
+from tcl_lsp.project_config import configured_library_paths, configured_plugin_paths
 from tcl_lsp.workspace import candidate_package_roots, read_source_file, source_id_to_path
 
 
@@ -30,6 +31,7 @@ class LanguageService:
         '_documents',
         '_extractor',
         '_failed_background_documents',
+        '_library_paths_by_uri',
         '_open_document_uris',
         '_parser',
         '_plugin_paths_by_uri',
@@ -55,6 +57,7 @@ class LanguageService:
         self._failed_background_documents: set[str] = set()
         self._open_document_uris: set[str] = set()
         self._plugin_paths_by_uri: dict[str, tuple[Path, ...]] = {}
+        self._library_paths_by_uri: dict[str, tuple[Path, ...]] = {}
 
     def open_document(self, uri: str, text: str, version: int) -> tuple[Diagnostic, ...]:
         self.load_documents(((uri, text, version),))
@@ -69,12 +72,17 @@ class LanguageService:
             return ()
 
         previous_plugin_paths = self._active_plugin_paths()
+        previous_library_paths = self._active_library_paths()
         self._open_document_uris.discard(uri)
         self._plugin_paths_by_uri.pop(uri, None)
+        self._library_paths_by_uri.pop(uri, None)
         del self._documents[uri]
         self._workspace_index.remove(uri)
 
-        if self._active_plugin_paths() != previous_plugin_paths:
+        if (
+            self._active_plugin_paths() != previous_plugin_paths
+            or self._active_library_paths() != previous_library_paths
+        ):
             self._rebuild_documents()
             return ()
 
@@ -163,11 +171,16 @@ class LanguageService:
             return
 
         previous_plugin_paths = self._active_plugin_paths()
+        previous_library_paths = self._active_library_paths()
         for uri, _, _ in pending_documents:
             self._open_document_uris.add(uri)
             self._plugin_paths_by_uri[uri] = self._configured_plugin_paths(uri)
+            self._library_paths_by_uri[uri] = self._configured_library_paths(uri)
 
-        if self._active_plugin_paths() != previous_plugin_paths:
+        if (
+            self._active_plugin_paths() != previous_plugin_paths
+            or self._active_library_paths() != previous_library_paths
+        ):
             self._rebuild_documents(pending_documents)
             return
 
@@ -195,7 +208,8 @@ class LanguageService:
         if path is None:
             return
 
-        for package_root in candidate_package_roots(path):
+        package_roots = (*candidate_package_roots(path), *self._library_paths_by_uri.get(uri, ()))
+        for package_root in package_roots:
             resolved_root = package_root.resolve(strict=False)
             if resolved_root in self._scanned_package_roots:
                 continue
@@ -260,8 +274,21 @@ class LanguageService:
 
     def _recompute_workspace_analyses(self) -> None:
         for uri, document in list(self._documents.items()):
+            source_path = source_id_to_path(uri)
+            additional_required_packages: frozenset[str]
+            if source_path is None:
+                additional_required_packages = frozenset()
+            else:
+                additional_required_packages = dependency_required_packages(
+                    source_path,
+                    document.facts,
+                    self._workspace_index,
+                )
             analysis = self._resolver.analyze(
-                uri=uri, facts=document.facts, workspace_index=self._workspace_index
+                uri=uri,
+                facts=document.facts,
+                workspace_index=self._workspace_index,
+                additional_required_packages=additional_required_packages,
             )
             self._documents[uri] = ManagedDocument(
                 uri=document.uri,
@@ -278,6 +305,12 @@ class LanguageService:
             return ()
         return configured_plugin_paths(path)
 
+    def _configured_library_paths(self, uri: str) -> tuple[Path, ...]:
+        path = source_id_to_path(uri)
+        if path is None:
+            return ()
+        return configured_library_paths(path)
+
     def _active_plugin_paths(self) -> tuple[Path, ...]:
         active_paths: dict[Path, None] = {}
         for uri in self._open_document_uris:
@@ -285,10 +318,20 @@ class LanguageService:
                 active_paths.setdefault(plugin_path, None)
         return tuple(active_paths)
 
+    def _active_library_paths(self) -> tuple[Path, ...]:
+        active_paths: dict[Path, None] = {}
+        for uri in self._open_document_uris:
+            for library_path in self._library_paths_by_uri.get(uri, ()):
+                active_paths.setdefault(library_path, None)
+        return tuple(active_paths)
+
     def _rebuild_documents(self, pending_documents: Iterable[tuple[str, str, int]] = ()) -> None:
-        snapshots = {
-            uri: (document.text, document.version) for uri, document in self._documents.items()
-        }
+        snapshots: dict[str, tuple[str, int]] = {}
+        for uri in self._open_document_uris:
+            document = self._documents.get(uri)
+            if document is None:
+                continue
+            snapshots[uri] = (document.text, document.version)
         for uri, text, version in pending_documents:
             snapshots[uri] = (text, version)
 

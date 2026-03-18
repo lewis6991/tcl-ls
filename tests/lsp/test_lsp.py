@@ -36,6 +36,36 @@ def _open_server_document(
     )
 
 
+def _write_sample_library_root(library_root: Path) -> Path:
+    package_root = library_root / 'modules' / 'samplelib'
+    package_root.mkdir(parents=True, exist_ok=True)
+    (package_root / 'pkgIndex.tcl').write_text(
+        'package ifneeded samplelib 1.0 [list source [file join $dir samplelib.tcl]]\n',
+        encoding='utf-8',
+    )
+    (package_root / 'samplelib.tcl').write_text(
+        'package provide samplelib 1.0\nproc samplelib::greet {} {return ok}\n',
+        encoding='utf-8',
+    )
+    return package_root
+
+
+def _write_transitive_package_workspace(workspace_root: Path) -> Path:
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    (workspace_root / 'pkgIndex.tcl').write_text(
+        'package ifneeded helper 1.0 [list source [file join $dir helper.tcl]]\n',
+        encoding='utf-8',
+    )
+    (workspace_root / 'helper.tcl').write_text(
+        'package require json\npackage provide helper 1.0\n',
+        encoding='utf-8',
+    )
+    source_path = workspace_root / 'main.tcl'
+    source_text = 'package require helper\njson::json2dict {}\n'
+    source_path.write_text(source_text, encoding='utf-8')
+    return source_path
+
+
 def _server_position_request(
     server: LanguageServer,
     *,
@@ -264,6 +294,42 @@ def test_language_service_loads_plugin_metadata_from_tcllsrc(tmp_path: Path) -> 
     assert diagnostics == ()
 
 
+def test_language_service_loads_package_indexes_from_tcllsrc_lib_path(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / 'workspace'
+    _write_sample_library_root(tmp_path / 'tcllib')
+    project_root.mkdir()
+    (project_root / 'tcllsrc.tcl').write_text(
+        'lib-path ../tcllib\n',
+        encoding='utf-8',
+    )
+    source_path = project_root / 'main.tcl'
+    source_text = 'package require samplelib\nsamplelib::greet\n'
+    source_path.write_text(source_text, encoding='utf-8')
+
+    service = LanguageService()
+    diagnostics = service.open_document(source_path.as_uri(), source_text, 1)
+
+    assert diagnostics == ()
+    hover = service.hover(source_path.as_uri(), 1, 1)
+    assert hover is not None
+    assert hover.contents == 'proc ::samplelib::greet()'
+
+
+def test_language_service_resolves_transitive_required_packages(tmp_path: Path) -> None:
+    source_path = _write_transitive_package_workspace(tmp_path / 'workspace')
+    source_text = source_path.read_text(encoding='utf-8')
+
+    service = LanguageService()
+    diagnostics = service.open_document(source_path.as_uri(), source_text, 1)
+
+    assert diagnostics == ()
+    hover = service.hover(source_path.as_uri(), 1, 1)
+    assert hover is not None
+    assert hover.contents.startswith('builtin command json::json2dict {jsonText}')
+
+
 def test_language_service_loads_generated_project_metadata_without_docs(
     tmp_path: Path,
 ) -> None:
@@ -316,6 +382,34 @@ def test_language_service_clears_project_metadata_when_plugin_paths_change(
 
     assert len(diagnostics) == 2
     assert all(diagnostic.code == 'unresolved-command' for diagnostic in diagnostics)
+
+
+def test_language_service_clears_project_library_paths_when_project_changes(
+    tmp_path: Path,
+) -> None:
+    project_with_lib = tmp_path / 'with-lib'
+    project_without_lib = tmp_path / 'without-lib'
+    _write_sample_library_root(tmp_path / 'tcllib')
+    project_with_lib.mkdir()
+    project_without_lib.mkdir()
+    (project_with_lib / 'tcllsrc.tcl').write_text(
+        'lib-path ../tcllib\n',
+        encoding='utf-8',
+    )
+
+    source_text = 'package require samplelib\nsamplelib::greet\n'
+    source_with_lib = project_with_lib / 'main.tcl'
+    source_with_lib.write_text(source_text, encoding='utf-8')
+    source_without_lib = project_without_lib / 'main.tcl'
+    source_without_lib.write_text(source_text, encoding='utf-8')
+
+    service = LanguageService()
+    assert service.open_document(source_with_lib.as_uri(), source_text, 1) == ()
+
+    service.close_document(source_with_lib.as_uri())
+    diagnostics = service.open_document(source_without_lib.as_uri(), source_text, 1)
+
+    assert [diagnostic.code for diagnostic in diagnostics] == ['unresolved-package']
 
 
 def test_language_service_definition_resolves_builtin_command_metadata(

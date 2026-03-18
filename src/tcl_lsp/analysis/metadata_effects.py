@@ -46,6 +46,54 @@ def metadata_dependency_overlay(
     )
 
 
+def dependency_required_packages(
+    source_path: Path,
+    facts: DocumentFacts,
+    workspace_index: WorkspaceIndex,
+) -> frozenset[str]:
+    documents_by_uri = {document.uri: document for document in workspace_index.documents()}
+    pending_documents: list[tuple[Path, DocumentFacts]] = [(source_path, facts)]
+    visited_uris: set[str] = set()
+    required_packages: set[str] = set()
+
+    while pending_documents:
+        current_path, current_facts = pending_documents.pop()
+        if current_facts.uri in visited_uris:
+            continue
+        visited_uris.add(current_facts.uri)
+
+        overlay = metadata_dependency_overlay(
+            current_path,
+            current_facts,
+            workspace_index,
+        )
+        package_names = {
+            package_require.name for package_require in current_facts.package_requires
+        } | set(overlay.required_packages)
+        required_packages.update(package_names)
+
+        for source_uri in overlay.source_uris:
+            if source_uri in visited_uris:
+                continue
+            nested_path = source_id_to_path(source_uri)
+            nested_facts = documents_by_uri.get(source_uri)
+            if nested_path is None or nested_facts is None:
+                continue
+            pending_documents.append((nested_path, nested_facts))
+
+        for package_name in package_names:
+            for source_uri in workspace_index.package_source_uris(package_name):
+                if source_uri in visited_uris:
+                    continue
+                nested_path = source_id_to_path(source_uri)
+                nested_facts = documents_by_uri.get(source_uri)
+                if nested_path is None or nested_facts is None:
+                    continue
+                pending_documents.append((nested_path, nested_facts))
+
+    return frozenset(required_packages)
+
+
 @metadata_lru_cache(maxsize=1)
 def _candidate_effect_command_names() -> frozenset[str]:
     candidates: set[str] = set()
