@@ -1474,7 +1474,7 @@ meta command seek {channelId offset {origin start}}
 # With one argument, return the current value of varName. With a value
 # argument, assign and return the new value; names may refer to scalars, array
 # elements, or namespace variables.
-meta command set {varName args}
+meta command set {varName ? newValue ?}
 
 # Open a TCP network connection.
 # This command opens a network socket and returns a channel identifier that

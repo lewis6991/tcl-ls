@@ -63,6 +63,16 @@ def test_analysis_checks_required_package_builtin_subcommand_arguments(parser: P
     )
 
 
+def test_analysis_reports_wrong_set_argument_count(parser: Parser) -> None:
+    snapshot = _analyze(parser, 'file:///set_args.tcl', 'set a 1 2\n')
+    analysis = snapshot.analysis
+
+    assert [diagnostic.code for diagnostic in analysis.diagnostics] == ['wrong-argument-count']
+    assert analysis.diagnostics[0].message == (
+        'Wrong number of arguments for command `set`; expected 1..2, got 3.'
+    )
+
+
 def test_analysis_skips_unsupported_builtin_argument_signatures(parser: Parser) -> None:
     snapshot = _analyze(parser, 'file:///binary_encode.tcl', 'binary encode\n')
     assert snapshot.analysis.diagnostics == ()
