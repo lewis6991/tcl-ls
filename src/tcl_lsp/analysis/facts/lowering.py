@@ -295,7 +295,16 @@ def lower_parse_result(
             else ()
         ),
         string_spans=lowering_result.string_spans,
-        operator_spans=lowering_result.operator_spans,
+        operator_spans=(
+            tuple(
+                token.span
+                for token in parse_result.tokens
+                if token.kind == 'separator' and token.text == ';'
+            )
+            + lowering_result.operator_spans
+            if collect_lexical_spans
+            else ()
+        ),
     )
 
 

@@ -739,6 +739,25 @@ def test_language_server_returns_semantic_tokens_for_return_keyword(
     assert _semantic_token(line=1, character=4, length=6, token_type='keyword') in decoded
 
 
+def test_language_server_returns_semantic_tokens_for_semicolons(
+    server: LanguageServer,
+) -> None:
+    _open_server_document(server, 'set first 1; set second 2\n')
+
+    token_types, token_modifiers = _semantic_tokens_legend(server)
+    response = _server_document_request(server, method='textDocument/semanticTokens/full')
+    result = _as_dict(response['result'])
+    data = cast(list[int], result['data'])
+
+    decoded = _decode_semantic_tokens(
+        data,
+        token_types=token_types,
+        token_modifiers=token_modifiers,
+    )
+
+    assert _semantic_token(line=0, character=11, length=1, token_type='operator') in decoded
+
+
 def test_language_server_returns_semantic_tokens_for_nested_delimiters_in_braced_words(
     server: LanguageServer,
 ) -> None:
