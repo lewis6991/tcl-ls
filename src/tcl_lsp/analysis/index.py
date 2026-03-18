@@ -122,7 +122,7 @@ class WorkspaceIndex:
     def resolve_imported_procedure(self, raw_name: str, namespace: str) -> tuple[ProcDecl, ...]:
         matches: list[ProcDecl] = []
         seen: set[str] = set()
-        for target_name in self.imported_command_candidates(raw_name, namespace):
+        for _, target_name in self.matching_command_imports(raw_name, namespace):
             for proc in _effective_procedures(
                 self._procedures_by_qualified_name.get(target_name, ())
             ):
@@ -137,13 +137,31 @@ class WorkspaceIndex:
             return ()
 
         candidates: dict[str, None] = {}
+        for _, target_name in self.matching_command_imports(raw_name, namespace):
+            candidates.setdefault(target_name, None)
+        return tuple(candidates)
+
+    def matching_command_imports(
+        self,
+        raw_name: str,
+        namespace: str,
+    ) -> tuple[tuple[CommandImport, str], ...]:
+        if '::' in raw_name:
+            return ()
+
+        matches: list[tuple[CommandImport, str]] = []
+        seen: set[tuple[str, int, str]] = set()
         for candidate_namespace in _namespace_candidates(namespace):
             for command_import in self._command_imports_by_namespace.get(candidate_namespace, ()):
                 target_name = _import_target_name(command_import, raw_name)
                 if target_name is None:
                     continue
-                candidates.setdefault(target_name, None)
-        return tuple(candidates)
+                key = (command_import.uri, command_import.span.start.offset, target_name)
+                if key in seen:
+                    continue
+                seen.add(key)
+                matches.append((command_import, target_name))
+        return tuple(matches)
 
     def provided_packages_for_name(self, package_name: str) -> tuple[PackageProvide, ...]:
         return tuple(self._provided_packages_by_name.get(package_name, ()))

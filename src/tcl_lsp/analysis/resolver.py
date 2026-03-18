@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 
 from tcl_lsp.analysis.builtins import (
     BuiltinCommand,
     builtin_commands_any,
     builtin_commands_for_packages,
+    canonical_builtin_package_name,
 )
 from tcl_lsp.analysis.embedded_languages import (
     contextual_resolution_reason,
     resolves_contextual_command,
 )
+from tcl_lsp.analysis.metadata_effects import metadata_dependency_overlay
 from tcl_lsp.analysis.diagnostics import (
     DiagnosticContext,
     ResolvedCommand,
@@ -34,6 +37,7 @@ from tcl_lsp.analysis.model import (
     BINDING_KINDS,
     BindingKind,
     CommandCall,
+    CommandImport,
     DefinitionTarget,
     DocumentFacts,
     ProcDecl,
@@ -67,8 +71,23 @@ class Resolver:
         additional_required_packages: frozenset[str] = frozenset(),
     ) -> AnalysisResult:
         diagnostics = list(facts.diagnostics)
-        required_packages = frozenset(requirement.name for requirement in facts.package_requires)
-        required_packages |= additional_required_packages
+        direct_required_packages = frozenset(
+            requirement.name for requirement in facts.package_requires
+        )
+        required_packages = direct_required_packages | additional_required_packages
+        transitive_required_packages = required_packages - direct_required_packages
+        hover_trace_parents = (
+            _build_hover_trace_parents(facts, workspace_index)
+            if (
+                source_id_to_path(uri) is not None
+                and (
+                    additional_required_packages
+                    or facts.package_requires
+                    or facts.source_directives
+                )
+            )
+            else {}
+        )
 
         resolutions: list[ResolutionResult] = []
         resolved_references: list[ResolvedReference] = []
@@ -82,6 +101,8 @@ class Resolver:
                 command_call,
                 workspace_index,
                 required_packages,
+                transitive_required_packages,
+                hover_trace_parents,
             )
             resolutions.append(resolution)
             command_resolutions.append(
@@ -292,6 +313,8 @@ class Resolver:
         command_call: CommandCall,
         workspace_index: WorkspaceIndex,
         required_packages: frozenset[str],
+        transitive_required_packages: frozenset[str],
+        hover_trace_parents: dict[tuple[str, str], tuple[str, str]],
     ) -> tuple[ResolutionResult, HoverInfo | None, ResolvedCommandTarget | None]:
         reference = ReferenceSite(
             uri=command_call.uri,
@@ -351,7 +374,14 @@ class Resolver:
                 ),
                 HoverInfo(
                     span=command_call.name_span,
-                    contents=_builtin_hover(builtin),
+                    contents=_command_hover(
+                        _builtin_hover(builtin),
+                        transitive_trace=_builtin_transitive_trace(
+                            builtin,
+                            transitive_required_packages,
+                            hover_trace_parents,
+                        ),
+                    ),
                 ),
                 builtin,
             )
@@ -392,7 +422,7 @@ class Resolver:
                     ),
                     HoverInfo(
                         span=command_call.name_span,
-                        contents=_builtin_hover(builtin),
+                        contents=_command_hover(_builtin_hover(builtin)),
                     ),
                     builtin,
                 )
@@ -418,14 +448,33 @@ class Resolver:
                 )
 
         matches = workspace_index.resolve_procedure(command_call.name, command_call.namespace)
-        resolved_via_import = False
+        resolved_import: CommandImport | None = None
         if not matches:
-            matches = workspace_index.resolve_imported_procedure(
+            imported_proc_matches = self._resolve_imported_procedures(
                 command_call.name,
                 command_call.namespace,
+                workspace_index,
             )
-            resolved_via_import = bool(matches)
-        builtin_from_import = None
+            if len(imported_proc_matches) == 1:
+                resolved_import, proc = imported_proc_matches[0]
+                matches = (proc,)
+            elif len(imported_proc_matches) > 1:
+                return (
+                    ResolutionResult(
+                        reference=reference,
+                        uncertainty=AnalysisUncertainty(
+                            state='ambiguous',
+                            reason='Multiple imported procedures match this command name.',
+                        ),
+                        target_symbol_ids=tuple(
+                            proc.symbol_id for _, proc in imported_proc_matches
+                        ),
+                    ),
+                    None,
+                    None,
+                )
+
+        imported_builtin_match: tuple[CommandImport, BuiltinCommand] | None = None
         if not matches:
             imported_builtin_matches = self._resolve_imported_builtins(
                 command_call.name,
@@ -433,7 +482,7 @@ class Resolver:
                 workspace_index,
             )
             if len(imported_builtin_matches) == 1:
-                builtin_from_import = imported_builtin_matches[0]
+                imported_builtin_match = imported_builtin_matches[0]
             elif len(imported_builtin_matches) > 1:
                 return (
                     ResolutionResult(
@@ -444,14 +493,15 @@ class Resolver:
                         ),
                         target_symbol_ids=tuple(
                             overload.symbol_id
-                            for builtin in imported_builtin_matches
+                            for _, builtin in imported_builtin_matches
                             for overload in builtin.overloads
                         ),
                     ),
                     None,
                     None,
                 )
-        if builtin_from_import is not None:
+        if imported_builtin_match is not None:
+            resolved_import, builtin_from_import = imported_builtin_match
             return (
                 ResolutionResult(
                     reference=reference,
@@ -468,7 +518,18 @@ class Resolver:
                 ),
                 HoverInfo(
                     span=command_call.name_span,
-                    contents=_builtin_hover(builtin_from_import),
+                    contents=_command_hover(
+                        _builtin_hover(builtin_from_import),
+                        import_trace=_import_trace(
+                            resolved_import,
+                            hover_trace_parents,
+                        ),
+                        transitive_trace=_builtin_transitive_trace(
+                            builtin_from_import,
+                            transitive_required_packages,
+                            hover_trace_parents,
+                        ),
+                    ),
                 ),
                 builtin_from_import,
             )
@@ -489,7 +550,7 @@ class Resolver:
                     ),
                     HoverInfo(
                         span=command_call.name_span,
-                        contents=_builtin_hover(builtin),
+                        contents=_command_hover(_builtin_hover(builtin)),
                     ),
                     builtin,
                 )
@@ -552,7 +613,23 @@ class Resolver:
             )
         if len(matches) == 1:
             proc = matches[0]
-            detail = _proc_hover(proc)
+            detail = _command_hover(
+                _proc_hover(proc),
+                import_trace=(
+                    _import_trace(
+                        resolved_import,
+                        hover_trace_parents,
+                    )
+                    if resolved_import is not None
+                    else None
+                ),
+                transitive_trace=_source_transitive_trace(
+                    proc.uri,
+                    workspace_index,
+                    transitive_required_packages,
+                    hover_trace_parents,
+                ),
+            )
             return (
                 ResolutionResult(
                     reference=reference,
@@ -560,7 +637,7 @@ class Resolver:
                         state='resolved',
                         reason=(
                             'Resolved via a static namespace import.'
-                            if resolved_via_import
+                            if resolved_import is not None
                             else 'Resolved to a unique procedure definition.'
                         ),
                     ),
@@ -639,17 +716,38 @@ class Resolver:
             hover,
         )
 
+    def _resolve_imported_procedures(
+        self,
+        raw_name: str,
+        namespace: str,
+        workspace_index: WorkspaceIndex,
+    ) -> tuple[tuple[CommandImport, ProcDecl], ...]:
+        matches: dict[str, tuple[CommandImport, ProcDecl]] = {}
+        for command_import, target_name in workspace_index.matching_command_imports(
+            raw_name,
+            namespace,
+        ):
+            for proc in workspace_index.procedures_for_name(target_name):
+                matches.setdefault(proc.symbol_id, (command_import, proc))
+        return tuple(matches.values())
+
     def _resolve_imported_builtins(
         self,
         raw_name: str,
         namespace: str,
         workspace_index: WorkspaceIndex,
-    ) -> tuple[BuiltinCommand, ...]:
-        matches: dict[str, BuiltinCommand] = {}
-        for target_name in workspace_index.imported_command_candidates(raw_name, namespace):
+    ) -> tuple[tuple[CommandImport, BuiltinCommand], ...]:
+        matches: dict[str, tuple[CommandImport, BuiltinCommand]] = {}
+        for command_import, target_name in workspace_index.matching_command_imports(
+            raw_name,
+            namespace,
+        ):
             normalized_target_name = _normalize_command_name(target_name)
             for builtin in builtin_commands_any(normalized_target_name):
-                matches.setdefault(f'{builtin.package}:{builtin.name}', builtin)
+                matches.setdefault(
+                    f'{builtin.package}:{builtin.name}',
+                    (command_import, builtin),
+                )
         return tuple(matches.values())
 
     def _resolve_implicit_test_builtins(
@@ -797,6 +895,162 @@ def _builtin_resolution_reason(builtin: BuiltinCommand) -> str:
     if builtin.package == 'Tcl':
         return 'Resolved to bundled Tcl metadata.'
     return f'Resolved to bundled {builtin.package} metadata.'
+
+
+def _command_hover(
+    contents: str,
+    *,
+    import_trace: str | None = None,
+    transitive_trace: tuple[str, ...] | None = None,
+) -> str:
+    notes: list[str] = []
+    if import_trace is not None:
+        notes.append(f'Imported via: {import_trace}')
+    if transitive_trace is not None:
+        notes.append(f'Imported via: {_format_trace(transitive_trace)} (transitive)')
+    if not notes:
+        return contents
+    deduplicated_notes = tuple(dict.fromkeys(notes))
+    return f'{contents}\n\n---\n\n' + '\n'.join(deduplicated_notes)
+
+
+def _builtin_transitive_trace(
+    builtin: BuiltinCommand,
+    transitive_required_packages: frozenset[str],
+    hover_trace_parents: dict[tuple[str, str], tuple[str, str]],
+) -> tuple[str, ...] | None:
+    for package_name in sorted(transitive_required_packages):
+        if canonical_builtin_package_name(package_name) == builtin.package:
+            return _trace_labels(('package', package_name), hover_trace_parents)
+    return None
+
+
+def _source_transitive_trace(
+    uri: str,
+    workspace_index: WorkspaceIndex,
+    transitive_required_packages: frozenset[str],
+    hover_trace_parents: dict[tuple[str, str], tuple[str, str]],
+) -> tuple[str, ...] | None:
+    for package_name in sorted(transitive_required_packages):
+        if uri in workspace_index.package_source_uris(package_name):
+            return _trace_labels(('package', package_name), hover_trace_parents)
+    return None
+
+
+def _import_trace(
+    command_import: CommandImport,
+    hover_trace_parents: dict[tuple[str, str], tuple[str, str]],
+) -> str:
+    import_label = _command_import_label(command_import)
+    source_trace = _trace_labels(('source', command_import.uri), hover_trace_parents)
+    if source_trace is None:
+        return import_label
+    return _format_trace((*source_trace, import_label))
+
+
+def _command_import_label(command_import: CommandImport) -> str:
+    if command_import.kind == 'exact':
+        return command_import.target_name
+    if command_import.target_name == '::':
+        return '::*'
+    return f'{command_import.target_name}::*'
+
+
+def _build_hover_trace_parents(
+    facts: DocumentFacts,
+    workspace_index: WorkspaceIndex,
+) -> dict[tuple[str, str], tuple[str, str]]:
+    documents_by_uri = {document.uri: document for document in workspace_index.documents()}
+    documents_by_uri.setdefault(facts.uri, facts)
+
+    root_node = ('source', facts.uri)
+    pending_nodes: deque[tuple[str, str]] = deque([root_node])
+    seen_nodes: set[tuple[str, str]] = {root_node}
+    parent_by_node: dict[tuple[str, str], tuple[str, str]] = {}
+
+    while pending_nodes:
+        current_kind, current_value = pending_nodes.popleft()
+        if current_kind == 'source':
+            current_path = source_id_to_path(current_value)
+            current_facts = documents_by_uri.get(current_value)
+            if current_path is None or current_facts is None:
+                continue
+
+            overlay = metadata_dependency_overlay(
+                current_path,
+                current_facts,
+                workspace_index,
+            )
+            package_names = {
+                package_require.name for package_require in current_facts.package_requires
+            } | set(overlay.required_packages)
+
+            for source_uri in sorted(overlay.source_uris):
+                child_node = ('source', source_uri)
+                if child_node == root_node:
+                    continue
+                parent_by_node.setdefault(child_node, (current_kind, current_value))
+                if child_node in seen_nodes:
+                    continue
+                seen_nodes.add(child_node)
+                pending_nodes.append(child_node)
+
+            for package_name in sorted(package_names):
+                child_node = ('package', package_name)
+                parent_by_node.setdefault(child_node, (current_kind, current_value))
+                if child_node in seen_nodes:
+                    continue
+                seen_nodes.add(child_node)
+                pending_nodes.append(child_node)
+            continue
+
+        for source_uri in sorted(workspace_index.package_source_uris(current_value)):
+            child_node = ('source', source_uri)
+            if child_node == root_node:
+                continue
+            parent_by_node.setdefault(child_node, (current_kind, current_value))
+            if child_node in seen_nodes:
+                continue
+            seen_nodes.add(child_node)
+            pending_nodes.append(child_node)
+
+    return parent_by_node
+
+
+def _trace_labels(
+    node: tuple[str, str],
+    hover_trace_parents: dict[tuple[str, str], tuple[str, str]],
+) -> tuple[str, ...] | None:
+    chain: list[tuple[str, str]] = []
+    current_node = node
+    while current_node in hover_trace_parents:
+        chain.append(current_node)
+        current_node = hover_trace_parents[current_node]
+
+    if not chain:
+        return None
+
+    labels: list[str] = []
+    within_package = False
+    for kind, value in reversed(chain):
+        if kind == 'package':
+            labels.append(value)
+            within_package = True
+            continue
+        if not within_package:
+            labels.append(_source_trace_label(value))
+    return tuple(labels) if labels else None
+
+
+def _source_trace_label(uri: str) -> str:
+    source_path = source_id_to_path(uri)
+    if source_path is not None:
+        return source_path.name
+    return uri.rsplit('/', 1)[-1]
+
+
+def _format_trace(trace: tuple[str, ...]) -> str:
+    return ' -> '.join(trace)
 
 
 def _normalize_command_name(name: str) -> str:

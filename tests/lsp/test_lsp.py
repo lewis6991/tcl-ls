@@ -328,6 +328,8 @@ def test_language_service_resolves_transitive_required_packages(tmp_path: Path) 
     hover = service.hover(source_path.as_uri(), 1, 1)
     assert hover is not None
     assert hover.contents.startswith('builtin command json::json2dict {jsonText}')
+    assert '\n\n---\n\n' in hover.contents
+    assert 'Imported via: helper -> json (transitive)' in hover.contents
 
 
 def test_language_service_loads_generated_project_metadata_without_docs(
@@ -909,6 +911,41 @@ def test_language_service_infers_packages_from_pkgindex(
     assert hover.contents == 'proc ::helper::greet()'
 
 
+def test_language_service_hover_notes_imported_package_commands(
+    service: LanguageService,
+    tmp_path: Path,
+) -> None:
+    modules_root = tmp_path / 'workspace' / 'modules'
+    helper_dir = modules_root / 'helper'
+    app_dir = modules_root / 'app'
+    helper_dir.mkdir(parents=True)
+    app_dir.mkdir()
+
+    (helper_dir / 'pkgIndex.tcl').write_text(
+        'package ifneeded helper 1.0 [list source [file join $dir helper.tcl]]\n',
+        encoding='utf-8',
+    )
+    (helper_dir / 'helper.tcl').write_text(
+        'package provide helper 1.0\n# Greets helper callers.\nproc helper::greet {} {return ok}\n',
+        encoding='utf-8',
+    )
+
+    main_uri = (app_dir / 'main.tcl').as_uri()
+    diagnostics = service.open_document(
+        main_uri,
+        'package require helper\nnamespace import ::helper::*\ngreet\n',
+        1,
+    )
+
+    assert diagnostics == ()
+    hover = service.hover(main_uri, 2, 1)
+    assert hover is not None
+    assert (
+        hover.contents
+        == 'proc ::helper::greet()\n\nGreets helper callers.\n\n---\n\nImported via: ::helper::*'
+    )
+
+
 def test_language_service_loads_static_source_commands(
     service: LanguageService,
     tmp_path: Path,
@@ -964,10 +1001,13 @@ def test_language_service_resolves_sourced_tcltest_imports(
     hover = service.hover(main_uri, 1, 1)
     assert hover is not None
     assert hover.contents.startswith('builtin command tcltest::test')
+    assert 'Imported via: helper.inc -> ::tcltest::*' in hover.contents
+    assert 'Imported via: helper.inc -> tcltest (transitive)' in hover.contents
 
     qualified_hover = service.hover(main_uri, 2, 3)
     assert qualified_hover is not None
     assert qualified_hover.contents.startswith('builtin command tcltest::cleanupTests')
+    assert 'Imported via: helper.inc -> tcltest (transitive)' in qualified_hover.contents
 
 
 def test_language_service_analyzes_catch_bodies_and_result_variables(
