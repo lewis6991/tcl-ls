@@ -1185,13 +1185,29 @@ def test_language_server_process_message_publishes_diagnostics(server: LanguageS
         }
     )
 
-    assert len(messages) == 1
-    publish = messages[0]
+    assert len(messages) == 2
+    log_message = messages[0]
+    assert log_message['method'] == 'window/logMessage'
+    log_params = _as_dict(log_message['params'])
+    assert log_params['type'] == 3
+    assert log_params['message'] == 'Indexing workspace for file:///diag.tcl.'
+
+    publish = messages[1]
     assert publish['method'] == 'textDocument/publishDiagnostics'
     params = _as_dict(publish['params'])
     assert params['uri'] == 'file:///diag.tcl'
     diagnostics = cast(list[dict[str, object]], params['diagnostics'])
     assert [diagnostic['code'] for diagnostic in diagnostics] == ['unresolved-variable']
+
+
+def test_language_server_process_message_logs_startup(server: LanguageServer) -> None:
+    messages = server.process_message({'jsonrpc': '2.0', 'method': 'initialized'})
+
+    assert len(messages) == 1
+    notification = messages[0]
+    assert notification['method'] == 'window/logMessage'
+    params = _as_dict(notification['params'])
+    assert params == {'type': 3, 'message': 'tcl-ls started.'}
 
 
 def test_language_server_run_stdio_round_trip() -> None:

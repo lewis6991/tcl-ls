@@ -23,6 +23,7 @@ from tcl_lsp.lsp.model import (
     JsonObject,
     JsonRpcError,
     JsonValue,
+    LogMessageParams,
     NotificationMessage,
     OutgoingMessage,
     PublishDiagnosticsParams,
@@ -109,7 +110,7 @@ class LanguageServer:
             ]
 
         if method == 'initialized':
-            return []
+            return [self._serialize_message(self._log_message('tcl-ls started.'))]
 
         if method == 'shutdown':
             self._shutdown_requested = True
@@ -134,8 +135,11 @@ class LanguageServer:
             )
             return [
                 self._serialize_message(
+                    self._log_message(f'Indexing workspace for {parsed.text_document.uri}.')
+                ),
+                self._serialize_message(
                     self._publish_diagnostics(parsed.text_document.uri, diagnostics)
-                )
+                ),
             ]
 
         if method == 'textDocument/didChange':
@@ -272,6 +276,10 @@ class LanguageServer:
             diagnostics=[diagnostic_to_lsp(diagnostic) for diagnostic in diagnostics],
         )
         return NotificationMessage(method='textDocument/publishDiagnostics', params=params)
+
+    def _log_message(self, message: str, *, message_type: int = 3) -> NotificationMessage:
+        params = LogMessageParams(type=message_type, message=message)
+        return NotificationMessage(method='window/logMessage', params=params)
 
     def _success_response(
         self, request_id: int | str, result: JsonValue | None
