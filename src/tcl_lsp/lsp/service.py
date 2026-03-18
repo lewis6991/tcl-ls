@@ -8,7 +8,7 @@ from tcl_lsp.analysis import AnalysisResult, FactExtractor, Resolver, WorkspaceI
 from tcl_lsp.analysis.facts.parsing import is_simple_name
 from tcl_lsp.analysis.builtins import builtin_definition_targets
 from tcl_lsp.analysis.metadata_effects import dependency_required_packages
-from tcl_lsp.analysis.model import DefinitionTarget, DocumentFacts
+from tcl_lsp.analysis.model import CommandImport, DefinitionTarget, DocumentFacts
 from tcl_lsp.common import Diagnostic, DocumentSymbol, HoverInfo, Location, Span
 from tcl_lsp.lsp.semantic_tokens import encode_document_semantic_tokens
 from tcl_lsp.metadata_paths import configure_metadata_paths
@@ -107,6 +107,10 @@ class LanguageService:
         package_locations = self._package_definition_locations(uri, line, character)
         if package_locations:
             return package_locations
+
+        command_import_locations = self._command_import_definition_locations(uri, line, character)
+        if command_import_locations:
+            return command_import_locations
 
         symbol_ids = self._symbol_ids_at_position(uri, line, character)
         if not symbol_ids:
@@ -497,6 +501,26 @@ class LanguageService:
 
         return ()
 
+    def _command_import_definition_locations(
+        self,
+        uri: str,
+        line: int,
+        character: int,
+    ) -> tuple[Location, ...]:
+        document = self._documents.get(uri)
+        if document is None:
+            return ()
+
+        for command_import in document.facts.command_imports:
+            if not command_import.span.contains(line=line, character=character):
+                continue
+            return tuple(
+                definition.location
+                for definition in self._definitions_for_command_import(command_import)
+            )
+
+        return ()
+
     def _rename_symbol_id_at_position(self, uri: str, line: int, character: int) -> str | None:
         symbol_ids = self._symbol_ids_at_position(uri, line, character)
         if len(symbol_ids) != 1:
@@ -516,6 +540,43 @@ class LanguageService:
                 if binding.symbol_id == symbol_id:
                     return 'variable'
         return None
+
+    def _definitions_for_command_import(
+        self,
+        command_import: CommandImport,
+    ) -> tuple[DefinitionTarget, ...]:
+        definitions: list[DefinitionTarget] = []
+        seen: set[str] = set()
+        target_name = _qualified_command_name(command_import.target_name)
+
+        def add_definition(definition: DefinitionTarget) -> None:
+            if definition.kind != 'function':
+                return
+            if definition.symbol_id in seen:
+                return
+            seen.add(definition.symbol_id)
+            definitions.append(definition)
+
+        for document in self._documents.values():
+            for definition in document.analysis.definitions:
+                qualified_name = _qualified_command_name(definition.name)
+                if command_import.kind == 'exact':
+                    if qualified_name != target_name:
+                        continue
+                elif not _is_direct_namespace_member(qualified_name, target_name):
+                    continue
+                add_definition(definition)
+
+        for definition in builtin_definition_targets():
+            qualified_name = _qualified_command_name(definition.name)
+            if command_import.kind == 'exact':
+                if qualified_name != target_name:
+                    continue
+            elif not _is_direct_namespace_member(qualified_name, target_name):
+                continue
+            add_definition(definition)
+
+        return tuple(definitions)
 
     def _definitions_for_symbols(self, symbol_ids: tuple[str, ...]) -> tuple[DefinitionTarget, ...]:
         definitions: list[DefinitionTarget] = []
@@ -610,3 +671,19 @@ def _rename_variable_name_body(text: str, new_name: str) -> str:
     if separator:
         return f'{prefix}{separator}{new_name}{suffix}'
     return new_name + suffix
+
+
+def _qualified_command_name(name: str) -> str:
+    if name.startswith('::'):
+        return name
+    return f'::{name}'
+
+
+def _is_direct_namespace_member(qualified_name: str, namespace: str) -> bool:
+    if namespace == '::':
+        return qualified_name.startswith('::') and '::' not in qualified_name[2:]
+
+    prefix = namespace + '::'
+    if not qualified_name.startswith(prefix):
+        return False
+    return '::' not in qualified_name[len(prefix) :]
