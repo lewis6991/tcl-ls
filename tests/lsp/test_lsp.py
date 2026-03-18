@@ -952,6 +952,38 @@ def test_language_service_infers_packages_from_pkgindex(
     assert hover.contents == 'proc ::helper::greet()'
 
 
+def test_language_service_definition_resolves_required_package_to_provider(
+    service: LanguageService,
+    tmp_path: Path,
+) -> None:
+    modules_root = tmp_path / 'workspace' / 'modules'
+    helper_dir = modules_root / 'helper'
+    app_dir = modules_root / 'app'
+    helper_dir.mkdir(parents=True)
+    app_dir.mkdir()
+
+    (helper_dir / 'pkgIndex.tcl').write_text(
+        'package ifneeded helper 1.0 [list source [file join $dir helper.tcl]]\n',
+        encoding='utf-8',
+    )
+    helper_path = helper_dir / 'helper.tcl'
+    helper_path.write_text(
+        'package provide helper 1.0\nproc helper::greet {} {return ok}\n',
+        encoding='utf-8',
+    )
+
+    main_uri = (app_dir / 'main.tcl').as_uri()
+    diagnostics = service.open_document(main_uri, 'package require helper\nhelper::greet\n', 1)
+
+    assert diagnostics == ()
+
+    definition_locations = service.definition(main_uri, 0, 17)
+    assert len(definition_locations) == 1
+    assert definition_locations[0].uri == helper_path.as_uri()
+    assert definition_locations[0].span.start.line == 0
+    assert definition_locations[0].span.start.character == 16
+
+
 def test_language_service_hover_notes_imported_package_commands(
     service: LanguageService,
     tmp_path: Path,

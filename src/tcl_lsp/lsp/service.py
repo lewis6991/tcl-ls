@@ -97,6 +97,10 @@ class LanguageService:
         return document.analysis.diagnostics
 
     def definition(self, uri: str, line: int, character: int) -> tuple[Location, ...]:
+        package_locations = self._package_definition_locations(uri, line, character)
+        if package_locations:
+            return package_locations
+
         symbol_ids = self._symbol_ids_at_position(uri, line, character)
         if not symbol_ids:
             return ()
@@ -367,6 +371,38 @@ class LanguageService:
             if resolution.reference.span.contains(line=line, character=character):
                 resolved_matches.extend(resolution.target_symbol_ids)
         return tuple(dict.fromkeys(resolved_matches))
+
+    def _package_definition_locations(
+        self,
+        uri: str,
+        line: int,
+        character: int,
+    ) -> tuple[Location, ...]:
+        document = self._documents.get(uri)
+        if document is None:
+            return ()
+
+        for package_require in document.facts.package_requires:
+            if not package_require.span.contains(line=line, character=character):
+                continue
+            provided_locations = [
+                Location(uri=package.uri, span=package.span)
+                for package in self._workspace_index.provided_packages_for_name(
+                    package_require.name
+                )
+            ]
+            if provided_locations:
+                return _deduplicate_locations(provided_locations)
+
+            index_locations = [
+                Location(uri=entry.uri, span=entry.span)
+                for entry in self._workspace_index.package_index_entries_for_name(
+                    package_require.name
+                )
+            ]
+            return _deduplicate_locations(index_locations)
+
+        return ()
 
     def _definitions_for_symbols(self, symbol_ids: tuple[str, ...]) -> tuple[DefinitionTarget, ...]:
         definitions: list[DefinitionTarget] = []
