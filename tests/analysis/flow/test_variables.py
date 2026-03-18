@@ -9,6 +9,7 @@ from tcl_lsp.analysis.flow import (
     dynamic_variable_target_names,
     exact_word_values,
     script_body_flow_state,
+    switch_branch_flow_state,
     state_with_set_command,
     state_with_unset_command,
 )
@@ -146,6 +147,30 @@ def test_variable_flow_tracks_expr_ternary_variable_branch_values(parser: Parser
     assert state.exact_values('mode') == ('fast', 'slow')
 
 
+def test_variable_flow_tracks_switch_command_substitution_result_domains(
+    parser: Parser,
+) -> None:
+    state = VariableFlowState({'mode': ('direct_alpha', 'direct_beta', 'mode_1', 'mode_2')})
+    state = state_with_set_command(
+        state,
+        _single_command(
+            parser,
+            'set mapped_mode [switch $mode {'
+            'mode_1 {concat target_alpha} '
+            'mode_2 {concat target_beta} '
+            'default {concat $mode}'
+            '}]\n',
+        ),
+    )
+
+    assert state.exact_values('mapped_mode') == (
+        'target_alpha',
+        'target_beta',
+        'direct_alpha',
+        'direct_beta',
+    )
+
+
 def test_variable_flow_narrows_equality_conditions_with_known_domains() -> None:
     then_state, else_state = condition_branch_flow_states(
         VariableFlowState({'kind': ('prove', 'lint')}),
@@ -174,6 +199,48 @@ def test_variable_flow_preserves_unknown_else_branch_for_unknown_domains() -> No
 
     assert then_state.exact_values('kind') == ('prove',)
     assert else_state.exact_values('kind') == ()
+
+
+def test_variable_flow_narrows_exact_switch_branches(parser: Parser) -> None:
+    command = _single_command(parser, 'switch -- $kind {alpha {return ok} beta {return ok}}\n')
+
+    branch_state = switch_branch_flow_state(
+        VariableFlowState.empty(),
+        value_word=command.words[2],
+        match_mode='exact',
+        nocase=False,
+        patterns=('alpha', 'beta'),
+    )
+
+    assert branch_state.exact_values('kind') == ('alpha', 'beta')
+
+
+def test_variable_flow_narrows_literal_regexp_switch_branches(parser: Parser) -> None:
+    command = _single_command(parser, 'switch -regexp $kind {alpha {return ok} beta {return ok}}\n')
+
+    branch_state = switch_branch_flow_state(
+        VariableFlowState.empty(),
+        value_word=command.words[2],
+        match_mode='regexp',
+        nocase=False,
+        patterns=('alpha', 'beta'),
+    )
+
+    assert branch_state.exact_values('kind') == ('alpha', 'beta')
+
+
+def test_variable_flow_skips_non_literal_regexp_switch_branches(parser: Parser) -> None:
+    command = _single_command(parser, 'switch -regexp $kind {[ab].* {return ok}}\n')
+
+    branch_state = switch_branch_flow_state(
+        VariableFlowState.empty(),
+        value_word=command.words[2],
+        match_mode='regexp',
+        nocase=False,
+        patterns=('[ab].*',),
+    )
+
+    assert branch_state.exact_values('kind') == ()
 
 
 def test_variable_flow_supports_literal_on_left_side_and_elseif_residuals() -> None:

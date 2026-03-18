@@ -608,7 +608,7 @@ def test_language_service_preserves_switch_branch_list_body_positions_after_cont
         'proc helper args {return ok}\n'
         'proc run {mode a b c d e} {\n'
         '    switch -regexp $mode {\n'
-        '        "prove" {\n'
+        '        "prepare" {\n'
         '            helper \\\n'
         '                -a $a \\\n'
         '                -b $b \\\n'
@@ -616,36 +616,36 @@ def test_language_service_preserves_switch_branch_list_body_positions_after_cont
         '                -d $d \\\n'
         '                -e $e\n'
         '        }\n'
-        '        "bound_swarm" -\n'
-        '        "cycle_swarm" -\n'
-        '        "state_swarm" -\n'
-        '        "[bs]swarm" {\n'
-        '            set jmode [switch $mode {\n'
-        '              bswarm  {concat cycle_swarm}\n'
-        '              sswarm  {concat state_swarm}\n'
+        '        "mode_alpha" -\n'
+        '        "mode_beta" -\n'
+        '        "mode_gamma" -\n'
+        '        "mode_[12]" {\n'
+        '            set mapped_mode [switch $mode {\n'
+        '              mode_1  {concat mode_beta}\n'
+        '              mode_2  {concat mode_gamma}\n'
         '              default {concat $mode}\n'
         '            }]\n'
-        '            puts $jmode\n'
+        '            puts $mapped_mode\n'
         '        }\n'
         '    }\n'
         '}\n'
     )
     assert service.open_document(_MAIN_URI, source_text, 1) == ()
 
-    set_line = source_text.splitlines().index('            set jmode [switch $mode {')
+    set_line = source_text.splitlines().index('            set mapped_mode [switch $mode {')
     switch_character = source_text.splitlines()[set_line].index('switch') + 1
     hover = service.hover(_MAIN_URI, set_line, switch_character)
     assert hover is not None
     assert hover.contents.startswith('builtin command switch')
 
-    puts_line = source_text.splitlines().index('            puts $jmode')
-    target_character = source_text.splitlines()[puts_line].index('$jmode') + 1
+    puts_line = source_text.splitlines().index('            puts $mapped_mode')
+    target_character = source_text.splitlines()[puts_line].index('$mapped_mode') + 1
     definition_locations = service.definition(_MAIN_URI, puts_line, target_character)
     assert len(definition_locations) == 1
     assert definition_locations[0].uri == _MAIN_URI
     assert definition_locations[0].span.start.line == set_line
     assert definition_locations[0].span.start.character == (
-        source_text.splitlines()[set_line].index('jmode')
+        source_text.splitlines()[set_line].index('mapped_mode')
     )
 
 
@@ -678,6 +678,80 @@ def test_language_service_hover_shows_branch_narrowed_values(
     else_hover = service.hover(_MAIN_URI, 7, source_text.splitlines()[7].index('$kind') + 1)
     assert else_hover is not None
     assert else_hover.contents == 'foreach kind: "scan"'
+
+
+def test_language_service_narrows_literal_regexp_switch_branch_domains(
+    service: LanguageService,
+) -> None:
+    source_text = (
+        'proc run {mode} {\n'
+        '    switch -regexp $mode {\n'
+        '        "alpha" -\n'
+        '        "beta" -\n'
+        '        "gamma" {\n'
+        '            switch $mode {\n'
+        '                "alpha" { return first }\n'
+        '                "beta" { return second }\n'
+        '                "gamma" { return third }\n'
+        '            }\n'
+        '        }\n'
+        '        "[de]lta" {\n'
+        '            return fallback\n'
+        '        }\n'
+        '    }\n'
+        '}\n'
+    )
+    assert service.open_document(_MAIN_URI, source_text, 1) == ()
+
+    inner_switch_line = source_text.splitlines().index('            switch $mode {')
+    inner_switch_character = source_text.splitlines()[inner_switch_line].index('$mode') + 1
+    hover = service.hover(_MAIN_URI, inner_switch_line, inner_switch_character)
+    assert hover is not None
+    assert hover.contents == 'parameter mode: "alpha" | "beta" | "gamma"'
+
+
+def test_language_service_hover_shows_switch_assignment_domains(
+    service: LanguageService,
+) -> None:
+    source_text = (
+        'proc run {mode} {\n'
+        '    switch -regexp $mode {\n'
+        '        "direct_alpha" -\n'
+        '        "direct_beta" -\n'
+        '        "mode_1" -\n'
+        '        "mode_2" {\n'
+        '            set mapped_mode [switch $mode {\n'
+        '                mode_1 {concat target_alpha}\n'
+        '                mode_2 {concat target_beta}\n'
+        '                default {concat $mode}\n'
+        '            }]\n'
+        '            puts $mapped_mode\n'
+        '        }\n'
+        '        "[fg].*" {\n'
+        '            return fallback\n'
+        '        }\n'
+        '    }\n'
+        '}\n'
+    )
+    assert service.open_document(_MAIN_URI, source_text, 1) == ()
+
+    binding_line = source_text.splitlines().index('            set mapped_mode [switch $mode {')
+    binding_character = source_text.splitlines()[binding_line].index('mapped_mode') + 1
+    binding_hover = service.hover(_MAIN_URI, binding_line, binding_character)
+    assert binding_hover is not None
+    assert (
+        binding_hover.contents
+        == 'set mapped_mode: "target_alpha" | "target_beta" | "direct_alpha" | "direct_beta"'
+    )
+
+    reference_line = source_text.splitlines().index('            puts $mapped_mode')
+    reference_character = source_text.splitlines()[reference_line].index('$mapped_mode') + 1
+    reference_hover = service.hover(_MAIN_URI, reference_line, reference_character)
+    assert reference_hover is not None
+    assert (
+        reference_hover.contents
+        == 'set mapped_mode: "target_alpha" | "target_beta" | "direct_alpha" | "direct_beta"'
+    )
 
 
 def test_language_service_hover_shows_expr_ternary_assignment_domains(

@@ -22,6 +22,7 @@ from tcl_lsp.analysis.flow import (
     exact_word_values,
     normalize_variable_name,
     script_body_flow_state,
+    switch_branch_flow_state,
     state_with_set_command,
     state_with_unset_command,
     unset_target_words,
@@ -1618,8 +1619,20 @@ class _FactCollector:
         context: _ExtractionContext,
     ) -> None:
         self._collect_switch_regexp_bindings(command.regexp_binding_words, context)
-        for body in command.branch_bodies:
-            self._collect_lowered_body(body, context)
+        for branch_patterns, body in zip(
+            command.branch_patterns, command.branch_bodies, strict=True
+        ):
+            branch_context = self._context_with_flow_state(
+                context,
+                switch_branch_flow_state(
+                    context.flow_state,
+                    value_word=command.value_word,
+                    match_mode=command.match_mode,
+                    nocase=command.nocase,
+                    patterns=branch_patterns,
+                ),
+            )
+            self._collect_lowered_body(body, branch_context)
 
     def _collect_vwait(self, command: Command, context: _ExtractionContext) -> None:
         if len(command.words) < 2:

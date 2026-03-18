@@ -1498,7 +1498,7 @@ def test_analysis_preserves_switch_branch_list_body_positions_after_continuation
         'proc helper args {return ok}\n'
         'proc run {mode a b c d e} {\n'
         '    switch -regexp $mode {\n'
-        '        "prove" {\n'
+        '        "prepare" {\n'
         '            helper \\\n'
         '                -a $a \\\n'
         '                -b $b \\\n'
@@ -1506,16 +1506,16 @@ def test_analysis_preserves_switch_branch_list_body_positions_after_continuation
         '                -d $d \\\n'
         '                -e $e\n'
         '        }\n'
-        '        "bound_swarm" -\n'
-        '        "cycle_swarm" -\n'
-        '        "state_swarm" -\n'
-        '        "[bs]swarm" {\n'
-        '            set jmode [switch $mode {\n'
-        '              bswarm  {concat cycle_swarm}\n'
-        '              sswarm  {concat state_swarm}\n'
+        '        "mode_alpha" -\n'
+        '        "mode_beta" -\n'
+        '        "mode_gamma" -\n'
+        '        "mode_[12]" {\n'
+        '            set mapped_mode [switch $mode {\n'
+        '              mode_1  {concat mode_beta}\n'
+        '              mode_2  {concat mode_gamma}\n'
         '              default {concat $mode}\n'
         '            }]\n'
-        '            puts $jmode\n'
+        '            puts $mapped_mode\n'
         '        }\n'
         '    }\n'
         '}\n'
@@ -1534,16 +1534,16 @@ def test_analysis_preserves_switch_branch_list_body_positions_after_continuation
     assert len(inner_switch_resolutions) == 1
     assert inner_switch_resolutions[0].uncertainty.state == 'resolved'
 
-    jmode_reference_offset = source.rindex('$jmode')
-    jmode_resolutions = [
+    mapped_mode_reference_offset = source.rindex('$mapped_mode')
+    mapped_mode_resolutions = [
         resolution
         for resolution in analysis.resolutions
         if resolution.reference.kind == 'variable'
-        and resolution.reference.name == 'jmode'
-        and resolution.reference.span.start.offset == jmode_reference_offset
+        and resolution.reference.name == 'mapped_mode'
+        and resolution.reference.span.start.offset == mapped_mode_reference_offset
     ]
-    assert len(jmode_resolutions) == 1
-    assert jmode_resolutions[0].uncertainty.state == 'resolved'
+    assert len(mapped_mode_resolutions) == 1
+    assert mapped_mode_resolutions[0].uncertainty.state == 'resolved'
 
 
 def test_analysis_tracks_switch_branch_bodies_from_argument_form(parser: Parser) -> None:
@@ -1624,6 +1624,72 @@ def test_analysis_tracks_regexp_switch_match_variables(parser: Parser) -> None:
     assert {name for name, _ in unique_match_sites} == {'matches', 'indices'}
     assert all(resolution.uncertainty.state == 'resolved' for resolution in match_resolutions)
     assert analysis.diagnostics == ()
+
+
+def test_analysis_narrows_literal_regexp_switch_branch_domains(parser: Parser) -> None:
+    source = (
+        'proc run {mode} {\n'
+        '    switch -regexp $mode {\n'
+        '        "alpha" -\n'
+        '        "beta" -\n'
+        '        "gamma" {\n'
+        '            switch $mode {\n'
+        '                "alpha" { return first }\n'
+        '                "beta" { return second }\n'
+        '                "gamma" { return third }\n'
+        '            }\n'
+        '        }\n'
+        '        "[de]lta" {\n'
+        '            return fallback\n'
+        '        }\n'
+        '    }\n'
+        '}\n'
+    )
+    snapshot = _analyze(parser, 'file:///switch_regexp_domains.tcl', source)
+
+    hover_by_offset = {
+        hover.span.start.offset: hover.contents for hover in snapshot.analysis.hovers
+    }
+    inner_switch_offset = source.index('switch $mode {', source.index('"gamma" {')) + len('switch ')
+    assert hover_by_offset[inner_switch_offset] == 'parameter mode: "alpha" | "beta" | "gamma"'
+
+
+def test_analysis_tracks_switch_assignment_domains(parser: Parser) -> None:
+    source = (
+        'proc run {mode} {\n'
+        '    switch -regexp $mode {\n'
+        '        "direct_alpha" -\n'
+        '        "direct_beta" -\n'
+        '        "mode_1" -\n'
+        '        "mode_2" {\n'
+        '            set mapped_mode [switch $mode {\n'
+        '                mode_1 {concat target_alpha}\n'
+        '                mode_2 {concat target_beta}\n'
+        '                default {concat $mode}\n'
+        '            }]\n'
+        '            puts $mapped_mode\n'
+        '        }\n'
+        '        "[fg].*" {\n'
+        '            return fallback\n'
+        '        }\n'
+        '    }\n'
+        '}\n'
+    )
+    snapshot = _analyze(parser, 'file:///switch_assignment_domains.tcl', source)
+
+    hover_by_offset = {
+        hover.span.start.offset: hover.contents for hover in snapshot.analysis.hovers
+    }
+    binding_offset = source.index('mapped_mode')
+    assert (
+        hover_by_offset[binding_offset]
+        == 'set mapped_mode: "target_alpha" | "target_beta" | "direct_alpha" | "direct_beta"'
+    )
+    mapped_mode_offset = source.rindex('$mapped_mode')
+    assert (
+        hover_by_offset[mapped_mode_offset]
+        == 'set mapped_mode: "target_alpha" | "target_beta" | "direct_alpha" | "direct_beta"'
+    )
 
 
 def test_analysis_tracks_for_while_and_lmap_bodies(parser: Parser) -> None:

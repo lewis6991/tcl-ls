@@ -120,7 +120,11 @@ class LoweredTryCommand(LoweredCommandBase):
 
 @dataclass(frozen=True, slots=True)
 class LoweredSwitchCommand(LoweredCommandBase):
+    value_word: Word | None
+    match_mode: str
+    nocase: bool
     regexp_binding_words: tuple[Word, ...]
+    branch_patterns: tuple[tuple[str | None, ...], ...]
     branch_bodies: tuple[LoweredScriptBody, ...]
 
 
@@ -263,6 +267,9 @@ class LoweringResult:
 
 @dataclass(frozen=True, slots=True)
 class _SwitchLayout:
+    value_word: Word
+    match_mode: str
+    nocase: bool
     branch_list_word: Word | None
     branch_words: tuple[Word, ...]
     regexp_binding_words: tuple[Word, ...]
@@ -271,6 +278,8 @@ class _SwitchLayout:
 @dataclass(frozen=True, slots=True)
 class _SwitchOptionState:
     value_index: int
+    match_mode: str
+    nocase: bool
     regexp_binding_words: tuple[Word, ...]
 
 
@@ -624,20 +633,28 @@ class _Lowerer:
                 command=command,
                 command_name=command_name,
                 word_references=word_references,
+                value_word=None,
+                match_mode='exact',
+                nocase=False,
                 regexp_binding_words=(),
+                branch_patterns=(),
                 branch_bodies=(),
             )
 
         if layout.branch_list_word is not None:
-            branch_bodies = self._lower_switch_branch_list(layout.branch_list_word)
+            branch_patterns, branch_bodies = self._lower_switch_branch_list(layout.branch_list_word)
         else:
-            branch_bodies = self._lower_switch_branch_words(layout.branch_words)
+            branch_patterns, branch_bodies = self._lower_switch_branch_words(layout.branch_words)
 
         return LoweredSwitchCommand(
             command=command,
             command_name=command_name,
             word_references=word_references,
+            value_word=layout.value_word,
+            match_mode=layout.match_mode,
+            nocase=layout.nocase,
             regexp_binding_words=layout.regexp_binding_words,
+            branch_patterns=branch_patterns,
             branch_bodies=branch_bodies,
         )
 
@@ -799,18 +816,27 @@ class _Lowerer:
 
         if len(branch_words) == 1:
             return _SwitchLayout(
+                value_word=words[option_state.value_index],
+                match_mode=option_state.match_mode,
+                nocase=option_state.nocase,
                 branch_list_word=branch_words[0],
                 branch_words=(),
                 regexp_binding_words=option_state.regexp_binding_words,
             )
 
         return _SwitchLayout(
+            value_word=words[option_state.value_index],
+            match_mode=option_state.match_mode,
+            nocase=option_state.nocase,
             branch_list_word=None,
             branch_words=branch_words,
             regexp_binding_words=option_state.regexp_binding_words,
         )
 
-    def _lower_switch_branch_list(self, word: Word) -> tuple[LoweredScriptBody, ...]:
+    def _lower_switch_branch_list(
+        self,
+        word: Word,
+    ) -> tuple[tuple[tuple[str | None, ...], ...], tuple[LoweredScriptBody, ...]]:
         items = self._parse_list_items(word)
         if len(items) % 2 != 0:
             self._emit_analysis_diagnostic(
@@ -818,46 +844,57 @@ class _Lowerer:
                 message='Malformed `switch` command; branch lists require pattern/body pairs.',
                 span=word.span,
             )
-            return ()
+            return (), ()
 
+        branch_patterns: list[tuple[str | None, ...]] = []
         bodies: list[LoweredScriptBody] = []
-        for index in range(1, len(items), 2):
-            body_item = items[index]
+        pending_patterns: list[str | None] = []
+        for index in range(0, len(items), 2):
+            pending_patterns.append(items[index].text)
+            body_item = items[index + 1]
             if body_item.text == '-':
                 continue
+            branch_patterns.append(tuple(pending_patterns))
+            pending_patterns = []
             bodies.append(
                 LoweredScriptBody(
                     script=self._lower_embedded_script(body_item.text, body_item.content_start)
                 )
             )
-        return tuple(bodies)
+        return tuple(branch_patterns), tuple(bodies)
 
     def _lower_switch_branch_words(
         self,
         branch_words: tuple[Word, ...],
-    ) -> tuple[LoweredScriptBody, ...]:
+    ) -> tuple[tuple[tuple[str | None, ...], ...], tuple[LoweredScriptBody, ...]]:
         if len(branch_words) % 2 != 0:
             self._emit_analysis_diagnostic(
                 code='malformed-switch',
                 message='Malformed `switch` command; branches require pattern/body pairs.',
                 span=branch_words[-1].span,
             )
-            return ()
+            return (), ()
 
+        branch_patterns: list[tuple[str | None, ...]] = []
         bodies: list[LoweredScriptBody] = []
-        for index in range(1, len(branch_words), 2):
-            body_word = branch_words[index]
+        pending_patterns: list[str | None] = []
+        for index in range(0, len(branch_words), 2):
+            pending_patterns.append(word_static_text(branch_words[index]))
+            body_word = branch_words[index + 1]
             if word_static_text(body_word) == '-':
                 continue
             lowered_body = self._lower_script_word(body_word)
             if lowered_body is not None:
+                branch_patterns.append(tuple(pending_patterns))
                 bodies.append(lowered_body)
-        return tuple(bodies)
+            pending_patterns = []
+        return tuple(branch_patterns), tuple(bodies)
 
     def _scan_switch_options(self, words: tuple[Word, ...]) -> _SwitchOptionState | None:
         index = 1
         regexp_binding_words: list[Word] = []
-        regexp_mode = False
+        match_mode = 'exact'
+        nocase = False
 
         while index < len(words):
             option = word_static_text(words[index])
@@ -866,11 +903,20 @@ class _Lowerer:
             if option == '--':
                 index += 1
                 break
-            if option in {'-exact', '-glob', '-nocase'}:
+            if option == '-exact':
+                match_mode = 'exact'
+                index += 1
+                continue
+            if option == '-glob':
+                match_mode = 'glob'
+                index += 1
+                continue
+            if option == '-nocase':
+                nocase = True
                 index += 1
                 continue
             if option == '-regexp':
-                regexp_mode = True
+                match_mode = 'regexp'
                 index += 1
                 continue
             if option in {'-matchvar', '-indexvar'}:
@@ -881,7 +927,7 @@ class _Lowerer:
                         span=words[index].span,
                     )
                     return None
-                if regexp_mode:
+                if match_mode == 'regexp':
                     regexp_binding_words.append(words[index + 1])
                 index += 2
                 continue
@@ -896,6 +942,8 @@ class _Lowerer:
 
         return _SwitchOptionState(
             value_index=index,
+            match_mode=match_mode,
+            nocase=nocase,
             regexp_binding_words=tuple(regexp_binding_words),
         )
 
