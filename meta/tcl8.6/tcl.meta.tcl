@@ -521,7 +521,11 @@ meta command eval {args}
 # subprocesses to execute. The arguments take the form of a standard shell
 # pipeline where each arg becomes one word of a command, and each distinct
 # command becomes a subprocess.
-meta command exec {args}
+meta command exec {args} {
+    option -ignorestderr
+    option -keepnewline
+    option -- stop
+}
 
 # End the application.
 # Terminate the process, returning returnCode to the system as the exit
