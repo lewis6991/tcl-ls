@@ -404,7 +404,10 @@ meta command dict {subcommand args} {
     # the dictionary), the second the dictionary value to iterate across, and
     # the third a script to be evaluated for each mapping with the key and
     # value variables set appropriately (in the manner of foreach.)
-    subcommand for "{ keyVariable valueVariable } dictionaryValue body"
+    subcommand for "{ keyVariable valueVariable } dictionaryValue body" {
+        bind list 1 foreach
+        script-body 3
+    }
 
     # Given a dictionary value (first argument) and a key (second argument),
     # this will retrieve the value for that key.

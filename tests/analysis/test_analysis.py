@@ -1675,6 +1675,53 @@ def test_analysis_tracks_multi_source_foreach_and_lmap_bodies(parser: Parser) ->
     assert analysis.diagnostics == ()
 
 
+def test_analysis_tracks_dict_for_bodies(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///dict_for.tcl',
+        'proc helper {} {return ok}\n'
+        'proc run {pairs} {\n'
+        '    dict for {key value} $pairs {\n'
+        '        helper\n'
+        '        puts $key\n'
+        '        puts $value\n'
+        '    }\n'
+        '}\n',
+    )
+    facts = snapshot.facts
+    analysis = snapshot.analysis
+
+    helper_calls = [
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command' and resolution.reference.name == 'helper'
+    ]
+    assert len(helper_calls) == 1
+    assert helper_calls[0].uncertainty.state == 'resolved'
+
+    run_proc = next(proc for proc in facts.procedures if proc.qualified_name == '::run')
+    bindings_by_name = {
+        binding.name: binding.kind
+        for binding in facts.variable_bindings
+        if binding.scope_id == run_proc.symbol_id
+    }
+    assert bindings_by_name['key'] == 'foreach'
+    assert bindings_by_name['value'] == 'foreach'
+
+    variable_resolutions = {
+        (
+            resolution.reference.name,
+            resolution.reference.span.start.offset,
+        ): resolution.uncertainty.state
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'variable'
+        and resolution.reference.name in {'key', 'value', 'pairs'}
+    }
+    assert {name for name, _ in variable_resolutions} == {'key', 'value', 'pairs'}
+    assert set(variable_resolutions.values()) == {'resolved'}
+    assert analysis.diagnostics == ()
+
+
 def test_analysis_resolves_references_inside_braced_if_conditions() -> None:
     parser = Parser()
     extractor = FactExtractor(parser)
