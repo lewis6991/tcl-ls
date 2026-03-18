@@ -15,6 +15,7 @@ from .base import (
     ResolvedVariable,
 )
 from .duplicate_proc import DuplicateProcChecker
+from .invalid_regex import InvalidRegexChecker
 from .missing_option_value import MissingOptionValueChecker
 from .unknown_option import UnknownOptionChecker
 from .unresolved_command import UnresolvedCommandChecker
@@ -32,6 +33,7 @@ DIAGNOSTIC_CHECKERS: Final[tuple[DiagnosticChecker, ...]] = (
     UnknownSubcommandChecker(),
     UnknownOptionChecker(),
     MissingOptionValueChecker(),
+    InvalidRegexChecker(),
     AmbiguousVariableChecker(),
     UnresolvedVariableChecker(),
 )
