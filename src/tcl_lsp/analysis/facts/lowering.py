@@ -754,7 +754,7 @@ class _Lowerer:
         if word is None:
             return ()
         if isinstance(word, BracedWord) and not word.expanded:
-            return tuple(split_tcl_list(word.text, word.content_span.start))
+            return tuple(split_tcl_list(_braced_word_raw_content(word), word.content_span.start))
         static_text = word_static_text(word)
         if static_text is None:
             return ()

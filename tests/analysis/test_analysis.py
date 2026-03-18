@@ -1491,6 +1491,61 @@ def test_analysis_tracks_switch_branch_bodies_from_list_form(parser: Parser) -> 
     assert analysis.diagnostics == ()
 
 
+def test_analysis_preserves_switch_branch_list_body_positions_after_continuations(
+    parser: Parser,
+) -> None:
+    source = (
+        'proc helper args {return ok}\n'
+        'proc run {mode a b c d e} {\n'
+        '    switch -regexp $mode {\n'
+        '        "prove" {\n'
+        '            helper \\\n'
+        '                -a $a \\\n'
+        '                -b $b \\\n'
+        '                -c $c \\\n'
+        '                -d $d \\\n'
+        '                -e $e\n'
+        '        }\n'
+        '        "bound_swarm" -\n'
+        '        "cycle_swarm" -\n'
+        '        "state_swarm" -\n'
+        '        "[bs]swarm" {\n'
+        '            set jmode [switch $mode {\n'
+        '              bswarm  {concat cycle_swarm}\n'
+        '              sswarm  {concat state_swarm}\n'
+        '              default {concat $mode}\n'
+        '            }]\n'
+        '            puts $jmode\n'
+        '        }\n'
+        '    }\n'
+        '}\n'
+    )
+    snapshot = _analyze(parser, 'file:///switch_list_continuations.tcl', source)
+    analysis = snapshot.analysis
+
+    inner_switch_offset = source.index('[switch') + 1
+    inner_switch_resolutions = [
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command'
+        and resolution.reference.name == 'switch'
+        and resolution.reference.span.start.offset == inner_switch_offset
+    ]
+    assert len(inner_switch_resolutions) == 1
+    assert inner_switch_resolutions[0].uncertainty.state == 'resolved'
+
+    jmode_reference_offset = source.rindex('$jmode')
+    jmode_resolutions = [
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'variable'
+        and resolution.reference.name == 'jmode'
+        and resolution.reference.span.start.offset == jmode_reference_offset
+    ]
+    assert len(jmode_resolutions) == 1
+    assert jmode_resolutions[0].uncertainty.state == 'resolved'
+
+
 def test_analysis_tracks_switch_branch_bodies_from_argument_form(parser: Parser) -> None:
     snapshot = _analyze(
         parser,

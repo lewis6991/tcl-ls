@@ -601,6 +601,54 @@ def test_language_service_definition_resolves_dynamic_set_targets_from_variable_
     assert hover.contents == 'set engines'
 
 
+def test_language_service_preserves_switch_branch_list_body_positions_after_continuations(
+    service: LanguageService,
+) -> None:
+    source_text = (
+        'proc helper args {return ok}\n'
+        'proc run {mode a b c d e} {\n'
+        '    switch -regexp $mode {\n'
+        '        "prove" {\n'
+        '            helper \\\n'
+        '                -a $a \\\n'
+        '                -b $b \\\n'
+        '                -c $c \\\n'
+        '                -d $d \\\n'
+        '                -e $e\n'
+        '        }\n'
+        '        "bound_swarm" -\n'
+        '        "cycle_swarm" -\n'
+        '        "state_swarm" -\n'
+        '        "[bs]swarm" {\n'
+        '            set jmode [switch $mode {\n'
+        '              bswarm  {concat cycle_swarm}\n'
+        '              sswarm  {concat state_swarm}\n'
+        '              default {concat $mode}\n'
+        '            }]\n'
+        '            puts $jmode\n'
+        '        }\n'
+        '    }\n'
+        '}\n'
+    )
+    assert service.open_document(_MAIN_URI, source_text, 1) == ()
+
+    set_line = source_text.splitlines().index('            set jmode [switch $mode {')
+    switch_character = source_text.splitlines()[set_line].index('switch') + 1
+    hover = service.hover(_MAIN_URI, set_line, switch_character)
+    assert hover is not None
+    assert hover.contents.startswith('builtin command switch')
+
+    puts_line = source_text.splitlines().index('            puts $jmode')
+    target_character = source_text.splitlines()[puts_line].index('$jmode') + 1
+    definition_locations = service.definition(_MAIN_URI, puts_line, target_character)
+    assert len(definition_locations) == 1
+    assert definition_locations[0].uri == _MAIN_URI
+    assert definition_locations[0].span.start.line == set_line
+    assert definition_locations[0].span.start.character == (
+        source_text.splitlines()[set_line].index('jmode')
+    )
+
+
 def test_language_service_hover_shows_branch_narrowed_values(
     service: LanguageService,
 ) -> None:

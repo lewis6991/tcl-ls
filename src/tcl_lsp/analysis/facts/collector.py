@@ -893,7 +893,7 @@ class _FactCollector:
             return None
 
         parameter_word = argument_words[procedure.parameter_index]
-        static_text = word_static_text(parameter_word)
+        static_text = self._static_list_text(parameter_word)
         if static_text is None:
             return None
         return tuple(split_tcl_list(static_text, parameter_word.content_span.start))
@@ -1068,10 +1068,20 @@ class _FactCollector:
             )
 
     def _static_list_items(self, word: Word) -> tuple[ListItem, ...]:
-        static_text = word_static_text(word)
+        static_text = self._static_list_text(word)
         if static_text is None:
             return ()
         return tuple(split_tcl_list(static_text, word.content_span.start))
+
+    def _static_list_text(self, word: Word) -> str | None:
+        if isinstance(word, BracedWord) and not word.expanded:
+            raw_text = word.raw_text
+            if raw_text.startswith('{'):
+                raw_text = raw_text[1:]
+            if raw_text.endswith('}'):
+                raw_text = raw_text[:-1]
+            return raw_text
+        return word_static_text(word)
 
     def _collect_script_body_word(self, word: Word, context: _ExtractionContext) -> None:
         embedded_script_text = self._embedded_script_text(word)
