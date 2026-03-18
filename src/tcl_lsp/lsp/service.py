@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,6 +31,9 @@ class ManagedDocument:
 class RenameEdit:
     span: Span
     new_text: str
+
+
+type IndexingProgressCallback = Callable[[str, int], None]
 
 
 class LanguageService:
@@ -66,8 +69,15 @@ class LanguageService:
         self._plugin_paths_by_uri: dict[str, tuple[Path, ...]] = {}
         self._library_paths_by_uri: dict[str, tuple[Path, ...]] = {}
 
-    def open_document(self, uri: str, text: str, version: int) -> tuple[Diagnostic, ...]:
-        self.load_documents(((uri, text, version),))
+    def open_document(
+        self,
+        uri: str,
+        text: str,
+        version: int,
+        *,
+        progress: IndexingProgressCallback | None = None,
+    ) -> tuple[Diagnostic, ...]:
+        self.load_documents(((uri, text, version),), progress=progress)
         return self.diagnostics(uri)
 
     def change_document(self, uri: str, text: str, version: int) -> tuple[Diagnostic, ...]:
@@ -266,7 +276,12 @@ class LanguageService:
     def get_document(self, uri: str) -> ManagedDocument | None:
         return self._documents.get(uri)
 
-    def load_documents(self, documents: Iterable[tuple[str, str, int]]) -> None:
+    def load_documents(
+        self,
+        documents: Iterable[tuple[str, str, int]],
+        *,
+        progress: IndexingProgressCallback | None = None,
+    ) -> None:
         pending_documents = tuple(documents)
         if not pending_documents:
             return
@@ -282,14 +297,25 @@ class LanguageService:
             self._active_plugin_paths() != previous_plugin_paths
             or self._active_library_paths() != previous_library_paths
         ):
-            self._rebuild_documents(pending_documents)
+            self._report_progress(progress, 'Rebuilding workspace index', 10)
+            self._rebuild_documents(pending_documents, progress=progress)
             return
 
+        self._report_progress(progress, 'Indexing open documents', 20)
         for uri, text, version in pending_documents:
             self._index_document(uri=uri, text=text, version=version)
             self._discover_package_roots(uri)
-        self._ensure_background_documents_loaded()
-        self._recompute_workspace_analyses()
+        self._report_progress(progress, 'Loading workspace dependencies', 50)
+        self._ensure_background_documents_loaded(
+            progress=progress,
+            start_percentage=50,
+            end_percentage=75,
+        )
+        self._recompute_workspace_analyses(
+            progress=progress,
+            start_percentage=75,
+            end_percentage=95,
+        )
 
     def _index_document(self, uri: str, text: str, version: int) -> None:
         parse_result = self._parser.parse_document(path=uri, text=text)
@@ -331,7 +357,14 @@ class LanguageService:
                 facts.package_index_entries,
             )
 
-    def _ensure_background_documents_loaded(self) -> None:
+    def _ensure_background_documents_loaded(
+        self,
+        *,
+        progress: IndexingProgressCallback | None = None,
+        start_percentage: int = 50,
+        end_percentage: int = 75,
+    ) -> None:
+        loaded_background_documents = 0
         while True:
             loaded_document = False
             for document in tuple(self._documents.values()):
@@ -342,6 +375,12 @@ class LanguageService:
                         continue
                     if self._load_background_document(source_uri):
                         loaded_document = True
+                        loaded_background_documents += 1
+                        self._report_progress(
+                            progress,
+                            f'Loading workspace dependencies ({loaded_background_documents})',
+                            min(end_percentage, start_percentage + loaded_background_documents),
+                        )
                         break
                 if loaded_document:
                     break
@@ -373,8 +412,16 @@ class LanguageService:
         self._discover_package_roots(uri)
         return True
 
-    def _recompute_workspace_analyses(self) -> None:
-        for uri, document in list(self._documents.items()):
+    def _recompute_workspace_analyses(
+        self,
+        *,
+        progress: IndexingProgressCallback | None = None,
+        start_percentage: int = 75,
+        end_percentage: int = 95,
+    ) -> None:
+        documents = list(self._documents.items())
+        total_documents = len(documents)
+        for index, (uri, document) in enumerate(documents, start=1):
             source_path = source_id_to_path(uri)
             additional_required_packages: frozenset[str]
             if source_path is None:
@@ -398,6 +445,16 @@ class LanguageService:
                 parse_result=document.parse_result,
                 facts=document.facts,
                 analysis=analysis,
+            )
+            self._report_progress(
+                progress,
+                f'Analyzing workspace ({index}/{total_documents})',
+                _progress_percentage(
+                    index=index,
+                    total=total_documents,
+                    start=start_percentage,
+                    end=end_percentage,
+                ),
             )
 
     def _configured_plugin_paths(self, uri: str) -> tuple[Path, ...]:
@@ -426,7 +483,12 @@ class LanguageService:
                 active_paths.setdefault(library_path, None)
         return tuple(active_paths)
 
-    def _rebuild_documents(self, pending_documents: Iterable[tuple[str, str, int]] = ()) -> None:
+    def _rebuild_documents(
+        self,
+        pending_documents: Iterable[tuple[str, str, int]] = (),
+        *,
+        progress: IndexingProgressCallback | None = None,
+    ) -> None:
         snapshots: dict[str, tuple[str, int]] = {}
         for uri in self._open_document_uris:
             document = self._documents.get(uri)
@@ -442,12 +504,42 @@ class LanguageService:
         self._scanned_package_roots = set()
         self._failed_background_documents = set()
 
-        for uri, (text, version) in snapshots.items():
+        total_snapshots = len(snapshots)
+        for index, (uri, (text, version)) in enumerate(snapshots.items(), start=1):
             self._index_document(uri=uri, text=text, version=version)
             self._discover_package_roots(uri)
+            self._report_progress(
+                progress,
+                f'Indexing workspace files ({index}/{total_snapshots})',
+                _progress_percentage(
+                    index=index,
+                    total=total_snapshots,
+                    start=20,
+                    end=45,
+                ),
+            )
 
-        self._ensure_background_documents_loaded()
-        self._recompute_workspace_analyses()
+        self._report_progress(progress, 'Loading workspace dependencies', 50)
+        self._ensure_background_documents_loaded(
+            progress=progress,
+            start_percentage=50,
+            end_percentage=75,
+        )
+        self._recompute_workspace_analyses(
+            progress=progress,
+            start_percentage=75,
+            end_percentage=95,
+        )
+
+    def _report_progress(
+        self,
+        progress: IndexingProgressCallback | None,
+        message: str,
+        percentage: int,
+    ) -> None:
+        if progress is None:
+            return
+        progress(message, percentage)
 
     def _symbol_ids_at_position(self, uri: str, line: int, character: int) -> tuple[str, ...]:
         document = self._documents.get(uri)
@@ -687,3 +779,10 @@ def _is_direct_namespace_member(qualified_name: str, namespace: str) -> bool:
     if not qualified_name.startswith(prefix):
         return False
     return '::' not in qualified_name[len(prefix) :]
+
+
+def _progress_percentage(*, index: int, total: int, start: int, end: int) -> int:
+    if total <= 0 or start >= end:
+        return end
+    completed = (index * (end - start)) // total
+    return min(end, start + completed)

@@ -4,7 +4,7 @@ import json
 import threading
 from io import BytesIO
 from pathlib import Path
-from typing import cast
+from typing import Callable, cast
 
 import pytest
 
@@ -1268,7 +1268,7 @@ def test_language_server_process_message_publishes_diagnostics(server: LanguageS
     assert show_message['method'] == 'window/showMessage'
     show_params = _as_dict(show_message['params'])
     assert show_params['type'] == 3
-    assert show_params['message'] == 'Indexing workspace for file:///diag.tcl.'
+    assert show_params['message'] == 'Indexing workspace.'
 
     log_message = messages[1]
     assert log_message['method'] == 'window/logMessage'
@@ -1287,16 +1287,124 @@ def test_language_server_process_message_publishes_diagnostics(server: LanguageS
 def test_language_server_process_message_logs_startup(server: LanguageServer) -> None:
     messages = server.process_message({'jsonrpc': '2.0', 'method': 'initialized'})
 
-    assert len(messages) == 2
-    notification = messages[0]
-    assert notification['method'] == 'window/showMessage'
-    params = _as_dict(notification['params'])
-    assert params == {'type': 3, 'message': 'tcl-ls started.'}
-
-    log_notification = messages[1]
+    assert len(messages) == 1
+    log_notification = messages[0]
     assert log_notification['method'] == 'window/logMessage'
     params = _as_dict(log_notification['params'])
     assert params == {'type': 3, 'message': 'tcl-ls started.'}
+
+
+def test_language_server_process_message_reports_indexing_progress_when_supported(
+    server: LanguageServer,
+) -> None:
+    server.process_message(
+        {
+            'jsonrpc': '2.0',
+            'id': 1,
+            'method': 'initialize',
+            'params': {'capabilities': {'window': {'workDoneProgress': True}}},
+        }
+    )
+
+    messages = server.process_message(
+        {
+            'jsonrpc': '2.0',
+            'method': 'textDocument/didOpen',
+            'params': {
+                'textDocument': {
+                    'uri': 'file:///diag.tcl',
+                    'languageId': 'tcl',
+                    'version': 1,
+                    'text': 'proc greet {} {puts $name}\n',
+                }
+            },
+        }
+    )
+
+    assert [message['method'] for message in messages] == [
+        'window/workDoneProgress/create',
+        '$/progress',
+        '$/progress',
+        '$/progress',
+        '$/progress',
+        'window/logMessage',
+        'textDocument/publishDiagnostics',
+        '$/progress',
+    ]
+    create_request = messages[0]
+    assert create_request['id'] == 'tcl-ls/request/1'
+    assert _as_dict(create_request['params']) == {'token': 'tcl-ls/indexing/1'}
+
+    begin_params = _as_dict(messages[1]['params'])
+    assert begin_params['token'] == 'tcl-ls/indexing/1'
+    begin_value = _as_dict(begin_params['value'])
+    assert begin_value == {
+        'kind': 'begin',
+        'title': 'Indexing workspace',
+        'message': 'Starting analysis',
+        'percentage': 0,
+    }
+
+    report_values = [_as_dict(_as_dict(message['params'])['value']) for message in messages[2:5]]
+    assert report_values == [
+        {'kind': 'report', 'message': 'Indexing open documents', 'percentage': 20},
+        {'kind': 'report', 'message': 'Loading workspace dependencies', 'percentage': 50},
+        {'kind': 'report', 'message': 'Analyzing workspace (1/1)', 'percentage': 95},
+    ]
+
+    log_params = _as_dict(messages[5]['params'])
+    assert log_params == {'type': 3, 'message': 'Indexing workspace for file:///diag.tcl.'}
+
+    diagnostics = cast(list[dict[str, object]], _as_dict(messages[6]['params'])['diagnostics'])
+    assert [diagnostic['code'] for diagnostic in diagnostics] == ['unresolved-variable']
+
+    end_params = _as_dict(messages[7]['params'])
+    assert end_params['token'] == 'tcl-ls/indexing/1'
+    end_value = _as_dict(end_params['value'])
+    assert end_value == {'kind': 'end', 'message': 'Indexing complete.'}
+
+
+def test_language_server_process_message_shows_indexing_only_once(
+    server: LanguageServer,
+) -> None:
+    first_messages = server.process_message(
+        {
+            'jsonrpc': '2.0',
+            'method': 'textDocument/didOpen',
+            'params': {
+                'textDocument': {
+                    'uri': 'file:///first.tcl',
+                    'languageId': 'tcl',
+                    'version': 1,
+                    'text': 'puts ok\n',
+                }
+            },
+        }
+    )
+    second_messages = server.process_message(
+        {
+            'jsonrpc': '2.0',
+            'method': 'textDocument/didOpen',
+            'params': {
+                'textDocument': {
+                    'uri': 'file:///second.tcl',
+                    'languageId': 'tcl',
+                    'version': 1,
+                    'text': 'puts ok\n',
+                }
+            },
+        }
+    )
+
+    assert [message['method'] for message in first_messages] == [
+        'window/showMessage',
+        'window/logMessage',
+        'textDocument/publishDiagnostics',
+    ]
+    assert [message['method'] for message in second_messages] == [
+        'window/logMessage',
+        'textDocument/publishDiagnostics',
+    ]
 
 
 def test_language_server_process_message_renames_symbols(server: LanguageServer) -> None:
@@ -1405,7 +1513,14 @@ def test_language_server_run_stdio_emits_indexing_notification_before_open_finis
             self.started = threading.Event()
             self.finish = threading.Event()
 
-        def open_document(self, uri: str, text: str, version: int) -> tuple[object, ...]:
+        def open_document(
+            self,
+            uri: str,
+            text: str,
+            version: int,
+            *,
+            progress: Callable[[str, int], None] | None = None,
+        ) -> tuple[object, ...]:
             self.started.set()
             assert self.finish.wait(timeout=1)
             return ()
@@ -1445,8 +1560,111 @@ def test_language_server_run_stdio_emits_indexing_notification_before_open_finis
         {
             'jsonrpc': '2.0',
             'method': 'window/showMessage',
-            'params': {'type': 3, 'message': f'Indexing workspace for {_MAIN_URI}.'},
+            'params': {'type': 3, 'message': 'Indexing workspace.'},
         }
+    ]
+
+    service.finish.set()
+    thread.join(timeout=1)
+    assert thread.is_alive() is False
+
+
+def test_language_server_run_stdio_emits_indexing_progress_before_open_finishes() -> None:
+    class BlockingService:
+        def __init__(self) -> None:
+            self.started = threading.Event()
+            self.finish = threading.Event()
+
+        def open_document(
+            self,
+            uri: str,
+            text: str,
+            version: int,
+            *,
+            progress: Callable[[str, int], None] | None = None,
+        ) -> tuple[object, ...]:
+            if progress is not None:
+                progress('Indexing open documents', 20)
+            self.started.set()
+            assert self.finish.wait(timeout=1)
+            if progress is not None:
+                progress('Analyzing workspace (1/1)', 95)
+            return ()
+
+    service = BlockingService()
+    input_stream = BytesIO()
+    output_stream = BytesIO()
+    server = LanguageServer(
+        service=cast(LanguageService, service),
+        input_stream=input_stream,
+        output_stream=output_stream,
+    )
+
+    frames: list[dict[str, object]] = [
+        {
+            'jsonrpc': '2.0',
+            'id': 1,
+            'method': 'initialize',
+            'params': {'capabilities': {'window': {'workDoneProgress': True}}},
+        },
+        {
+            'jsonrpc': '2.0',
+            'method': 'textDocument/didOpen',
+            'params': {
+                'textDocument': {
+                    'uri': _MAIN_URI,
+                    'languageId': 'tcl',
+                    'version': 1,
+                    'text': 'puts ok\n',
+                }
+            },
+        },
+        {'jsonrpc': '2.0', 'method': 'exit'},
+    ]
+    input_stream.write(b''.join(_encode_frame(frame) for frame in frames))
+    input_stream.seek(0)
+
+    thread = threading.Thread(target=server.run_stdio)
+    thread.start()
+
+    assert service.started.wait(timeout=1)
+    progress_messages = [
+        message
+        for message in _decode_frames(output_stream.getvalue())
+        if message.get('method') in {'window/workDoneProgress/create', '$/progress'}
+    ]
+    assert progress_messages == [
+        {
+            'jsonrpc': '2.0',
+            'id': 'tcl-ls/request/1',
+            'method': 'window/workDoneProgress/create',
+            'params': {'token': 'tcl-ls/indexing/1'},
+        },
+        {
+            'jsonrpc': '2.0',
+            'method': '$/progress',
+            'params': {
+                'token': 'tcl-ls/indexing/1',
+                'value': {
+                    'kind': 'begin',
+                    'title': 'Indexing workspace',
+                    'message': 'Starting analysis',
+                    'percentage': 0,
+                },
+            },
+        },
+        {
+            'jsonrpc': '2.0',
+            'method': '$/progress',
+            'params': {
+                'token': 'tcl-ls/indexing/1',
+                'value': {
+                    'kind': 'report',
+                    'message': 'Indexing open documents',
+                    'percentage': 20,
+                },
+            },
+        },
     ]
 
     service.finish.set()

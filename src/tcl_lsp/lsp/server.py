@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import BinaryIO, cast
+from typing import BinaryIO, Callable, cast
 
 from pydantic import BaseModel, ValidationError
 
@@ -19,6 +19,7 @@ from tcl_lsp.lsp.model import (
     DidOpenTextDocumentParams,
     ErrorResponseMessage,
     IncomingMessageEnvelope,
+    InitializeParams,
     InitializeResult,
     JsonObject,
     JsonRpcError,
@@ -26,7 +27,9 @@ from tcl_lsp.lsp.model import (
     LogMessageParams,
     NotificationMessage,
     OutgoingMessage,
+    ProgressParams,
     PublishDiagnosticsParams,
+    RequestMessage,
     RenameParams,
     ReferenceParams,
     SemanticTokens,
@@ -38,6 +41,10 @@ from tcl_lsp.lsp.model import (
     TextDocumentIdentifierParams,
     TextEdit,
     TextDocumentPositionParams,
+    WorkDoneProgressBeginValue,
+    WorkDoneProgressCreateParams,
+    WorkDoneProgressEndValue,
+    WorkDoneProgressReportValue,
     WorkspaceEdit,
 )
 from tcl_lsp.lsp.semantic_tokens import SEMANTIC_TOKEN_MODIFIERS, SEMANTIC_TOKEN_TYPES
@@ -50,8 +57,12 @@ _INVALID_PARAMS = -32602
 
 class LanguageServer:
     __slots__ = (
+        '_client_supports_work_done_progress',
         '_exit_requested',
+        '_indexing_notification_shown',
         '_input_stream',
+        '_next_progress_token',
+        '_next_server_request_id',
         '_output_stream',
         '_service',
         '_shutdown_requested',
@@ -68,18 +79,19 @@ class LanguageServer:
         self._output_stream = sys.stdout.buffer if output_stream is None else output_stream
         self._shutdown_requested = False
         self._exit_requested = False
+        self._client_supports_work_done_progress = False
+        self._indexing_notification_shown = False
+        self._next_progress_token = 1
+        self._next_server_request_id = 1
 
     def run_stdio(self) -> None:
         while not self._exit_requested:
             message = self._read_message(self._input_stream)
             if message is None:
                 break
-            did_open_start_notification = self._did_open_start_notification(message)
-            if did_open_start_notification is not None:
-                self._write_message(self._output_stream, did_open_start_notification)
             for response in self._process_message(
                 message,
-                include_did_open_show_message=did_open_start_notification is None,
+                emit_json=lambda payload: self._write_message(self._output_stream, payload),
             ):
                 self._write_message(self._output_stream, response)
 
@@ -90,7 +102,7 @@ class LanguageServer:
         self,
         raw_message: object,
         *,
-        include_did_open_show_message: bool = True,
+        emit_json: Callable[[JsonObject], None] | None = None,
     ) -> list[JsonObject]:
         message = _validate_model(IncomingMessageEnvelope, raw_message)
         if message is None:
@@ -106,6 +118,9 @@ class LanguageServer:
         request_id = message.id
         params = message.params
 
+        if method is None:
+            return []
+
         if not isinstance(method, str):
             if request_id is None:
                 return []
@@ -118,6 +133,13 @@ class LanguageServer:
             ]
 
         if method == 'initialize':
+            initialize_params = _validate_model(InitializeParams, params)
+            self._client_supports_work_done_progress = (
+                initialize_params is not None
+                and initialize_params.capabilities is not None
+                and initialize_params.capabilities.window is not None
+                and initialize_params.capabilities.window.work_done_progress
+            )
             result = self._initialize_result()
             if request_id is None:
                 return []
@@ -128,10 +150,7 @@ class LanguageServer:
             ]
 
         if method == 'initialized':
-            return [
-                self._serialize_message(self._show_message('tcl-ls started.')),
-                self._serialize_message(self._log_message('tcl-ls started.')),
-            ]
+            return [self._serialize_message(self._log_message('tcl-ls started.'))]
 
         if method == 'shutdown':
             self._shutdown_requested = True
@@ -149,28 +168,28 @@ class LanguageServer:
             parsed = _validate_model(DidOpenTextDocumentParams, params)
             if parsed is None:
                 return self._invalid_params(request_id)
+            responses: list[JsonObject] = []
+
+            def emit(message: OutgoingMessage) -> None:
+                serialized = self._serialize_message(message)
+                if emit_json is None:
+                    responses.append(serialized)
+                    return
+                emit_json(serialized)
+
+            progress, finish_progress = self._begin_indexing_feedback(
+                parsed.text_document.uri,
+                emit,
+            )
             diagnostics = self._service.open_document(
                 uri=parsed.text_document.uri,
                 text=parsed.text_document.text,
                 version=parsed.text_document.version,
+                progress=progress,
             )
-            responses: list[JsonObject] = []
-            if include_did_open_show_message:
-                responses.append(
-                    self._serialize_message(
-                        self._show_message(_indexing_message(parsed.text_document.uri))
-                    )
-                )
-            responses.append(
-                self._serialize_message(
-                    self._log_message(_indexing_message(parsed.text_document.uri))
-                )
-            )
-            responses.append(
-                self._serialize_message(
-                    self._publish_diagnostics(parsed.text_document.uri, diagnostics)
-                )
-            )
+            emit(self._log_message(_indexing_message(parsed.text_document.uri)))
+            emit(self._publish_diagnostics(parsed.text_document.uri, diagnostics))
+            finish_progress()
             return responses
 
         if method == 'textDocument/didChange':
@@ -348,18 +367,89 @@ class LanguageServer:
         params = ShowMessageParams(type=message_type, message=message)
         return NotificationMessage(method='window/showMessage', params=params)
 
-    def _did_open_start_notification(self, raw_message: object) -> JsonObject | None:
-        message = _validate_model(IncomingMessageEnvelope, raw_message)
-        if message is None or message.method != 'textDocument/didOpen':
-            return None
+    def _begin_indexing_feedback(
+        self,
+        uri: str,
+        emit: Callable[[OutgoingMessage], None],
+    ) -> tuple[Callable[[str, int], None] | None, Callable[[], None]]:
+        if not self._take_indexing_feedback_slot():
+            return None, _noop
 
-        parsed = _validate_model(DidOpenTextDocumentParams, message.params)
-        if parsed is None:
-            return None
+        if not self._client_supports_work_done_progress:
+            emit(self._show_message(_indexing_notification_message(uri)))
+            return None, _noop
 
-        return self._serialize_message(
-            self._show_message(_indexing_message(parsed.text_document.uri))
+        token = self._next_work_done_progress_token()
+        emit(self._create_work_done_progress(token))
+        emit(
+            self._progress_notification(
+                token,
+                WorkDoneProgressBeginValue(
+                    kind='begin',
+                    title='Indexing workspace',
+                    message='Starting analysis',
+                    percentage=0,
+                ),
+            )
         )
+
+        def report_progress(message: str, percentage: int) -> None:
+            emit(
+                self._progress_notification(
+                    token,
+                    WorkDoneProgressReportValue(
+                        kind='report',
+                        message=message,
+                        percentage=percentage,
+                    ),
+                )
+            )
+
+        def finish_progress() -> None:
+            emit(
+                self._progress_notification(
+                    token,
+                    WorkDoneProgressEndValue(
+                        kind='end',
+                        message='Indexing complete.',
+                    ),
+                )
+            )
+
+        return report_progress, finish_progress
+
+    def _take_indexing_feedback_slot(self) -> bool:
+        if self._indexing_notification_shown:
+            return False
+        self._indexing_notification_shown = True
+        return True
+
+    def _create_work_done_progress(self, token: str) -> RequestMessage:
+        return RequestMessage(
+            id=self._next_server_request_message_id(),
+            method='window/workDoneProgress/create',
+            params=WorkDoneProgressCreateParams(token=token),
+        )
+
+    def _progress_notification(
+        self,
+        token: str,
+        value: WorkDoneProgressBeginValue | WorkDoneProgressReportValue | WorkDoneProgressEndValue,
+    ) -> NotificationMessage:
+        return NotificationMessage(
+            method='$/progress',
+            params=ProgressParams(token=token, value=value),
+        )
+
+    def _next_work_done_progress_token(self) -> str:
+        token = f'tcl-ls/indexing/{self._next_progress_token}'
+        self._next_progress_token += 1
+        return token
+
+    def _next_server_request_message_id(self) -> str:
+        request_id = f'tcl-ls/request/{self._next_server_request_id}'
+        self._next_server_request_id += 1
+        return request_id
 
     def _success_response(
         self, request_id: int | str, result: JsonValue | None
@@ -422,5 +512,14 @@ def _validate_model[ModelT: BaseModel](model_type: type[ModelT], value: object) 
         return None
 
 
+def _noop() -> None:
+    return None
+
+
 def _indexing_message(uri: str) -> str:
     return f'Indexing workspace for {uri}.'
+
+
+def _indexing_notification_message(uri: str) -> str:
+    del uri
+    return 'Indexing workspace.'

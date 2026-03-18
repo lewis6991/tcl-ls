@@ -106,6 +106,18 @@ class ShowMessageParams(ProtocolModel):
     message: str
 
 
+class WindowClientCapabilities(ProtocolModel):
+    work_done_progress: bool = Field(alias='workDoneProgress', default=False)
+
+
+class ClientCapabilities(ProtocolModel):
+    window: WindowClientCapabilities | None = None
+
+
+class InitializeParams(ProtocolModel):
+    capabilities: ClientCapabilities | None = None
+
+
 class TextDocumentItem(ProtocolModel):
     uri: str
     language_id: str = Field(alias='languageId')
@@ -205,6 +217,33 @@ class InitializeResult(ProtocolModel):
     capabilities: ServerCapabilities
 
 
+class WorkDoneProgressCreateParams(ProtocolModel):
+    token: MessageId
+
+
+class WorkDoneProgressBeginValue(ProtocolModel):
+    kind: Literal['begin']
+    title: str
+    message: str | None = None
+    percentage: StrictInt | None = None
+
+
+class WorkDoneProgressReportValue(ProtocolModel):
+    kind: Literal['report']
+    message: str | None = None
+    percentage: StrictInt | None = None
+
+
+class WorkDoneProgressEndValue(ProtocolModel):
+    kind: Literal['end']
+    message: str | None = None
+
+
+class ProgressParams(ProtocolModel):
+    token: MessageId
+    value: JsonValue
+
+
 class JsonRpcError(ProtocolModel):
     code: StrictInt
     message: str
@@ -212,7 +251,7 @@ class JsonRpcError(ProtocolModel):
 
 class IncomingMessageEnvelope(ProtocolModel):
     jsonrpc: Literal['2.0']
-    method: object
+    method: object | None = None
     params: JsonValue | None = None
     id: MessageId | None = None
 
@@ -235,4 +274,13 @@ class ErrorResponseMessage(ProtocolModel):
     error: JsonRpcError
 
 
-type OutgoingMessage = NotificationMessage | SuccessResponseMessage | ErrorResponseMessage
+class RequestMessage(ProtocolModel):
+    jsonrpc: Literal['2.0'] = '2.0'
+    id: MessageId
+    method: str
+    params: JsonValue | None = None
+
+
+type OutgoingMessage = (
+    NotificationMessage | SuccessResponseMessage | ErrorResponseMessage | RequestMessage
+)
