@@ -158,6 +158,7 @@ def test_language_server_initialize_serializes_protocol_models(server: LanguageS
                     'referencesProvider': True,
                     'hoverProvider': True,
                     'documentSymbolProvider': True,
+                    'renameProvider': True,
                     'semanticTokensProvider': {
                         'legend': {
                             'tokenTypes': [

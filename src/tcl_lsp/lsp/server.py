@@ -27,6 +27,7 @@ from tcl_lsp.lsp.model import (
     NotificationMessage,
     OutgoingMessage,
     PublishDiagnosticsParams,
+    RenameParams,
     ReferenceParams,
     SemanticTokens,
     SemanticTokensLegend,
@@ -34,7 +35,9 @@ from tcl_lsp.lsp.model import (
     ServerCapabilities,
     SuccessResponseMessage,
     TextDocumentIdentifierParams,
+    TextEdit,
     TextDocumentPositionParams,
+    WorkspaceEdit,
 )
 from tcl_lsp.lsp.semantic_tokens import SEMANTIC_TOKEN_MODIFIERS, SEMANTIC_TOKEN_TYPES
 from tcl_lsp.lsp.service import LanguageService
@@ -199,6 +202,37 @@ class LanguageServer:
                 )
             ]
 
+        if method == 'textDocument/rename':
+            parsed = _validate_model(RenameParams, params)
+            if parsed is None or request_id is None:
+                return self._invalid_params(request_id)
+            edits = self._service.rename(
+                uri=parsed.text_document.uri,
+                line=parsed.position.line,
+                character=parsed.position.character,
+                new_name=parsed.new_name,
+            )
+            result = (
+                WorkspaceEdit(
+                    changes={
+                        uri: [
+                            TextEdit.model_validate(
+                                {'span': edit.span, 'newText': edit.new_text}, from_attributes=True
+                            )
+                            for edit in uri_edits
+                        ]
+                        for uri, uri_edits in edits.items()
+                    }
+                ).model_dump()
+                if edits is not None
+                else None
+            )
+            return [
+                self._serialize_message(
+                    self._success_response(request_id=request_id, result=result)
+                )
+            ]
+
         if method == 'textDocument/hover':
             parsed = _validate_model(TextDocumentPositionParams, params)
             if parsed is None or request_id is None:
@@ -256,6 +290,7 @@ class LanguageServer:
             references_provider=True,
             hover_provider=True,
             document_symbol_provider=True,
+            rename_provider=True,
             semantic_tokens_provider=SemanticTokensOptions(
                 legend=SemanticTokensLegend(
                     tokenTypes=list(SEMANTIC_TOKEN_TYPES),

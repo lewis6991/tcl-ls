@@ -145,6 +145,12 @@ class TextDocumentPositionParams(ProtocolModel):
     position: LspPosition
 
 
+class RenameParams(ProtocolModel):
+    text_document: TextDocumentIdentifier = Field(alias='textDocument')
+    position: LspPosition
+    new_name: str = Field(alias='newName')
+
+
 class ReferenceContext(ProtocolModel):
     include_declaration: bool = Field(alias='includeDeclaration')
 
@@ -169,12 +175,22 @@ class SemanticTokens(ProtocolModel):
     data: list[StrictInt]
 
 
+class TextEdit(ProtocolModel):
+    range: LspRange = Field(validation_alias='span')
+    new_text: str = Field(alias='newText')
+
+
+class WorkspaceEdit(ProtocolModel):
+    changes: dict[str, list[TextEdit]]
+
+
 class ServerCapabilities(ProtocolModel):
     text_document_sync: StrictInt = Field(serialization_alias='textDocumentSync')
     definition_provider: bool = Field(serialization_alias='definitionProvider')
     references_provider: bool = Field(serialization_alias='referencesProvider')
     hover_provider: bool = Field(serialization_alias='hoverProvider')
     document_symbol_provider: bool = Field(serialization_alias='documentSymbolProvider')
+    rename_provider: bool = Field(serialization_alias='renameProvider')
     semantic_tokens_provider: SemanticTokensOptions = Field(
         serialization_alias='semanticTokensProvider'
     )

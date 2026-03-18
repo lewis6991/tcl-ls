@@ -517,6 +517,46 @@ def test_language_service_definition_resolves_variable_alias_sites(
     assert namespace_write_definition_locations[0].span.start.character == 13
 
 
+def test_language_service_rename_updates_proc_declaration_and_calls(
+    service: LanguageService,
+) -> None:
+    service.open_document('file:///defs.tcl', 'proc greet {name} {return $name}\n', 1)
+    service.open_document('file:///use.tcl', 'greet World\n', 1)
+
+    edits = service.rename('file:///use.tcl', 0, 1, 'welcome')
+
+    assert edits is not None
+    assert set(edits) == {'file:///defs.tcl', 'file:///use.tcl'}
+    assert edits['file:///defs.tcl'][0].span.start.line == 0
+    assert edits['file:///defs.tcl'][0].span.start.character == 5
+    assert edits['file:///defs.tcl'][0].new_text == 'welcome'
+    assert edits['file:///use.tcl'][0].span.start.line == 0
+    assert edits['file:///use.tcl'][0].span.start.character == 0
+    assert edits['file:///use.tcl'][0].new_text == 'welcome'
+
+
+def test_language_service_rename_updates_variable_bindings_and_references(
+    service: LanguageService,
+) -> None:
+    service.open_document(
+        _MAIN_URI,
+        'proc run {value} {\n    set local $value\n    puts $local\n}\n',
+        1,
+    )
+
+    edits = service.rename(_MAIN_URI, 1, 9, 'item')
+
+    assert edits is not None
+    assert tuple(edits) == (_MAIN_URI,)
+    assert [
+        (edit.span.start.line, edit.span.start.character, edit.new_text)
+        for edit in edits[_MAIN_URI]
+    ] == [
+        (1, 8, 'item'),
+        (2, 9, '$item'),
+    ]
+
+
 def test_language_server_hover_uses_markdown_code_fences_for_signatures(
     server: LanguageServer,
 ) -> None:
@@ -550,6 +590,7 @@ def test_language_server_initialize_advertises_semantic_tokens(server: LanguageS
     ]
     assert legend['tokenModifiers'] == ['declaration', 'defaultLibrary']
     assert semantic_tokens['full'] is True
+    assert capabilities['renameProvider'] is True
 
 
 def test_language_server_returns_semantic_tokens(server: LanguageServer) -> None:
@@ -1208,6 +1249,46 @@ def test_language_server_process_message_logs_startup(server: LanguageServer) ->
     assert notification['method'] == 'window/logMessage'
     params = _as_dict(notification['params'])
     assert params == {'type': 3, 'message': 'tcl-ls started.'}
+
+
+def test_language_server_process_message_renames_symbols(server: LanguageServer) -> None:
+    _open_server_document(server, 'proc greet {} {return ok}\ngreet\n')
+
+    messages = server.process_message(
+        {
+            'jsonrpc': '2.0',
+            'id': 8,
+            'method': 'textDocument/rename',
+            'params': {
+                'textDocument': {'uri': _MAIN_URI},
+                'position': {'line': 1, 'character': 1},
+                'newName': 'welcome',
+            },
+        }
+    )
+
+    assert len(messages) == 1
+    response = messages[0]
+    assert response['id'] == 8
+    result = _as_dict(response['result'])
+    changes = cast(dict[str, list[dict[str, object]]], result['changes'])
+    assert tuple(changes) == (_MAIN_URI,)
+    assert changes[_MAIN_URI] == [
+        {
+            'range': {
+                'start': {'line': 0, 'character': 5},
+                'end': {'line': 0, 'character': 10},
+            },
+            'newText': 'welcome',
+        },
+        {
+            'range': {
+                'start': {'line': 1, 'character': 0},
+                'end': {'line': 1, 'character': 5},
+            },
+            'newText': 'welcome',
+        },
+    ]
 
 
 def test_language_server_run_stdio_round_trip() -> None:
