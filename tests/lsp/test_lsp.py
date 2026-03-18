@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from io import BytesIO
 from pathlib import Path
 from typing import cast
@@ -1262,14 +1263,20 @@ def test_language_server_process_message_publishes_diagnostics(server: LanguageS
         }
     )
 
-    assert len(messages) == 2
-    log_message = messages[0]
+    assert len(messages) == 3
+    show_message = messages[0]
+    assert show_message['method'] == 'window/showMessage'
+    show_params = _as_dict(show_message['params'])
+    assert show_params['type'] == 3
+    assert show_params['message'] == 'Indexing workspace for file:///diag.tcl.'
+
+    log_message = messages[1]
     assert log_message['method'] == 'window/logMessage'
     log_params = _as_dict(log_message['params'])
     assert log_params['type'] == 3
     assert log_params['message'] == 'Indexing workspace for file:///diag.tcl.'
 
-    publish = messages[1]
+    publish = messages[2]
     assert publish['method'] == 'textDocument/publishDiagnostics'
     params = _as_dict(publish['params'])
     assert params['uri'] == 'file:///diag.tcl'
@@ -1280,10 +1287,15 @@ def test_language_server_process_message_publishes_diagnostics(server: LanguageS
 def test_language_server_process_message_logs_startup(server: LanguageServer) -> None:
     messages = server.process_message({'jsonrpc': '2.0', 'method': 'initialized'})
 
-    assert len(messages) == 1
+    assert len(messages) == 2
     notification = messages[0]
-    assert notification['method'] == 'window/logMessage'
+    assert notification['method'] == 'window/showMessage'
     params = _as_dict(notification['params'])
+    assert params == {'type': 3, 'message': 'tcl-ls started.'}
+
+    log_notification = messages[1]
+    assert log_notification['method'] == 'window/logMessage'
+    params = _as_dict(log_notification['params'])
     assert params == {'type': 3, 'message': 'tcl-ls started.'}
 
 
@@ -1385,6 +1397,61 @@ def test_language_server_run_stdio_round_trip() -> None:
 
     shutdown_response = next(message for message in messages if message.get('id') == 3)
     assert shutdown_response['result'] is None
+
+
+def test_language_server_run_stdio_emits_indexing_notification_before_open_finishes() -> None:
+    class BlockingService:
+        def __init__(self) -> None:
+            self.started = threading.Event()
+            self.finish = threading.Event()
+
+        def open_document(self, uri: str, text: str, version: int) -> tuple[object, ...]:
+            self.started.set()
+            assert self.finish.wait(timeout=1)
+            return ()
+
+    service = BlockingService()
+    input_stream = BytesIO()
+    output_stream = BytesIO()
+    server = LanguageServer(
+        service=cast(LanguageService, service),
+        input_stream=input_stream,
+        output_stream=output_stream,
+    )
+
+    frames: list[dict[str, object]] = [
+        {
+            'jsonrpc': '2.0',
+            'method': 'textDocument/didOpen',
+            'params': {
+                'textDocument': {
+                    'uri': _MAIN_URI,
+                    'languageId': 'tcl',
+                    'version': 1,
+                    'text': 'puts ok\n',
+                }
+            },
+        },
+        {'jsonrpc': '2.0', 'method': 'exit'},
+    ]
+    input_stream.write(b''.join(_encode_frame(frame) for frame in frames))
+    input_stream.seek(0)
+
+    thread = threading.Thread(target=server.run_stdio)
+    thread.start()
+
+    assert service.started.wait(timeout=1)
+    assert _decode_frames(output_stream.getvalue()) == [
+        {
+            'jsonrpc': '2.0',
+            'method': 'window/showMessage',
+            'params': {'type': 3, 'message': f'Indexing workspace for {_MAIN_URI}.'},
+        }
+    ]
+
+    service.finish.set()
+    thread.join(timeout=1)
+    assert thread.is_alive() is False
 
 
 def _encode_frame(message: dict[str, object]) -> bytes:

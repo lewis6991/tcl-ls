@@ -101,6 +101,11 @@ class LogMessageParams(ProtocolModel):
     message: str
 
 
+class ShowMessageParams(ProtocolModel):
+    type: StrictInt
+    message: str
+
+
 class TextDocumentItem(ProtocolModel):
     uri: str
     language_id: str = Field(alias='languageId')

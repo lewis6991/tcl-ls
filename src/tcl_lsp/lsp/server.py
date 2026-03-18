@@ -33,6 +33,7 @@ from tcl_lsp.lsp.model import (
     SemanticTokensLegend,
     SemanticTokensOptions,
     ServerCapabilities,
+    ShowMessageParams,
     SuccessResponseMessage,
     TextDocumentIdentifierParams,
     TextEdit,
@@ -73,10 +74,24 @@ class LanguageServer:
             message = self._read_message(self._input_stream)
             if message is None:
                 break
-            for response in self.process_message(message):
+            did_open_start_notification = self._did_open_start_notification(message)
+            if did_open_start_notification is not None:
+                self._write_message(self._output_stream, did_open_start_notification)
+            for response in self._process_message(
+                message,
+                include_did_open_show_message=did_open_start_notification is None,
+            ):
                 self._write_message(self._output_stream, response)
 
     def process_message(self, raw_message: object) -> list[JsonObject]:
+        return self._process_message(raw_message)
+
+    def _process_message(
+        self,
+        raw_message: object,
+        *,
+        include_did_open_show_message: bool = True,
+    ) -> list[JsonObject]:
         message = _validate_model(IncomingMessageEnvelope, raw_message)
         if message is None:
             return [
@@ -113,7 +128,10 @@ class LanguageServer:
             ]
 
         if method == 'initialized':
-            return [self._serialize_message(self._log_message('tcl-ls started.'))]
+            return [
+                self._serialize_message(self._show_message('tcl-ls started.')),
+                self._serialize_message(self._log_message('tcl-ls started.')),
+            ]
 
         if method == 'shutdown':
             self._shutdown_requested = True
@@ -136,14 +154,24 @@ class LanguageServer:
                 text=parsed.text_document.text,
                 version=parsed.text_document.version,
             )
-            return [
+            responses: list[JsonObject] = []
+            if include_did_open_show_message:
+                responses.append(
+                    self._serialize_message(
+                        self._show_message(_indexing_message(parsed.text_document.uri))
+                    )
+                )
+            responses.append(
                 self._serialize_message(
-                    self._log_message(f'Indexing workspace for {parsed.text_document.uri}.')
-                ),
+                    self._log_message(_indexing_message(parsed.text_document.uri))
+                )
+            )
+            responses.append(
                 self._serialize_message(
                     self._publish_diagnostics(parsed.text_document.uri, diagnostics)
-                ),
-            ]
+                )
+            )
+            return responses
 
         if method == 'textDocument/didChange':
             parsed = _validate_model(DidChangeTextDocumentParams, params)
@@ -316,6 +344,23 @@ class LanguageServer:
         params = LogMessageParams(type=message_type, message=message)
         return NotificationMessage(method='window/logMessage', params=params)
 
+    def _show_message(self, message: str, *, message_type: int = 3) -> NotificationMessage:
+        params = ShowMessageParams(type=message_type, message=message)
+        return NotificationMessage(method='window/showMessage', params=params)
+
+    def _did_open_start_notification(self, raw_message: object) -> JsonObject | None:
+        message = _validate_model(IncomingMessageEnvelope, raw_message)
+        if message is None or message.method != 'textDocument/didOpen':
+            return None
+
+        parsed = _validate_model(DidOpenTextDocumentParams, message.params)
+        if parsed is None:
+            return None
+
+        return self._serialize_message(
+            self._show_message(_indexing_message(parsed.text_document.uri))
+        )
+
     def _success_response(
         self, request_id: int | str, result: JsonValue | None
     ) -> SuccessResponseMessage:
@@ -375,3 +420,7 @@ def _validate_model[ModelT: BaseModel](model_type: type[ModelT], value: object) 
         return model_type.model_validate(value)
     except ValidationError:
         return None
+
+
+def _indexing_message(uri: str) -> str:
+    return f'Indexing workspace for {uri}.'
