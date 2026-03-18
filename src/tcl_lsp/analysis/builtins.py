@@ -222,17 +222,10 @@ def _load_metadata_package(
             if existing is None:
                 package_commands[name] = command
                 continue
-            if existing.metadata_path_name != command.metadata_path_name:
-                raise RuntimeError(
-                    f'Builtin command `{name}` is declared in multiple metadata files for '
-                    f'package `{package_name}`.'
-                )
-            package_commands[name] = BuiltinCommand(
-                name=name,
-                package=package_name,
-                metadata_path_name=existing.metadata_path_name,
-                overloads=existing.overloads + command.overloads,
-            )
+            # Later metadata overrides the earlier command model. Project-local
+            # metadata can use this to replace bundled commands when a tool
+            # environment shadows Tcl roots such as `clock` or `trace`.
+            package_commands[name] = command
 
     if not package_commands:
         raise RuntimeError(f'No builtin command metadata entries were loaded for `{package_name}`.')

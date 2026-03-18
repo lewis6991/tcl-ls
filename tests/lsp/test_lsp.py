@@ -440,6 +440,31 @@ def test_language_service_definition_returns_all_builtin_overloads(
     assert definition_locations == tuple(overload.location for overload in builtin.overloads)
 
 
+def test_language_service_definition_prefers_project_builtin_override_metadata(
+    service: LanguageService,
+    tmp_path: Path,
+) -> None:
+    plugin_root = tmp_path / '.tcl-ls'
+    plugin_root.mkdir()
+    override_path = plugin_root / 'override.meta.tcl'
+    override_path.write_text('meta module Tcl\nmeta command clock {args}\n', encoding='utf-8')
+    (tmp_path / 'tcllsrc.tcl').write_text('plugin-path .tcl-ls\n', encoding='utf-8')
+
+    source_path = tmp_path / 'main.tcl'
+    source_text = 'clock foo\n'
+    source_path.write_text(source_text, encoding='utf-8')
+
+    assert service.open_document(source_path.as_uri(), source_text, 1) == ()
+
+    definition_locations = service.definition(source_path.as_uri(), 0, 1)
+    assert len(definition_locations) == 1
+    assert definition_locations[0].uri == override_path.as_uri()
+
+    hover = service.hover(source_path.as_uri(), 0, 1)
+    assert hover is not None
+    assert hover.contents == 'builtin command clock {args}'
+
+
 def test_language_service_definition_resolves_global_variable_links(
     service: LanguageService,
 ) -> None:

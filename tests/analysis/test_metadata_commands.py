@@ -14,7 +14,7 @@ from tcl_lsp.analysis.metadata_commands import (
     load_metadata_commands,
     select_argument_indices,
 )
-from tcl_lsp.metadata_paths import metadata_dir
+from tcl_lsp.metadata_paths import metadata_dir, metadata_paths_context
 
 
 def test_core_metadata_supports_option_aware_selectors() -> None:
@@ -215,6 +215,23 @@ def test_core_metadata_models_meta_as_ensemble() -> None:
     assert meta_command_builtin.overloads[0].arity.accepts(3) is True
     assert meta_module_builtin.overloads[0].arity is not None
     assert meta_module_builtin.overloads[0].arity.accepts(1) is True
+
+
+def test_project_metadata_overrides_matching_bundled_builtin_commands(tmp_path: Path) -> None:
+    from tcl_lsp.analysis.builtins import builtin_command
+
+    override_path = tmp_path / 'override.meta.tcl'
+    override_path.write_text('meta module Tcl\nmeta command clock {args}\n', encoding='utf-8')
+
+    with metadata_paths_context((tmp_path,)):
+        builtin = builtin_command('clock')
+
+    assert builtin is not None
+    assert len(builtin.overloads) == 1
+    overload = builtin.overloads[0]
+    assert overload.signature == 'clock {args}'
+    assert builtin.metadata_path_name == 'override.meta.tcl'
+    assert overload.location.uri == override_path.as_uri()
 
 
 def test_tcloo_metadata_parses_embedded_context_annotations() -> None:
