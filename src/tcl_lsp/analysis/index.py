@@ -235,6 +235,15 @@ def _effective_procedures(
     procedures: list[ProcDecl] | tuple[ProcDecl, ...],
 ) -> tuple[ProcDecl, ...]:
     latest_by_uri: dict[str, ProcDecl] = {}
+    latest_implementation_by_uri: dict[str, ProcDecl] = {}
     for procedure in procedures:
         latest_by_uri[procedure.uri] = procedure
-    return tuple(latest_by_uri.values())
+        if procedure.body_span is not None:
+            latest_implementation_by_uri[procedure.uri] = procedure
+
+    effective = tuple(
+        latest_implementation_by_uri.get(uri, procedure) for uri, procedure in latest_by_uri.items()
+    )
+    if latest_implementation_by_uri:
+        return tuple(procedure for procedure in effective if procedure.body_span is not None)
+    return effective

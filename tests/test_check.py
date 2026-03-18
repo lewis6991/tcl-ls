@@ -358,6 +358,33 @@ def test_check_project_loads_external_declaration_plugin_metadata(tmp_path: Path
     assert plugin_report.diagnostics == ()
 
 
+def test_check_project_prefers_plugin_implementations_over_declarations(
+    tmp_path: Path,
+) -> None:
+    metadata_root = tmp_path / 'metadata'
+    plugin_path = _write_sample_plugin_bundle(metadata_root)
+    _write_declaration_plugin_bundle(metadata_root)
+
+    project_root = tmp_path / 'workspace'
+    project_root.mkdir()
+    (project_root / 'decl.tcl').write_text(
+        'dsl::declare greet {{name}}\n',
+        encoding='utf-8',
+    )
+    (project_root / 'impl.tcl').write_text(
+        'dsl::define greet {{name}} {puts $name}\n',
+        encoding='utf-8',
+    )
+    (project_root / 'use.tcl').write_text(
+        'greet World\n',
+        encoding='utf-8',
+    )
+
+    report = check_project(project_root, threads=2, plugin_paths=(plugin_path,))
+
+    assert report.diagnostics == ()
+
+
 def test_check_project_loads_plugin_metadata_from_tcllsrc(tmp_path: Path) -> None:
     project_root = tmp_path / 'workspace'
     package_root = project_root / 'pkg'
