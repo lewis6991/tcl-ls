@@ -50,7 +50,7 @@ from tcl_lsp.analysis.model import (
 from tcl_lsp.cache import metadata_lru_cache
 from tcl_lsp.common import HoverInfo, Location, Span
 from tcl_lsp.metadata_paths import metadata_lookup_names
-from tcl_lsp.workspace import source_id_to_path
+from tcl_lsp.project.paths import source_id_to_path
 
 
 @dataclass(frozen=True, slots=True)

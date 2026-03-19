@@ -338,6 +338,53 @@ def test_language_service_resolves_transitive_required_packages(tmp_path: Path) 
     assert 'Imported via: helper -> json (transitive)' in hover.contents
 
 
+def test_language_service_uses_helper_metadata_for_embedded_dependencies(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / 'workspace'
+    devtools_root = project_root / 'devtools'
+    package_root = project_root / 'pkg'
+    devtools_root.mkdir(parents=True)
+    package_root.mkdir()
+
+    (devtools_root / 'testutilities.tcl').write_text(
+        'proc testing {script} {}\n'
+        'proc useLocal {fname pname args} {}\n'
+        'proc testsNeed {name {version {}}} {}\n',
+        encoding='utf-8',
+    )
+    helper_path = package_root / 'helper.tcl'
+    helper_path.write_text(
+        'proc helper {} {return ok}\n',
+        encoding='utf-8',
+    )
+
+    source_path = package_root / 'main.test'
+    source_text = (
+        'source [file join [file dirname [file dirname [info script]]] devtools testutilities.tcl]\n'
+        'testing {\n'
+        '    useLocal helper.tcl demo\n'
+        '    testsNeed Tk 8.5\n'
+        '}\n'
+        'helper\n'
+        'frame .f\n'
+    )
+    source_path.write_text(source_text, encoding='utf-8')
+
+    service = LanguageService()
+    diagnostics = service.open_document(source_path.as_uri(), source_text, 1)
+
+    assert diagnostics == ()
+
+    helper_definitions = service.definition(source_path.as_uri(), 5, 1)
+    assert len(helper_definitions) == 1
+    assert helper_definitions[0].uri == helper_path.as_uri()
+
+    hover = service.hover(source_path.as_uri(), 6, 1)
+    assert hover is not None
+    assert hover.contents.startswith('builtin command frame ')
+
+
 def test_language_service_loads_generated_project_metadata_without_docs(
     tmp_path: Path,
 ) -> None:

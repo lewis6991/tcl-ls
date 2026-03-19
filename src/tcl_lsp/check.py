@@ -15,20 +15,21 @@ from typing import Literal, TextIO
 from tcl_lsp.analysis import (
     DocumentFacts,
     FactExtractor,
-    PackageIndexEntry,
     Resolver,
     WorkspaceIndex,
 )
-from tcl_lsp.analysis.metadata_effects import (
-    dependency_required_packages,
-    metadata_dependency_overlay,
-)
+from tcl_lsp.analysis.metadata_effects import dependency_required_packages
 from tcl_lsp.common import Diagnostic
 from tcl_lsp.metadata_paths import configure_metadata_paths, metadata_paths_context
 from tcl_lsp.parser import Parser
-from tcl_lsp.project_config import configured_library_paths, configured_plugin_paths
-from tcl_lsp.workspace import (
-    candidate_package_roots,
+from tcl_lsp.project.config import configured_library_paths, configured_plugin_paths
+from tcl_lsp.project.indexing import (
+    PackageIndexCatalog,
+    apply_package_index_catalog,
+    build_package_index_catalog,
+    load_dependency_documents,
+)
+from tcl_lsp.project.paths import (
     discover_tcl_sources,
     read_source_file,
     source_id_to_path,
@@ -40,7 +41,7 @@ _TAB_SIZE = 4
 _DEFAULT_WORKER_COUNT = 8
 _worker_document_cache: _DocumentCache | None = None
 _worker_resolver: Resolver | None = None
-_worker_package_index_catalog: tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...] = ()
+_worker_package_index_catalog: PackageIndexCatalog = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -488,7 +489,7 @@ def _run_check(
 
         parser = Parser()
         extractor = FactExtractor(parser)
-        package_index_catalog = _build_package_index_catalog(
+        package_index_catalog = build_package_index_catalog(
             target,
             parser=parser,
             extractor=extractor,
@@ -585,10 +586,10 @@ def _prepare_unit(
     unit: _AnalysisUnit,
     *,
     document_cache: _DocumentCache,
-    package_index_catalog: tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...],
+    package_index_catalog: PackageIndexCatalog,
 ) -> _PreparedUnit:
     workspace_index = WorkspaceIndex()
-    _apply_package_index_catalog(workspace_index, package_index_catalog)
+    apply_package_index_catalog(workspace_index, package_index_catalog)
     documents_by_uri: dict[str, _ProjectDocument] = {}
     source_documents: list[_ProjectDocument] = []
     for source_path in unit.source_paths:
@@ -596,11 +597,23 @@ def _prepare_unit(
         documents_by_uri[document.uri] = document
         source_documents.append(document)
         workspace_index.update(document.uri, document.facts)
-    background_source_paths = _load_background_documents(
+
+    def load_document(uri: str) -> _ProjectDocument | None:
+        source_path = source_id_to_path(uri)
+        if source_path is None:
+            return None
+        try:
+            return document_cache.get(source_path)
+        except OSError:
+            return None
+
+    background_documents = load_dependency_documents(
         documents_by_uri,
-        document_cache=document_cache,
         workspace_index=workspace_index,
+        describe_document=_project_document_details,
+        load_document=load_document,
     )
+    background_source_paths = tuple(sorted(document.path for document in background_documents))
     return _PreparedUnit(
         unit=unit,
         source_documents=tuple(source_documents),
@@ -612,125 +625,31 @@ def _prepare_unit(
 def _prepare_source_workspace(
     document: _ProjectDocument,
     *,
-    package_index_catalog: tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...],
+    package_index_catalog: PackageIndexCatalog,
     document_cache: _DocumentCache,
 ) -> tuple[WorkspaceIndex, tuple[Path, ...]]:
     workspace_index = WorkspaceIndex()
-    _apply_package_index_catalog(workspace_index, package_index_catalog)
+    apply_package_index_catalog(workspace_index, package_index_catalog)
     documents_by_uri = {document.uri: document}
     workspace_index.update(document.uri, document.facts)
-    background_source_paths = _load_background_documents(
+
+    def load_document(uri: str) -> _ProjectDocument | None:
+        source_path = source_id_to_path(uri)
+        if source_path is None:
+            return None
+        try:
+            return document_cache.get(source_path)
+        except OSError:
+            return None
+
+    background_documents = load_dependency_documents(
         documents_by_uri,
-        document_cache=document_cache,
         workspace_index=workspace_index,
+        describe_document=_project_document_details,
+        load_document=load_document,
     )
+    background_source_paths = tuple(sorted(document.path for document in background_documents))
     return workspace_index, background_source_paths
-
-
-def _load_background_documents(
-    documents_by_uri: dict[str, _ProjectDocument],
-    *,
-    document_cache: _DocumentCache,
-    workspace_index: WorkspaceIndex,
-) -> tuple[Path, ...]:
-    failed_uris: set[str] = set()
-    loaded_paths: set[Path] = set()
-
-    while True:
-        loaded_document = False
-        for document in tuple(documents_by_uri.values()):
-            for source_uri in _background_source_uris(document, workspace_index):
-                if source_uri in documents_by_uri or source_uri in failed_uris:
-                    continue
-
-                source_path = source_id_to_path(source_uri)
-                if source_path is None:
-                    failed_uris.add(source_uri)
-                    continue
-                try:
-                    background_document = document_cache.get(source_path)
-                except OSError:
-                    failed_uris.add(source_uri)
-                    continue
-
-                documents_by_uri[background_document.uri] = background_document
-                workspace_index.update(background_document.uri, background_document.facts)
-                loaded_paths.add(background_document.path)
-                loaded_document = True
-                break
-            if loaded_document:
-                break
-        if not loaded_document:
-            return tuple(sorted(loaded_paths))
-
-
-def _background_source_uris(
-    document: _ProjectDocument,
-    workspace_index: WorkspaceIndex,
-) -> tuple[str, ...]:
-    uris: dict[str, None] = {}
-    overlay = metadata_dependency_overlay(
-        document.path,
-        document.facts,
-        workspace_index,
-    )
-    for source_uri in overlay.source_uris:
-        uris.setdefault(source_uri, None)
-    for package_name in overlay.required_packages:
-        for source_uri in workspace_index.package_source_uris(package_name):
-            uris.setdefault(source_uri, None)
-    return tuple(uris)
-
-
-def _build_package_index_catalog(
-    target: Path,
-    *,
-    parser: Parser,
-    extractor: FactExtractor,
-    library_paths: Sequence[Path] = (),
-) -> tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...]:
-    seen_paths: set[Path] = set()
-    catalog_entries: list[tuple[str, tuple[PackageIndexEntry, ...]]] = []
-    for root in _package_index_scan_roots(target, library_paths=library_paths):
-        for pkg_index_path in sorted(root.rglob('pkgIndex.tcl')):
-            resolved_path = pkg_index_path.resolve(strict=False)
-            if resolved_path in seen_paths:
-                continue
-            seen_paths.add(resolved_path)
-            indexed_entry = _index_package_index(
-                resolved_path,
-                parser=parser,
-                extractor=extractor,
-            )
-            if indexed_entry is not None:
-                catalog_entries.append(indexed_entry)
-    return tuple(catalog_entries)
-
-
-def _apply_package_index_catalog(
-    workspace_index: WorkspaceIndex,
-    package_index_catalog: tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...],
-) -> None:
-    for pkg_index_uri, package_index_entries in package_index_catalog:
-        workspace_index.update_package_index(pkg_index_uri, package_index_entries)
-
-
-def _package_index_scan_roots(
-    target: Path,
-    *,
-    library_paths: Sequence[Path] = (),
-) -> tuple[Path, ...]:
-    roots: dict[Path, None] = {}
-    candidate_roots = tuple(candidate_package_roots(target))
-    if candidate_roots:
-        for package_root in candidate_roots:
-            roots.setdefault(package_root.resolve(strict=False), None)
-    elif target.is_dir():
-        roots.setdefault(target, None)
-
-    for library_path in library_paths:
-        roots.setdefault(library_path.resolve(strict=False), None)
-    return tuple(roots)
 
 
 def _discover_analysis_units(target: Path) -> tuple[_AnalysisUnit, ...]:
@@ -818,6 +737,10 @@ def _index_document(path: Path, *, parser: Parser, extractor: FactExtractor) -> 
         text=text,
         facts=extractor.extract(parse_result, include_parse_result=False),
     )
+
+
+def _project_document_details(document: _ProjectDocument) -> tuple[str, Path | None, DocumentFacts]:
+    return (document.uri, document.path, document.facts)
 
 
 def _group_diagnostics(
@@ -1008,7 +931,7 @@ def _analyze_unit(
     *,
     document_cache: _DocumentCache,
     resolver: Resolver,
-    package_index_catalog: tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...],
+    package_index_catalog: PackageIndexCatalog,
 ) -> _UnitAnalysisReport:
     if _is_package_unit(unit):
         return _analyze_package_unit(
@@ -1042,7 +965,7 @@ def _analyze_package_unit(
     *,
     document_cache: _DocumentCache,
     resolver: Resolver,
-    package_index_catalog: tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...],
+    package_index_catalog: PackageIndexCatalog,
 ) -> _UnitAnalysisReport:
     source_reports: list[_UnitSourceReport] = []
     background_source_paths: set[Path] = set()
@@ -1099,7 +1022,7 @@ def _analyze_source_document(
 
 
 def _initialize_unit_worker(
-    package_index_catalog: tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...],
+    package_index_catalog: PackageIndexCatalog,
     plugin_paths: tuple[str, ...],
 ) -> None:
     global _worker_document_cache, _worker_package_index_catalog, _worker_resolver
@@ -1124,7 +1047,7 @@ def _analyze_unit_worker(unit: _AnalysisUnit) -> _UnitAnalysisReport:
 def _worker_services() -> tuple[
     _DocumentCache,
     Resolver,
-    tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...],
+    PackageIndexCatalog,
 ]:
     global _worker_document_cache, _worker_package_index_catalog, _worker_resolver
     if _worker_document_cache is None or _worker_resolver is None:
@@ -1134,26 +1057,9 @@ def _worker_services() -> tuple[
     return (_worker_document_cache, _worker_resolver, _worker_package_index_catalog)
 
 
-def _index_package_index(
-    path: Path,
-    *,
-    parser: Parser,
-    extractor: FactExtractor,
-) -> tuple[str, tuple[PackageIndexEntry, ...]] | None:
-    try:
-        text = read_source_file(path)
-    except OSError:
-        return None
-
-    pkg_index_uri = path.as_uri()
-    parse_result = parser.parse_document(path=pkg_index_uri, text=text)
-    facts = extractor.extract(parse_result, include_parse_result=False)
-    return (pkg_index_uri, facts.package_index_entries)
-
-
 def _create_unit_executor(
     worker_count: int,
-    package_index_catalog: tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...],
+    package_index_catalog: PackageIndexCatalog,
     plugin_paths: Sequence[Path | str],
 ) -> ProcessPoolExecutor | None:
     if worker_count <= 1:

@@ -5,16 +5,21 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tcl_lsp.analysis import AnalysisResult, FactExtractor, Resolver, WorkspaceIndex
-from tcl_lsp.analysis.facts.parsing import is_simple_name
 from tcl_lsp.analysis.builtins import builtin_definition_targets
+from tcl_lsp.analysis.facts.parsing import is_simple_name
 from tcl_lsp.analysis.metadata_effects import dependency_required_packages
 from tcl_lsp.analysis.model import CommandImport, DefinitionTarget, DocumentFacts
 from tcl_lsp.common import Diagnostic, DocumentSymbol, HoverInfo, Location, Span
 from tcl_lsp.lsp.semantic_tokens import encode_document_semantic_tokens
 from tcl_lsp.metadata_paths import configure_metadata_paths
 from tcl_lsp.parser import Parser, ParseResult
-from tcl_lsp.project_config import configured_library_paths, configured_plugin_paths
-from tcl_lsp.workspace import candidate_package_roots, read_source_file, source_id_to_path
+from tcl_lsp.project.config import configured_library_paths, configured_plugin_paths
+from tcl_lsp.project.indexing import (
+    load_dependency_documents,
+    reachable_document_uris,
+    scan_package_root,
+)
+from tcl_lsp.project.paths import candidate_package_roots, read_source_file, source_id_to_path
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,7 +45,6 @@ class LanguageService:
     __slots__ = (
         '_documents',
         '_extractor',
-        '_failed_background_documents',
         '_library_paths_by_uri',
         '_open_document_uris',
         '_parser',
@@ -64,7 +68,6 @@ class LanguageService:
         self._resolver = Resolver() if resolver is None else resolver
         self._documents: dict[str, ManagedDocument] = {}
         self._scanned_package_roots: set[Path] = set()
-        self._failed_background_documents: set[str] = set()
         self._open_document_uris: set[str] = set()
         self._plugin_paths_by_uri: dict[str, tuple[Path, ...]] = {}
         self._library_paths_by_uri: dict[str, tuple[Path, ...]] = {}
@@ -282,9 +285,13 @@ class LanguageService:
         self._rebuild_documents(pending_documents, progress=progress)
 
     def _index_document(self, uri: str, text: str, version: int) -> None:
+        document = self._build_document(uri=uri, text=text, version=version)
+        self._store_document(document)
+
+    def _build_document(self, *, uri: str, text: str, version: int) -> ManagedDocument:
         parse_result = self._parser.parse_document(path=uri, text=text)
         facts = self._extractor.extract(parse_result)
-        self._documents[uri] = ManagedDocument(
+        return ManagedDocument(
             uri=uri,
             version=version,
             text=text,
@@ -292,7 +299,10 @@ class LanguageService:
             facts=facts,
             analysis=_empty_analysis(uri, facts.document_symbols),
         )
-        self._workspace_index.update(uri, facts)
+
+    def _store_document(self, document: ManagedDocument) -> None:
+        self._documents[document.uri] = document
+        self._workspace_index.update(document.uri, document.facts)
 
     def _discover_package_roots(self, uri: str) -> None:
         path = source_id_to_path(uri)
@@ -308,18 +318,12 @@ class LanguageService:
             self._scan_package_root(resolved_root)
 
     def _scan_package_root(self, package_root: Path) -> None:
-        for pkg_index_path in sorted(package_root.rglob('pkgIndex.tcl')):
-            try:
-                text = read_source_file(pkg_index_path)
-            except OSError:
-                continue
-            pkg_index_uri = pkg_index_path.resolve(strict=False).as_uri()
-            parse_result = self._parser.parse_document(path=pkg_index_uri, text=text)
-            facts = self._extractor.extract(parse_result)
-            self._workspace_index.update_package_index(
-                pkg_index_uri,
-                facts.package_index_entries,
-            )
+        scan_package_root(
+            package_root,
+            parser=self._parser,
+            extractor=self._extractor,
+            workspace_index=self._workspace_index,
+        )
 
     def _ensure_background_documents_loaded(
         self,
@@ -328,53 +332,37 @@ class LanguageService:
         start_percentage: int = 50,
         end_percentage: int = 75,
     ) -> None:
+        def load_document(uri: str) -> ManagedDocument | None:
+            return self._load_document_from_uri(uri, version=0)
+
+        loaded_documents = load_dependency_documents(
+            self._documents,
+            workspace_index=self._workspace_index,
+            describe_document=_managed_document_details,
+            load_document=load_document,
+            on_document_loaded=lambda document: self._discover_package_roots(document.uri),
+        )
+
         loaded_background_documents = 0
-        while True:
-            loaded_document = False
-            for document in tuple(self._documents.values()):
-                for source_uri in self._background_document_uris(document.facts):
-                    if source_uri in self._documents:
-                        continue
-                    if source_uri in self._failed_background_documents:
-                        continue
-                    if self._load_background_document(source_uri):
-                        loaded_document = True
-                        loaded_background_documents += 1
-                        self._report_progress(
-                            progress,
-                            f'Loading workspace dependencies ({loaded_background_documents})',
-                            min(end_percentage, start_percentage + loaded_background_documents),
-                        )
-                        break
-                if loaded_document:
-                    break
-            if not loaded_document:
-                return
+        for _ in loaded_documents:
+            loaded_background_documents += 1
+            self._report_progress(
+                progress,
+                f'Loading workspace dependencies ({loaded_background_documents})',
+                min(end_percentage, start_percentage + loaded_background_documents),
+            )
 
-    def _background_document_uris(self, facts: DocumentFacts) -> tuple[str, ...]:
-        uris: dict[str, None] = {}
-        for directive in facts.source_directives:
-            uris.setdefault(directive.target_uri, None)
-        for package_require in facts.package_requires:
-            for source_uri in self._workspace_index.package_source_uris(package_require.name):
-                uris.setdefault(source_uri, None)
-        return tuple(uris)
-
-    def _load_background_document(self, uri: str) -> bool:
+    def _load_document_from_uri(self, uri: str, *, version: int) -> ManagedDocument | None:
         path = source_id_to_path(uri)
         if path is None:
-            self._failed_background_documents.add(uri)
-            return False
+            return None
 
         try:
             text = read_source_file(path)
         except OSError:
-            self._failed_background_documents.add(uri)
-            return False
+            return None
 
-        self._index_document(uri=uri, text=text, version=0)
-        self._discover_package_roots(uri)
-        return True
+        return self._build_document(uri=uri, text=text, version=version)
 
     def _recompute_workspace_analyses(
         self,
@@ -434,21 +422,12 @@ class LanguageService:
         return workspace_index
 
     def _reachable_analysis_uris(self, root_uri: str) -> tuple[str, ...]:
-        reachable_uris: dict[str, None] = {}
-        pending_uris = [root_uri]
-        while pending_uris:
-            uri = pending_uris.pop()
-            if uri in reachable_uris:
-                continue
-            reachable_uris[uri] = None
-            document = self._documents.get(uri)
-            if document is None:
-                continue
-            for dependency_uri in self._background_document_uris(document.facts):
-                if dependency_uri in reachable_uris:
-                    continue
-                pending_uris.append(dependency_uri)
-        return tuple(reachable_uris)
+        return reachable_document_uris(
+            root_uri,
+            documents_by_uri=self._documents,
+            workspace_index=self._workspace_index,
+            describe_document=_managed_document_details,
+        )
 
     def _configured_plugin_paths(self, uri: str) -> tuple[Path, ...]:
         path = source_id_to_path(uri)
@@ -495,7 +474,6 @@ class LanguageService:
         self._documents = {}
         self._workspace_index = WorkspaceIndex()
         self._scanned_package_roots = set()
-        self._failed_background_documents = set()
 
         total_snapshots = len(snapshots)
         for index, (uri, (text, version)) in enumerate(snapshots.items(), start=1):
@@ -678,6 +656,10 @@ class LanguageService:
             seen.add(definition.symbol_id)
             definitions.append(definition)
         return tuple(definitions)
+
+
+def _managed_document_details(document: ManagedDocument) -> tuple[str, Path | None, DocumentFacts]:
+    return (document.uri, source_id_to_path(document.uri), document.facts)
 
 
 def _deduplicate_locations(locations: list[Location]) -> tuple[Location, ...]:
