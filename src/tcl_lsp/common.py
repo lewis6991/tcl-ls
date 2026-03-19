@@ -63,6 +63,37 @@ def lsp_location(uri: str, span: Span) -> types.Location:
     return types.Location(uri=uri, range=lsp_range(span))
 
 
+def offset_at_position(text: str, line: int, character: int) -> int | None:
+    if line < 0 or character < 0:
+        return None
+
+    current_line = 0
+    line_start = 0
+    for index, char in enumerate(text):
+        if current_line == line:
+            break
+        if char == '\n':
+            current_line += 1
+            line_start = index + 1
+    else:
+        if current_line != line:
+            if line == current_line:
+                line_start = len(text)
+            else:
+                return None
+
+    if current_line != line:
+        return None
+
+    line_end = text.find('\n', line_start)
+    if line_end < 0:
+        line_end = len(text)
+
+    if character > line_end - line_start:
+        return None
+    return line_start + character
+
+
 @dataclass(frozen=True, slots=True)
 class Diagnostic:
     span: Span

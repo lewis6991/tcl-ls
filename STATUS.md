@@ -119,14 +119,14 @@ This repository contains an early but working bootstrap of a Tcl language server
 - [x] Full-document sync model
 - [x] In-memory document store and reanalysis of currently managed/open documents on updates
 - [x] Local package-root discovery and `pkgIndex.tcl` scanning for opened documents
-- [ ] completion
-- [ ] signature help
-- [ ] rename
+- [x] completion
+- [x] signature help
+- [x] rename
 - [ ] code actions
 - [ ] formatting
 - [x] semantic tokens
-- [ ] document highlights
-- [ ] workspace symbols
+- [x] document highlights
+- [x] workspace symbols
 - [ ] code lens
 - [ ] inlay hints
 - [ ] LSP position handling does not yet account for UTF-16 code-unit semantics or negotiate a `positionEncoding`

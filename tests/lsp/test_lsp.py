@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from lsprotocol import types
 from tests.lsp_service import LanguageService
 from tests.lsp_support import process_message
 
@@ -133,6 +134,26 @@ def _server_document_request(
     return _as_dict(response)
 
 
+def _server_workspace_request(
+    server: LanguageServer,
+    *,
+    method: str,
+    params: dict[str, object],
+    request_id: int = 1,
+) -> dict[str, object]:
+    messages = process_message(
+        server,
+        {
+            'jsonrpc': '2.0',
+            'id': request_id,
+            'method': method,
+            'params': params,
+        },
+    )
+    response = next(message for message in messages if message.get('id') == request_id)
+    return _as_dict(response)
+
+
 def _semantic_tokens_legend(server: LanguageServer) -> tuple[list[str], list[str]]:
     semantic_tokens_provider = server.server_capabilities.semantic_tokens_provider
     assert semantic_tokens_provider is not None
@@ -211,6 +232,47 @@ def _hover_markdown_value(
     hover_contents = _as_dict(hover_result['contents'])
     assert hover_contents['kind'] == 'markdown'
     return cast(str, hover_contents['value'])
+
+
+def _completion_items(
+    server: LanguageServer,
+    *,
+    line: int,
+    character: int,
+    uri: str = _MAIN_URI,
+) -> list[dict[str, object]]:
+    completion_response = _server_position_request(
+        server,
+        method='textDocument/completion',
+        uri=uri,
+        line=line,
+        character=character,
+    )
+    result = completion_response['result']
+    if isinstance(result, list):
+        return cast(list[dict[str, object]], result)
+    completion_list = _as_dict(result)
+    return cast(list[dict[str, object]], completion_list['items'])
+
+
+def _signature_help_result(
+    server: LanguageServer,
+    *,
+    line: int,
+    character: int,
+    uri: str = _MAIN_URI,
+) -> dict[str, object] | None:
+    signature_response = _server_position_request(
+        server,
+        method='textDocument/signatureHelp',
+        uri=uri,
+        line=line,
+        character=character,
+    )
+    result = signature_response['result']
+    if result is None:
+        return None
+    return _as_dict(result)
 
 
 def _write_sample_plugin_bundle(metadata_root: Path) -> Path:
@@ -968,6 +1030,141 @@ def test_language_server_initialize_advertises_semantic_tokens() -> None:
     assert legend['tokenModifiers'] == ['declaration', 'defaultLibrary']
     assert semantic_tokens['full'] is True
     assert capabilities['renameProvider'] is True
+    completion_provider = _as_dict(capabilities['completionProvider'])
+    assert completion_provider['triggerCharacters'] == ['$', ':']
+    signature_help_provider = _as_dict(capabilities['signatureHelpProvider'])
+    assert signature_help_provider['triggerCharacters'] == [' ', '\t']
+    assert capabilities['documentHighlightProvider'] is True
+    workspace_symbol_provider = _as_dict(capabilities['workspaceSymbolProvider'])
+    assert workspace_symbol_provider == {'resolveProvider': False}
+
+
+def test_language_server_returns_command_completion_items(server: LanguageServer) -> None:
+    _open_server_document(server, 'proc greet {} {return ok}\ngr\n')
+
+    items = _completion_items(server, line=1, character=2)
+    greet_item = next(item for item in items if item['label'] == 'greet')
+
+    assert greet_item['detail'] == 'proc ::greet()'
+
+
+def test_language_server_returns_variable_completion_items(server: LanguageServer) -> None:
+    source_text = 'proc run {value} {\n    set local $value\n    puts $\n}\n'
+    _open_server_document(server, source_text)
+
+    line = source_text.splitlines()[2]
+    items = _completion_items(
+        server,
+        line=2,
+        character=line.index('$') + 1,
+    )
+
+    item_by_label = {cast(str, item['label']): item for item in items}
+    assert item_by_label['local']['detail'] == 'set local'
+    assert item_by_label['value']['detail'] == 'parameter value'
+
+
+def test_language_server_returns_package_completion_items(
+    server: LanguageServer, tmp_path: Path
+) -> None:
+    project_root = tmp_path / 'workspace'
+    _write_sample_library_root(tmp_path / 'tcllib')
+    project_root.mkdir()
+    (project_root / 'tcllsrc.tcl').write_text('lib-path ../tcllib\n', encoding='utf-8')
+
+    source_path = project_root / 'main.tcl'
+    source_text = 'package require sa\n'
+    source_path.write_text(source_text, encoding='utf-8')
+
+    _open_server_document(server, source_text, uri=source_path.as_uri())
+
+    items = _completion_items(
+        server,
+        uri=source_path.as_uri(),
+        line=0,
+        character=len('package require sa'),
+    )
+    samplelib_item = next(item for item in items if item['label'] == 'samplelib')
+
+    assert samplelib_item['detail'] == 'workspace package'
+
+
+def test_language_server_returns_proc_signature_help(server: LanguageServer) -> None:
+    _open_server_document(server, 'proc greet {name times} {return ok}\ngreet \n')
+
+    result = _signature_help_result(server, line=1, character=len('greet '))
+
+    assert result is not None
+    signatures = cast(list[dict[str, object]], result['signatures'])
+    assert signatures[0]['label'] == 'proc ::greet(name, times)'
+    assert result['activeSignature'] == 0
+    assert result['activeParameter'] == 0
+
+
+def test_language_server_returns_builtin_signature_help(server: LanguageServer) -> None:
+    _open_server_document(server, 'set \n')
+
+    result = _signature_help_result(server, line=0, character=len('set '))
+
+    assert result is not None
+    signatures = cast(list[dict[str, object]], result['signatures'])
+    assert signatures[0]['label'] == 'set {varName ? newValue ?}'
+    assert result['activeParameter'] is None
+
+
+def test_language_server_returns_document_highlights(server: LanguageServer) -> None:
+    source_text = 'proc run {value} {\n    set local $value\n    puts $local\n}\n'
+    _open_server_document(server, source_text)
+
+    line = source_text.splitlines()[2]
+    response = _server_position_request(
+        server,
+        method='textDocument/documentHighlight',
+        line=2,
+        character=line.index('$local') + 1,
+    )
+    result = cast(list[dict[str, object]], response['result'])
+
+    assert result == [
+        {
+            'range': {
+                'start': {'line': 1, 'character': 8},
+                'end': {'line': 1, 'character': 13},
+            },
+            'kind': types.DocumentHighlightKind.Write,
+        },
+        {
+            'range': {
+                'start': {'line': 2, 'character': 9},
+                'end': {'line': 2, 'character': 15},
+            },
+            'kind': types.DocumentHighlightKind.Read,
+        },
+    ]
+
+
+def test_language_server_returns_workspace_symbols(server: LanguageServer, tmp_path: Path) -> None:
+    project_root = tmp_path / 'workspace'
+    project_root.mkdir()
+    helper_path = project_root / 'helper.inc'
+    helper_path.write_text('proc greet {} {return ok}\n', encoding='utf-8')
+
+    main_path = project_root / 'main.tcl'
+    source_text = 'source [file join [file dirname [info script]] helper.inc]\n'
+    main_path.write_text(source_text, encoding='utf-8')
+
+    _open_server_document(server, source_text, uri=main_path.as_uri())
+
+    response = _server_workspace_request(
+        server,
+        method='workspace/symbol',
+        params={'query': 'greet'},
+    )
+    result = cast(list[dict[str, object]], response['result'])
+
+    greet_symbol = next(symbol for symbol in result if symbol['name'] == '::greet')
+    location = _as_dict(greet_symbol['location'])
+    assert location['uri'] == helper_path.as_uri()
 
 
 def test_language_server_returns_semantic_tokens(server: LanguageServer) -> None:

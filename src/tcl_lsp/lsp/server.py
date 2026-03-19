@@ -13,9 +13,13 @@ from tcl_lsp import __version__
 from tcl_lsp.analysis import FactExtractor, Resolver, WorkspaceIndex
 from tcl_lsp.analysis.metadata_effects import dependency_required_packages
 from tcl_lsp.common import Diagnostic, lsp_range
+from tcl_lsp.lsp.features.completion import completion_items
+from tcl_lsp.lsp.features.highlights import document_highlights
 from tcl_lsp.lsp.features.hover import hover
 from tcl_lsp.lsp.features.navigation import definition, references
 from tcl_lsp.lsp.features.rename import rename
+from tcl_lsp.lsp.features.signature_help import signature_help
+from tcl_lsp.lsp.features.workspace_symbols import workspace_symbols
 from tcl_lsp.lsp.semantic_tokens import (
     SEMANTIC_TOKEN_MODIFIERS,
     SEMANTIC_TOKEN_TYPES,
@@ -138,6 +142,14 @@ class LanguageServer(PyglsLanguageServer):
     @property
     def metadata_registry(self) -> MetadataRegistry:
         return self._metadata_registry
+
+    @property
+    def parser(self) -> Parser:
+        return self._parser
+
+    @property
+    def extractor(self) -> FactExtractor:
+        return self._extractor
 
     @property
     def workspace_index(self) -> WorkspaceIndex:
@@ -687,6 +699,61 @@ def hover_request(server: LanguageServer, params: types.HoverParams) -> types.Ho
     )
 
 
+@server.feature(
+    types.TEXT_DOCUMENT_COMPLETION,
+    types.CompletionOptions(trigger_characters=['$', ':']),
+)
+def completion_request(
+    server: LanguageServer,
+    params: types.CompletionParams,
+) -> types.CompletionList:
+    items = completion_items(
+        server.documents,
+        workspace_index=server.workspace_index,
+        metadata_registry=server.metadata_registry,
+        parser=server.parser,
+        extractor=server.extractor,
+        uri=params.text_document.uri,
+        line=params.position.line,
+        character=params.position.character,
+    )
+    return types.CompletionList(is_incomplete=False, items=list(items))
+
+
+@server.feature(
+    types.TEXT_DOCUMENT_SIGNATURE_HELP,
+    types.SignatureHelpOptions(trigger_characters=[' ', '\t']),
+)
+def signature_help_request(
+    server: LanguageServer,
+    params: types.SignatureHelpParams,
+) -> types.SignatureHelp | None:
+    return signature_help(
+        server.documents,
+        metadata_registry=server.metadata_registry,
+        parser=server.parser,
+        extractor=server.extractor,
+        uri=params.text_document.uri,
+        line=params.position.line,
+        character=params.position.character,
+    )
+
+
+@server.feature(types.TEXT_DOCUMENT_DOCUMENT_HIGHLIGHT)
+def document_highlight_request(
+    server: LanguageServer,
+    params: types.DocumentHighlightParams,
+) -> list[types.DocumentHighlight]:
+    return list(
+        document_highlights(
+            server.documents,
+            uri=params.text_document.uri,
+            line=params.position.line,
+            character=params.position.character,
+        )
+    )
+
+
 @server.feature(types.TEXT_DOCUMENT_DOCUMENT_SYMBOL)
 def document_symbols(
     server: LanguageServer,
@@ -718,6 +785,14 @@ def semantic_tokens_full(
         analysis=document.analysis,
     )
     return types.SemanticTokens(data=list(data))
+
+
+@server.feature(types.WORKSPACE_SYMBOL)
+def workspace_symbol_request(
+    server: LanguageServer,
+    params: types.WorkspaceSymbolParams,
+) -> list[types.WorkspaceSymbol]:
+    return list(workspace_symbols(server.documents, query=params.query))
 
 
 def _progress_percentage(*, index: int, total: int, start: int, end: int) -> int:

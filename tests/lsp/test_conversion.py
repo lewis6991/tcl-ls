@@ -66,8 +66,15 @@ def test_language_server_initialize_serializes_protocol_models() -> None:
     assert capabilities['definitionProvider'] is True
     assert capabilities['referencesProvider'] is True
     assert capabilities['hoverProvider'] is True
+    completion_provider = cast(dict[str, object], capabilities['completionProvider'])
+    assert completion_provider['triggerCharacters'] == ['$', ':']
+    signature_help_provider = cast(dict[str, object], capabilities['signatureHelpProvider'])
+    assert signature_help_provider['triggerCharacters'] == [' ', '\t']
+    assert capabilities['documentHighlightProvider'] is True
     assert capabilities['documentSymbolProvider'] is True
     assert capabilities['renameProvider'] is True
+    workspace_symbol_provider = cast(dict[str, object], capabilities['workspaceSymbolProvider'])
+    assert workspace_symbol_provider == {'resolveProvider': False}
     assert capabilities['textDocumentSync'] == {'openClose': True, 'change': 1, 'save': False}
     semantic_tokens = cast(dict[str, object], capabilities['semanticTokensProvider'])
     legend = cast(dict[str, object], semantic_tokens['legend'])
