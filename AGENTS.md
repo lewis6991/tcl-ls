@@ -11,9 +11,10 @@ Available skills:
 If a task clearly matches a listed skill, read its `SKILL.md` and use
 it for that turn.
 
-## Skills
+## Misc
 
 - Use `uv` for running python and tooling.
 - After making edits:
   - Run `basedpyright` and fix issues.
-  - Run `ruff format`
+  - Run `ruff check` and fix issues.
+  - Run `ruff format`.
