@@ -11,7 +11,11 @@ from tcl_lsp.analysis.metadata_effects import dependency_required_packages
 from tcl_lsp.analysis.model import CommandImport, DefinitionTarget, DocumentFacts
 from tcl_lsp.common import Diagnostic, DocumentSymbol, HoverInfo, Location, Span
 from tcl_lsp.lsp.semantic_tokens import encode_document_semantic_tokens
-from tcl_lsp.metadata_paths import configure_metadata_paths
+from tcl_lsp.metadata_paths import (
+    DEFAULT_METADATA_REGISTRY,
+    MetadataRegistry,
+    create_metadata_registry,
+)
 from tcl_lsp.parser import Parser, ParseResult
 from tcl_lsp.project.config import configured_library_paths, configured_plugin_paths
 from tcl_lsp.project.indexing import (
@@ -46,6 +50,7 @@ class LanguageService:
         '_documents',
         '_extractor',
         '_library_paths_by_uri',
+        '_metadata_registry',
         '_open_document_uris',
         '_parser',
         '_plugin_paths_by_uri',
@@ -60,12 +65,39 @@ class LanguageService:
         extractor: FactExtractor | None = None,
         workspace_index: WorkspaceIndex | None = None,
         resolver: Resolver | None = None,
+        metadata_registry: MetadataRegistry | None = None,
     ) -> None:
-        configure_metadata_paths(())
+        extracted_metadata_registry = extractor.metadata_registry if extractor is not None else None
+        resolver_metadata_registry = resolver.metadata_registry if resolver is not None else None
+        resolved_metadata_registry = (
+            metadata_registry
+            if metadata_registry is not None
+            else extracted_metadata_registry
+            or resolver_metadata_registry
+            or DEFAULT_METADATA_REGISTRY
+        )
+        if (
+            extracted_metadata_registry is not None
+            and extracted_metadata_registry != resolved_metadata_registry
+        ):
+            raise ValueError('Extractor metadata registry does not match LanguageService.')
+        if (
+            resolver_metadata_registry is not None
+            and resolver_metadata_registry != resolved_metadata_registry
+        ):
+            raise ValueError('Resolver metadata registry does not match LanguageService.')
+
+        self._metadata_registry = resolved_metadata_registry
         self._parser = Parser() if parser is None else parser
-        self._extractor = FactExtractor(self._parser) if extractor is None else extractor
+        self._extractor = (
+            FactExtractor(self._parser, metadata_registry=self._metadata_registry)
+            if extractor is None
+            else extractor
+        )
         self._workspace_index = WorkspaceIndex() if workspace_index is None else workspace_index
-        self._resolver = Resolver() if resolver is None else resolver
+        self._resolver = (
+            Resolver(metadata_registry=self._metadata_registry) if resolver is None else resolver
+        )
         self._documents: dict[str, ManagedDocument] = {}
         self._scanned_package_roots: set[Path] = set()
         self._open_document_uris: set[str] = set()
@@ -340,6 +372,7 @@ class LanguageService:
             workspace_index=self._workspace_index,
             describe_document=_managed_document_details,
             load_document=load_document,
+            metadata_registry=self._metadata_registry,
             on_document_loaded=lambda document: self._discover_package_roots(document.uri),
         )
 
@@ -384,6 +417,7 @@ class LanguageService:
                     source_path,
                     document.facts,
                     analysis_workspace_index,
+                    metadata_registry=self._metadata_registry,
                 )
             analysis = self._resolver.analyze(
                 uri=uri,
@@ -427,6 +461,7 @@ class LanguageService:
             documents_by_uri=self._documents,
             workspace_index=self._workspace_index,
             describe_document=_managed_document_details,
+            metadata_registry=self._metadata_registry,
         )
 
     def _configured_plugin_paths(self, uri: str) -> tuple[Path, ...]:
@@ -470,7 +505,7 @@ class LanguageService:
         for uri, text, version in pending_documents:
             snapshots[uri] = (text, version)
 
-        configure_metadata_paths(self._active_plugin_paths())
+        self._set_metadata_registry(create_metadata_registry(self._active_plugin_paths()))
         self._documents = {}
         self._workspace_index = WorkspaceIndex()
         self._scanned_package_roots = set()
@@ -630,7 +665,7 @@ class LanguageService:
                     continue
                 add_definition(definition)
 
-        for definition in builtin_definition_targets():
+        for definition in builtin_definition_targets(metadata_registry=self._metadata_registry):
             qualified_name = _qualified_command_name(definition.name)
             if command_import.kind == 'exact':
                 if qualified_name != target_name:
@@ -641,6 +676,15 @@ class LanguageService:
 
         return tuple(definitions)
 
+    def _set_metadata_registry(self, metadata_registry: MetadataRegistry) -> None:
+        if metadata_registry == self._metadata_registry:
+            return
+
+        self._extractor.close()
+        self._metadata_registry = metadata_registry
+        self._extractor = FactExtractor(self._parser, metadata_registry=metadata_registry)
+        self._resolver = Resolver(metadata_registry=metadata_registry)
+
     def _definitions_for_symbols(self, symbol_ids: tuple[str, ...]) -> tuple[DefinitionTarget, ...]:
         definitions: list[DefinitionTarget] = []
         seen: set[str] = set()
@@ -650,7 +694,7 @@ class LanguageService:
                     continue
                 seen.add(definition.symbol_id)
                 definitions.append(definition)
-        for definition in builtin_definition_targets():
+        for definition in builtin_definition_targets(metadata_registry=self._metadata_registry):
             if definition.symbol_id not in symbol_ids or definition.symbol_id in seen:
                 continue
             seen.add(definition.symbol_id)

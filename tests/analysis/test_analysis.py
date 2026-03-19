@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from tcl_lsp.analysis import DocumentFacts, FactExtractor, Resolver, WorkspaceIndex
 from tcl_lsp.analysis.builtins import builtin_command
-from tcl_lsp.metadata_paths import metadata_files
+from tcl_lsp.metadata_paths import DEFAULT_METADATA_REGISTRY
 from tcl_lsp.parser import Parser
 
 from .support import analyze_document as _analyze
@@ -43,7 +43,7 @@ def test_analysis_reports_no_diagnostics_for_metadata_files(parser: Parser) -> N
     workspace = WorkspaceIndex()
     facts_by_uri: dict[str, DocumentFacts] = {}
 
-    metadata_paths = sorted(metadata_files())
+    metadata_paths = sorted(DEFAULT_METADATA_REGISTRY.metadata_files())
     assert metadata_paths
 
     for metadata_path in metadata_paths:

@@ -15,7 +15,7 @@ from typing import IO
 from tcl_lsp.analysis.facts.parsing import ListItem, split_tcl_list
 from tcl_lsp.analysis.metadata_commands import MetadataPlugin
 from tcl_lsp.common import Position
-from tcl_lsp.metadata_paths import metadata_dir
+from tcl_lsp.metadata_paths import bundled_metadata_dir
 
 try:
     import resource
@@ -61,7 +61,7 @@ class TclPluginHost:
         if tclsh_path is None:
             raise RuntimeError('The `tclsh` executable is required for Tcl analysis plugins.')
         self._tclsh_path = tclsh_path
-        self._bridge_path = metadata_dir() / Path('plugins/host.tcl')
+        self._bridge_path = bundled_metadata_dir() / Path('plugins/host.tcl')
         self._lock = threading.Lock()
         self._process: subprocess.Popen[str] | None = None
         self._stdout_queue: queue.Queue[str | object] | None = None

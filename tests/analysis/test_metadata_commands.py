@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from tcl_lsp.analysis.builtins import builtin_command, builtin_commands_by_package
 from tcl_lsp.analysis.metadata_commands import (
     MetadataBind,
     MetadataContext,
@@ -14,11 +15,11 @@ from tcl_lsp.analysis.metadata_commands import (
     load_metadata_commands,
     select_argument_indices,
 )
-from tcl_lsp.metadata_paths import metadata_dir, metadata_paths_context
+from tcl_lsp.metadata_paths import bundled_metadata_dir, create_metadata_registry
 
 
 def test_core_metadata_supports_option_aware_selectors() -> None:
-    metadata_path = metadata_dir() / Path('tcl8.6/tcl.meta.tcl')
+    metadata_path = bundled_metadata_dir() / Path('tcl8.6/tcl.meta.tcl')
     regexp_command = next(
         command for command in load_metadata_commands(metadata_path) if command.name == 'regexp'
     )
@@ -38,7 +39,7 @@ def test_core_metadata_supports_option_aware_selectors() -> None:
 
 
 def test_core_metadata_option_selectors_allow_dynamic_positionals() -> None:
-    metadata_path = metadata_dir() / Path('tcl8.6/tcl.meta.tcl')
+    metadata_path = bundled_metadata_dir() / Path('tcl8.6/tcl.meta.tcl')
     regexp_command = next(
         command for command in load_metadata_commands(metadata_path) if command.name == 'regexp'
     )
@@ -58,7 +59,7 @@ def test_core_metadata_option_selectors_allow_dynamic_positionals() -> None:
 
 
 def test_core_metadata_option_selectors_skip_unstable_expansion_tails() -> None:
-    metadata_path = metadata_dir() / Path('tcl8.6/tcl.meta.tcl')
+    metadata_path = bundled_metadata_dir() / Path('tcl8.6/tcl.meta.tcl')
     regexp_command = next(
         command for command in load_metadata_commands(metadata_path) if command.name == 'regexp'
     )
@@ -125,7 +126,7 @@ def test_argument_selectors_reject_relative_tails_after_expansion() -> None:
 
 
 def test_core_metadata_leaves_return_unannotated() -> None:
-    metadata_path = metadata_dir() / Path('tcl8.6/tcl.meta.tcl')
+    metadata_path = bundled_metadata_dir() / Path('tcl8.6/tcl.meta.tcl')
     return_command = next(
         command for command in load_metadata_commands(metadata_path) if command.name == 'return'
     )
@@ -134,7 +135,7 @@ def test_core_metadata_leaves_return_unannotated() -> None:
 
 
 def test_core_metadata_derives_subcommands() -> None:
-    metadata_path = metadata_dir() / Path('tcl8.6/tcl.meta.tcl')
+    metadata_path = bundled_metadata_dir() / Path('tcl8.6/tcl.meta.tcl')
     info_command = next(
         command for command in load_metadata_commands(metadata_path) if command.name == 'info'
     )
@@ -145,7 +146,7 @@ def test_core_metadata_derives_subcommands() -> None:
 
 
 def test_core_metadata_parses_foreach_loop_selectors() -> None:
-    metadata_path = metadata_dir() / Path('tcl8.6/tcl.meta.tcl')
+    metadata_path = bundled_metadata_dir() / Path('tcl8.6/tcl.meta.tcl')
     foreach_command = next(
         command for command in load_metadata_commands(metadata_path) if command.name == 'foreach'
     )
@@ -179,8 +180,6 @@ def test_core_metadata_parses_foreach_loop_selectors() -> None:
 
 
 def test_builtin_metadata_exposes_nested_and_derived_subcommands() -> None:
-    from tcl_lsp.analysis.builtins import builtin_command
-
     binary_decode = builtin_command('binary decode')
     assert binary_decode is not None
 
@@ -192,8 +191,6 @@ def test_builtin_metadata_exposes_nested_and_derived_subcommands() -> None:
 
 
 def test_core_metadata_models_meta_as_ensemble() -> None:
-    from tcl_lsp.analysis.builtins import builtin_command
-
     meta_builtin = builtin_command('meta')
     meta_command_builtin = builtin_command('meta command')
     meta_context_builtin = builtin_command('meta context')
@@ -218,13 +215,10 @@ def test_core_metadata_models_meta_as_ensemble() -> None:
 
 
 def test_project_metadata_overrides_matching_bundled_builtin_commands(tmp_path: Path) -> None:
-    from tcl_lsp.analysis.builtins import builtin_command
-
     override_path = tmp_path / 'override.meta.tcl'
     override_path.write_text('meta module Tcl\nmeta command clock {args}\n', encoding='utf-8')
-
-    with metadata_paths_context((tmp_path,)):
-        builtin = builtin_command('clock')
+    metadata_registry = create_metadata_registry((tmp_path,))
+    builtin = builtin_command('clock', metadata_registry=metadata_registry)
 
     assert builtin is not None
     assert len(builtin.overloads) == 1
@@ -235,7 +229,7 @@ def test_project_metadata_overrides_matching_bundled_builtin_commands(tmp_path: 
 
 
 def test_tcloo_metadata_parses_embedded_context_annotations() -> None:
-    metadata_path = metadata_dir() / Path('tcl8.6/tcloo.meta.tcl')
+    metadata_path = bundled_metadata_dir() / Path('tcl8.6/tcloo.meta.tcl')
     commands = load_metadata_commands(metadata_path)
 
     define_command = next(
@@ -270,7 +264,7 @@ def test_tcloo_metadata_parses_embedded_context_annotations() -> None:
 
 
 def test_tepam_metadata_parses_plugin_annotations() -> None:
-    metadata_path = metadata_dir() / Path('tcllib/tepam.meta.tcl')
+    metadata_path = bundled_metadata_dir() / Path('tcllib/tepam.meta.tcl')
     commands = load_metadata_commands(metadata_path)
 
     procedure_command = next(
@@ -283,15 +277,13 @@ def test_tepam_metadata_parses_plugin_annotations() -> None:
         for annotation in procedure_command.annotations
         if isinstance(annotation, MetadataPlugin)
     )
-    assert plugin_annotation.script_path == (metadata_dir() / Path('tcllib/tepam.tcl')).resolve(
-        strict=False
-    )
+    assert plugin_annotation.script_path == (
+        bundled_metadata_dir() / Path('tcllib/tepam.tcl')
+    ).resolve(strict=False)
     assert plugin_annotation.proc_name == '::tcl_lsp::plugins::tepam::statementWords'
 
 
 def test_builtin_metadata_ignores_context_commands() -> None:
-    from tcl_lsp.analysis.builtins import builtin_commands_by_package
-
     tcloo_commands = builtin_commands_by_package()['TclOO']
     tepam_commands = builtin_commands_by_package()['tepam']
     assert 'oo::define' in tcloo_commands

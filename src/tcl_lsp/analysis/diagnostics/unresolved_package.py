@@ -16,9 +16,10 @@ class UnresolvedPackageChecker(DiagnosticChecker):
     @override
     def check(self, context: DiagnosticContext) -> Iterable[Diagnostic]:
         for package_require in context.facts.package_requires:
-            if is_builtin_package(package_require.name) or context.workspace_index.has_package(
-                package_require.name
-            ):
+            if is_builtin_package(
+                package_require.name,
+                metadata_registry=context.metadata_registry,
+            ) or context.workspace_index.has_package(package_require.name):
                 continue
             yield self.emit(
                 span=package_require.span,

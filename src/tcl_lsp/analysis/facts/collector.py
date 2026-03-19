@@ -87,6 +87,7 @@ from tcl_lsp.analysis.model import (
 )
 from tcl_lsp.analysis.tcl_plugins import PluginProcedureEffect, TclPluginHost
 from tcl_lsp.common import Diagnostic, DocumentSymbol, Position, Span
+from tcl_lsp.metadata_paths import DEFAULT_METADATA_REGISTRY, MetadataRegistry
 from tcl_lsp.parser import Parser, word_static_text
 from tcl_lsp.parser.model import (
     BracedWord,
@@ -120,15 +121,25 @@ class _VariableTarget:
 
 
 class FactExtractor:
-    __slots__ = ('_parser', '_plugin_host')
+    __slots__ = ('_metadata_registry', '_parser', '_plugin_host')
 
     def __init__(
         self,
         parser: Parser | None = None,
         plugin_host: TclPluginHost | None = None,
+        *,
+        metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
     ) -> None:
         self._parser = Parser() if parser is None else parser
+        self._metadata_registry = metadata_registry
         self._plugin_host = TclPluginHost() if plugin_host is None else plugin_host
+
+    @property
+    def metadata_registry(self) -> MetadataRegistry:
+        return self._metadata_registry
+
+    def close(self) -> None:
+        self._plugin_host.close()
 
     def extract(
         self,
@@ -146,6 +157,7 @@ class FactExtractor:
             collect_lexical_spans=include_lexical_spans,
         )
         collector = _FactCollector(
+            metadata_registry=self._metadata_registry,
             parser=self._parser,
             plugin_host=self._plugin_host,
             parse_result=parse_result,
@@ -171,6 +183,7 @@ class _FactCollector:
         '_include_parse_result',
         '_linked_variables_by_scope',
         '_lowered_script',
+        '_metadata_registry',
         '_namespaces',
         '_operator_spans',
         '_package_index_entries',
@@ -188,6 +201,7 @@ class _FactCollector:
 
     def __init__(
         self,
+        metadata_registry: MetadataRegistry,
         parser: Parser,
         plugin_host: TclPluginHost,
         parse_result: ParseResult,
@@ -200,6 +214,7 @@ class _FactCollector:
         include_lexical_spans: bool,
         include_parse_result: bool,
     ) -> None:
+        self._metadata_registry = metadata_registry
         self._parser = parser
         self._plugin_host = plugin_host
         self._parse_result = parse_result
@@ -413,7 +428,14 @@ class _FactCollector:
                 continue
 
             builtin_name = ' '.join(static_prefix_parts)
-            if builtin_command_for_packages(builtin_name, required_packages) is None:
+            if (
+                builtin_command_for_packages(
+                    builtin_name,
+                    required_packages,
+                    metadata_registry=self._metadata_registry,
+                )
+                is None
+            ):
                 continue
 
             argument_words = command.words[index + 1 :]
@@ -467,7 +489,11 @@ class _FactCollector:
         command: Command,
         context: _ExtractionContext,
     ) -> bool:
-        matched = match_embedded_language_command(command, context.embedded_language)
+        matched = match_embedded_language_command(
+            command,
+            context.embedded_language,
+            metadata_registry=self._metadata_registry,
+        )
         if matched is None:
             return False
 
@@ -656,7 +682,11 @@ class _FactCollector:
         command: Command,
         context: _ExtractionContext,
     ) -> bool:
-        entry = match_embedded_language_entry(command, current_namespace=context.namespace)
+        entry = match_embedded_language_entry(
+            command,
+            current_namespace=context.namespace,
+            metadata_registry=self._metadata_registry,
+        )
         if entry is None:
             return False
 
@@ -932,7 +962,8 @@ class _FactCollector:
         context: _ExtractionContext,
     ) -> tuple[MetadataCommand, int] | None:
         available_commands = annotated_metadata_commands_for_packages(
-            frozenset(self._active_builtin_packages)
+            frozenset(self._active_builtin_packages),
+            metadata_registry=self._metadata_registry,
         )
         static_prefix_parts: list[str] = []
         imported_prefix_parts: list[list[str]] | None = None
@@ -1145,7 +1176,10 @@ class _FactCollector:
             package_name = word_static_text(command.words[2])
             if package_name is None:
                 return
-            if is_builtin_package(package_name):
+            if is_builtin_package(
+                package_name,
+                metadata_registry=self._metadata_registry,
+            ):
                 self._active_builtin_packages.add(canonical_builtin_package_name(package_name))
             version_constraints = tuple(
                 version_text

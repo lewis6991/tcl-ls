@@ -12,7 +12,7 @@ from tcl_lsp.analysis.metadata_commands import (
 from tcl_lsp.analysis.model import CommandArity, DefinitionTarget
 from tcl_lsp.cache import metadata_lru_cache
 from tcl_lsp.common import Location
-from tcl_lsp.metadata_paths import metadata_files
+from tcl_lsp.metadata_paths import DEFAULT_METADATA_REGISTRY, MetadataRegistry
 from tcl_lsp.parser import Parser, word_static_text
 
 _CORE_PACKAGE = 'Tcl'
@@ -43,20 +43,49 @@ class BuiltinCommand:
     overloads: tuple[BuiltinOverload, ...]
 
 
-@metadata_lru_cache(maxsize=1)
-def builtin_commands() -> dict[str, BuiltinCommand]:
-    return builtin_commands_by_package()[_CORE_PACKAGE]
+def builtin_commands(
+    *,
+    metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
+) -> dict[str, BuiltinCommand]:
+    return _builtin_commands(metadata_registry)
 
 
 @metadata_lru_cache(maxsize=1)
-def core_annotated_metadata_commands() -> dict[str, MetadataCommand]:
-    return annotated_metadata_commands_by_package()[_CORE_PACKAGE]
+def _builtin_commands(metadata_registry: MetadataRegistry) -> dict[str, BuiltinCommand]:
+    return builtin_commands_by_package(metadata_registry=metadata_registry)[_CORE_PACKAGE]
+
+
+def core_annotated_metadata_commands(
+    *,
+    metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
+) -> dict[str, MetadataCommand]:
+    return _core_annotated_metadata_commands(metadata_registry)
 
 
 @metadata_lru_cache(maxsize=1)
-def annotated_metadata_commands_by_package() -> dict[str, dict[str, MetadataCommand]]:
+def _core_annotated_metadata_commands(
+    metadata_registry: MetadataRegistry,
+) -> dict[str, MetadataCommand]:
+    return annotated_metadata_commands_by_package(metadata_registry=metadata_registry)[
+        _CORE_PACKAGE
+    ]
+
+
+def annotated_metadata_commands_by_package(
+    *,
+    metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
+) -> dict[str, dict[str, MetadataCommand]]:
+    return _annotated_metadata_commands_by_package(metadata_registry)
+
+
+@metadata_lru_cache(maxsize=1)
+def _annotated_metadata_commands_by_package(
+    metadata_registry: MetadataRegistry,
+) -> dict[str, dict[str, MetadataCommand]]:
     commands_by_package: dict[str, dict[str, MetadataCommand]] = {}
-    for package_name, metadata_paths in _builtin_metadata_paths_by_package().items():
+    for package_name, metadata_paths in _builtin_metadata_paths_by_package(
+        metadata_registry
+    ).items():
         commands_by_package[package_name] = _load_annotated_metadata_package(
             package_name=package_name,
             metadata_paths=metadata_paths,
@@ -64,15 +93,26 @@ def annotated_metadata_commands_by_package() -> dict[str, dict[str, MetadataComm
     return commands_by_package
 
 
-@metadata_lru_cache(maxsize=None)
 def annotated_metadata_commands_for_packages(
     required_packages: frozenset[str],
+    *,
+    metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
+) -> dict[str, tuple[MetadataCommand, ...]]:
+    return _annotated_metadata_commands_for_packages(required_packages, metadata_registry)
+
+
+@metadata_lru_cache(maxsize=None)
+def _annotated_metadata_commands_for_packages(
+    required_packages: frozenset[str],
+    metadata_registry: MetadataRegistry,
 ) -> dict[str, tuple[MetadataCommand, ...]]:
     matches_by_name: dict[str, list[MetadataCommand]] = {}
 
     def add_package(package_name: str) -> None:
         for name, metadata_command in (
-            annotated_metadata_commands_by_package().get(package_name, {}).items()
+            annotated_metadata_commands_by_package(metadata_registry=metadata_registry)
+            .get(package_name, {})
+            .items()
         ):
             matches_by_name.setdefault(name, []).append(metadata_command)
 
@@ -83,10 +123,21 @@ def annotated_metadata_commands_for_packages(
     return {name: tuple(matches) for name, matches in matches_by_name.items()}
 
 
+def builtin_commands_by_package(
+    *,
+    metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
+) -> dict[str, dict[str, BuiltinCommand]]:
+    return _builtin_commands_by_package(metadata_registry)
+
+
 @metadata_lru_cache(maxsize=1)
-def builtin_commands_by_package() -> dict[str, dict[str, BuiltinCommand]]:
+def _builtin_commands_by_package(
+    metadata_registry: MetadataRegistry,
+) -> dict[str, dict[str, BuiltinCommand]]:
     commands_by_package: dict[str, dict[str, BuiltinCommand]] = {}
-    for package_name, metadata_paths in _builtin_metadata_paths_by_package().items():
+    for package_name, metadata_paths in _builtin_metadata_paths_by_package(
+        metadata_registry
+    ).items():
         commands_by_package[package_name] = _load_metadata_package(
             package_name=package_name,
             metadata_paths=metadata_paths,
@@ -94,15 +145,25 @@ def builtin_commands_by_package() -> dict[str, dict[str, BuiltinCommand]]:
     return commands_by_package
 
 
-def builtin_command(name: str) -> BuiltinCommand | None:
-    return builtin_commands().get(name)
+def builtin_command(
+    name: str,
+    *,
+    metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
+) -> BuiltinCommand | None:
+    return builtin_commands(metadata_registry=metadata_registry).get(name)
 
 
 def builtin_command_for_packages(
     name: str,
     required_packages: frozenset[str],
+    *,
+    metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
 ) -> BuiltinCommand | None:
-    matches = builtin_commands_for_packages(name, required_packages)
+    matches = builtin_commands_for_packages(
+        name,
+        required_packages,
+        metadata_registry=metadata_registry,
+    )
     if len(matches) != 1:
         return None
     return matches[0]
@@ -111,16 +172,20 @@ def builtin_command_for_packages(
 def builtin_commands_for_packages(
     name: str,
     required_packages: frozenset[str],
+    *,
+    metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
 ) -> tuple[BuiltinCommand, ...]:
     matches: list[BuiltinCommand] = []
     seen_packages: set[str] = set()
-    core_command = builtin_command(name)
+    core_command = builtin_command(name, metadata_registry=metadata_registry)
     if core_command is not None:
         seen_packages.add(core_command.package)
         matches.append(core_command)
 
     for package_name in sorted(required_packages):
-        package_commands = builtin_commands_by_package().get(_canonical_package_name(package_name))
+        package_commands = builtin_commands_by_package(metadata_registry=metadata_registry).get(
+            _canonical_package_name(package_name)
+        )
         if package_commands is None:
             continue
         package_command = package_commands.get(name)
@@ -132,9 +197,15 @@ def builtin_commands_for_packages(
     return tuple(matches)
 
 
-def builtin_commands_any(name: str) -> tuple[BuiltinCommand, ...]:
+def builtin_commands_any(
+    name: str,
+    *,
+    metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
+) -> tuple[BuiltinCommand, ...]:
     matches: list[BuiltinCommand] = []
-    for package_commands in builtin_commands_by_package().values():
+    for package_commands in builtin_commands_by_package(
+        metadata_registry=metadata_registry
+    ).values():
         command = package_commands.get(name)
         if command is None:
             continue
@@ -142,18 +213,35 @@ def builtin_commands_any(name: str) -> tuple[BuiltinCommand, ...]:
     return tuple(matches)
 
 
-def is_builtin_package(package_name: str) -> bool:
-    return canonical_builtin_package_name(package_name) in builtin_commands_by_package()
+def is_builtin_package(
+    package_name: str,
+    *,
+    metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
+) -> bool:
+    return canonical_builtin_package_name(package_name) in builtin_commands_by_package(
+        metadata_registry=metadata_registry
+    )
 
 
 def canonical_builtin_package_name(package_name: str) -> str:
     return _canonical_package_name(package_name)
 
 
+def builtin_definition_targets(
+    *,
+    metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
+) -> tuple[DefinitionTarget, ...]:
+    return _builtin_definition_targets(metadata_registry)
+
+
 @metadata_lru_cache(maxsize=1)
-def builtin_definition_targets() -> tuple[DefinitionTarget, ...]:
+def _builtin_definition_targets(
+    metadata_registry: MetadataRegistry,
+) -> tuple[DefinitionTarget, ...]:
     definitions: list[DefinitionTarget] = []
-    for package_commands in builtin_commands_by_package().values():
+    for package_commands in builtin_commands_by_package(
+        metadata_registry=metadata_registry
+    ).values():
         for builtin in package_commands.values():
             for overload in builtin.overloads:
                 definitions.append(
@@ -263,9 +351,11 @@ def _load_annotated_metadata_package(
 
 
 @metadata_lru_cache(maxsize=1)
-def _builtin_metadata_paths_by_package() -> dict[str, tuple[Path, ...]]:
+def _builtin_metadata_paths_by_package(
+    metadata_registry: MetadataRegistry,
+) -> dict[str, tuple[Path, ...]]:
     paths_by_package: dict[str, list[Path]] = {}
-    for metadata_path in metadata_files():
+    for metadata_path in metadata_registry.metadata_files():
         package_name = _declared_builtin_module_name(metadata_path)
         if package_name is None:
             continue

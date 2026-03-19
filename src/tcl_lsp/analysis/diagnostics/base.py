@@ -15,6 +15,7 @@ from tcl_lsp.analysis.model import (
     VariableReference,
 )
 from tcl_lsp.common import Diagnostic, Span
+from tcl_lsp.metadata_paths import MetadataRegistry
 
 type CommandCallKey = tuple[str, int, int, int, int]
 type ResolvedCommandTarget = BuiltinCommand | ProcDecl
@@ -37,6 +38,7 @@ class ResolvedVariable:
 class DiagnosticContext:
     facts: DocumentFacts
     workspace_index: WorkspaceIndex
+    metadata_registry: MetadataRegistry
     required_packages: frozenset[str]
     command_targets: Mapping[CommandCallKey, ResolvedCommandTarget]
     command_resolutions: tuple[ResolvedCommand, ...]

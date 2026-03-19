@@ -7,6 +7,7 @@ from tcl_lsp.analysis.facts import FactExtractor
 from tcl_lsp.analysis.index import WorkspaceIndex
 from tcl_lsp.analysis.metadata_effects import metadata_dependency_overlay
 from tcl_lsp.analysis.model import DocumentFacts, PackageIndexEntry
+from tcl_lsp.metadata_paths import DEFAULT_METADATA_REGISTRY, MetadataRegistry
 from tcl_lsp.parser import Parser
 from tcl_lsp.project.paths import candidate_package_roots, read_source_file
 
@@ -72,6 +73,8 @@ def dependency_source_uris_for_facts(
     source_path: Path | None,
     facts: DocumentFacts,
     workspace_index: WorkspaceIndex,
+    *,
+    metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
 ) -> tuple[str, ...]:
     uris: dict[str, None] = {}
     if source_path is None:
@@ -79,7 +82,12 @@ def dependency_source_uris_for_facts(
         for directive in facts.source_directives:
             uris.setdefault(directive.target_uri, None)
     else:
-        overlay = metadata_dependency_overlay(source_path, facts, workspace_index)
+        overlay = metadata_dependency_overlay(
+            source_path,
+            facts,
+            workspace_index,
+            metadata_registry=metadata_registry,
+        )
         required_packages = {
             package_require.name for package_require in facts.package_requires
         } | set(overlay.required_packages)
@@ -98,6 +106,7 @@ def load_dependency_documents[DocumentT](
     workspace_index: WorkspaceIndex,
     describe_document: Callable[[DocumentT], DocumentDescription],
     load_document: Callable[[str], DocumentT | None],
+    metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
     on_document_loaded: Callable[[DocumentT], None] | None = None,
 ) -> tuple[DocumentT, ...]:
     failed_uris: set[str] = set()
@@ -111,6 +120,7 @@ def load_dependency_documents[DocumentT](
                 source_path,
                 facts,
                 workspace_index,
+                metadata_registry=metadata_registry,
             ):
                 if source_uri in documents_by_uri or source_uri in failed_uris:
                     continue
@@ -143,6 +153,7 @@ def reachable_document_uris[DocumentT](
     documents_by_uri: dict[str, DocumentT],
     workspace_index: WorkspaceIndex,
     describe_document: Callable[[DocumentT], DocumentDescription],
+    metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
 ) -> tuple[str, ...]:
     reachable_uris: dict[str, None] = {}
     pending_uris = [root_uri]
@@ -162,6 +173,7 @@ def reachable_document_uris[DocumentT](
             source_path,
             facts,
             workspace_index,
+            metadata_registry=metadata_registry,
         ):
             if dependency_uri in reachable_uris:
                 continue

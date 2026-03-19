@@ -7,7 +7,7 @@ from typing import Literal, cast
 from tcl_lsp.analysis.model import BINDING_KINDS, BindingKind
 from tcl_lsp.cache import metadata_lru_cache
 from tcl_lsp.common import Span
-from tcl_lsp.metadata_paths import metadata_files
+from tcl_lsp.metadata_paths import DEFAULT_METADATA_REGISTRY, MetadataRegistry
 from tcl_lsp.parser import Parser, word_static_text
 from tcl_lsp.parser.model import BracedWord, Command, Token, Word
 
@@ -166,10 +166,17 @@ def load_metadata_commands(metadata_path: Path) -> tuple[MetadataCommand, ...]:
     return _commands_with_derived_subcommands(tuple(commands))
 
 
+def all_metadata_commands(
+    *,
+    metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
+) -> tuple[MetadataCommand, ...]:
+    return _all_metadata_commands(metadata_registry)
+
+
 @metadata_lru_cache(maxsize=1)
-def all_metadata_commands() -> tuple[MetadataCommand, ...]:
+def _all_metadata_commands(metadata_registry: MetadataRegistry) -> tuple[MetadataCommand, ...]:
     commands: list[MetadataCommand] = []
-    for metadata_path in metadata_files():
+    for metadata_path in metadata_registry.metadata_files():
         commands.extend(load_metadata_commands(metadata_path))
     return tuple(commands)
 

@@ -19,7 +19,11 @@ from tcl_lsp.analysis.metadata_commands import (
 )
 from tcl_lsp.analysis.model import CommandCall, DocumentFacts, ProcDecl
 from tcl_lsp.cache import metadata_lru_cache
-from tcl_lsp.metadata_paths import metadata_lookup_names
+from tcl_lsp.metadata_paths import (
+    DEFAULT_METADATA_REGISTRY,
+    MetadataRegistry,
+    metadata_lookup_names,
+)
 from tcl_lsp.parser import Parser
 from tcl_lsp.project.paths import source_id_to_path
 
@@ -34,10 +38,13 @@ def metadata_dependency_overlay(
     source_path: Path,
     facts: DocumentFacts,
     workspace_index: WorkspaceIndex,
+    *,
+    metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
 ) -> MetadataDependencyOverlay:
     scanner = _DependencyScanner(
         source_path=source_path,
         workspace_index=workspace_index,
+        metadata_registry=metadata_registry,
     )
     scanner.scan_facts(facts)
     return MetadataDependencyOverlay(
@@ -50,6 +57,8 @@ def dependency_required_packages(
     source_path: Path,
     facts: DocumentFacts,
     workspace_index: WorkspaceIndex,
+    *,
+    metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
 ) -> frozenset[str]:
     documents_by_uri = {document.uri: document for document in workspace_index.documents()}
     pending_documents: list[tuple[Path, DocumentFacts]] = [(source_path, facts)]
@@ -66,6 +75,7 @@ def dependency_required_packages(
             current_path,
             current_facts,
             workspace_index,
+            metadata_registry=metadata_registry,
         )
         package_names = {
             package_require.name for package_require in current_facts.package_requires
@@ -95,9 +105,9 @@ def dependency_required_packages(
 
 
 @metadata_lru_cache(maxsize=1)
-def _candidate_effect_command_names() -> frozenset[str]:
+def _candidate_effect_command_names(metadata_registry: MetadataRegistry) -> frozenset[str]:
     candidates: set[str] = set()
-    for _, metadata_command in _metadata_command_effects().items():
+    for _, metadata_command in _metadata_command_effects(metadata_registry).items():
         tail = metadata_command.name.rsplit('::', 1)[-1]
         candidates.add(tail)
         candidates.add(metadata_command.name)
@@ -105,9 +115,11 @@ def _candidate_effect_command_names() -> frozenset[str]:
 
 
 @metadata_lru_cache(maxsize=1)
-def _metadata_command_effects() -> dict[tuple[str, str], MetadataCommand]:
+def _metadata_command_effects(
+    metadata_registry: MetadataRegistry,
+) -> dict[tuple[str, str], MetadataCommand]:
     effects_by_key: dict[tuple[str, str], MetadataCommand] = {}
-    for metadata_command in all_metadata_commands():
+    for metadata_command in all_metadata_commands(metadata_registry=metadata_registry):
         if metadata_command.context_name is not None:
             continue
         if not any(
@@ -133,21 +145,22 @@ def _metadata_command_effects() -> dict[tuple[str, str], MetadataCommand]:
     return effects_by_key
 
 
-@lru_cache(maxsize=1)
-def _embedded_script_services() -> tuple[Parser, FactExtractor]:
+@lru_cache(maxsize=4)
+def _embedded_script_services(metadata_registry: MetadataRegistry) -> tuple[Parser, FactExtractor]:
     parser = Parser()
-    return parser, FactExtractor(parser)
+    return parser, FactExtractor(parser, metadata_registry=metadata_registry)
 
 
 @dataclass(slots=True)
 class _DependencyScanner:
     source_path: Path
     workspace_index: WorkspaceIndex
+    metadata_registry: MetadataRegistry
     source_uris: dict[str, None] = field(init=False, default_factory=dict)
     required_packages: set[str] = field(init=False, default_factory=set)
 
     def scan_facts(self, facts: DocumentFacts) -> None:
-        candidate_names = _candidate_effect_command_names()
+        candidate_names = _candidate_effect_command_names(self.metadata_registry)
         for directive in facts.source_directives:
             self.source_uris.setdefault(directive.target_uri, None)
         for package_require in facts.package_requires:
@@ -166,7 +179,7 @@ class _DependencyScanner:
         if procedure_path is None:
             return
 
-        metadata_command = _metadata_command_effects().get(
+        metadata_command = _metadata_command_effects(self.metadata_registry).get(
             (procedure_path.name, procedure.qualified_name)
         )
         if metadata_command is None:
@@ -182,7 +195,11 @@ class _DependencyScanner:
                 if script_texts is None:
                     continue
                 for script_text in script_texts:
-                    nested_facts = _extract_embedded_script(script_text, self.source_path)
+                    nested_facts = _extract_embedded_script(
+                        script_text,
+                        self.source_path,
+                        metadata_registry=self.metadata_registry,
+                    )
                     self.scan_facts(nested_facts)
                 continue
 
@@ -268,8 +285,13 @@ def _selected_argument_texts(
     return tuple(selected_texts)
 
 
-def _extract_embedded_script(text: str, source_path: Path) -> DocumentFacts:
-    parser, extractor = _embedded_script_services()
+def _extract_embedded_script(
+    text: str,
+    source_path: Path,
+    *,
+    metadata_registry: MetadataRegistry,
+) -> DocumentFacts:
+    parser, extractor = _embedded_script_services(metadata_registry)
     parse_result = parser.parse_document(source_path.as_uri(), text)
     return extractor.extract(parse_result, include_parse_result=False)
 

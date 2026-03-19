@@ -12,6 +12,7 @@ from tcl_lsp.analysis.metadata_commands import (
     select_argument_indices,
 )
 from tcl_lsp.cache import metadata_lru_cache
+from tcl_lsp.metadata_paths import DEFAULT_METADATA_REGISTRY, MetadataRegistry
 from tcl_lsp.parser import word_static_text
 from tcl_lsp.parser.model import Command, Word
 
@@ -43,13 +44,15 @@ class _EmbeddedLanguage:
 
 
 @metadata_lru_cache(maxsize=1)
-def _embedded_languages() -> dict[EmbeddedLanguageName, _EmbeddedLanguage]:
+def _embedded_languages(
+    metadata_registry: MetadataRegistry,
+) -> dict[EmbeddedLanguageName, _EmbeddedLanguage]:
     commands_by_language: dict[str, dict[str, list[MetadataCommand]]] = {}
     root_commands_by_language: dict[str, set[str]] = {}
     procedure_roots_by_language: dict[str, set[str]] = {}
     binding_roots_by_language: dict[str, set[str]] = {}
 
-    for metadata_command in all_metadata_commands():
+    for metadata_command in all_metadata_commands(metadata_registry=metadata_registry):
         if metadata_command.context_name is None:
             continue
 
@@ -82,10 +85,10 @@ def _embedded_languages() -> dict[EmbeddedLanguageName, _EmbeddedLanguage]:
 
 
 @metadata_lru_cache(maxsize=1)
-def _context_entry_commands() -> tuple[MetadataCommand, ...]:
+def _context_entry_commands(metadata_registry: MetadataRegistry) -> tuple[MetadataCommand, ...]:
     return tuple(
         metadata_command
-        for metadata_command in all_metadata_commands()
+        for metadata_command in all_metadata_commands(metadata_registry=metadata_registry)
         if metadata_command.context_name is None
         and any(
             isinstance(annotation, MetadataContext) for annotation in metadata_command.annotations
@@ -94,15 +97,19 @@ def _context_entry_commands() -> tuple[MetadataCommand, ...]:
 
 
 @metadata_lru_cache(maxsize=1)
-def _context_entry_command_index() -> dict[str, tuple[MetadataCommand, ...]]:
-    return _command_index(_context_entry_commands())
+def _context_entry_command_index(
+    metadata_registry: MetadataRegistry,
+) -> dict[str, tuple[MetadataCommand, ...]]:
+    return _command_index(_context_entry_commands(metadata_registry))
 
 
 def match_embedded_language_command(
     command: Command,
     language_name: EmbeddedLanguageName | None,
+    *,
+    metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
 ) -> MatchedEmbeddedCommand | None:
-    language = _embedded_languages().get(language_name or '')
+    language = _embedded_languages(metadata_registry).get(language_name or '')
     if language is None:
         return None
     return _match_metadata_command(command, language.commands_by_name)
@@ -111,8 +118,10 @@ def match_embedded_language_command(
 def resolves_contextual_command(
     language_name: EmbeddedLanguageName | None,
     command_name: str,
+    *,
+    metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
 ) -> bool:
-    language = _embedded_languages().get(language_name or '')
+    language = _embedded_languages(metadata_registry).get(language_name or '')
     if language is None:
         return False
     return normalize_command_name(command_name) in language.root_commands
@@ -122,8 +131,12 @@ def match_embedded_language_entry(
     command: Command,
     *,
     current_namespace: str,
+    metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
 ) -> EmbeddedLanguageEntry | None:
-    matched = _match_metadata_command(command, _context_entry_command_index())
+    matched = _match_metadata_command(
+        command,
+        _context_entry_command_index(metadata_registry),
+    )
     if matched is None:
         return None
 
@@ -186,9 +199,12 @@ def match_embedded_language_entry(
 
 
 def contextual_resolution_reason(
-    language_name: EmbeddedLanguageName | None, command_name: str
+    language_name: EmbeddedLanguageName | None,
+    command_name: str,
+    *,
+    metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
 ) -> str:
-    language = _embedded_languages().get(language_name or '')
+    language = _embedded_languages(metadata_registry).get(language_name or '')
     if language is None:
         return 'Resolved in an embedded language context.'
 

@@ -440,6 +440,41 @@ def test_language_service_clears_project_metadata_when_plugin_paths_change(
     assert all(diagnostic.code == 'unresolved-command' for diagnostic in diagnostics)
 
 
+def test_language_service_isolates_project_metadata_between_services(
+    tmp_path: Path,
+) -> None:
+    project_with_plugin = tmp_path / 'with-plugin'
+    project_without_plugin = tmp_path / 'without-plugin'
+    _write_sample_plugin_bundle(project_with_plugin / '.tcl-ls')
+    (project_with_plugin / 'tcllsrc.tcl').write_text(
+        'plugin-path .tcl-ls/sample.tcl\n',
+        encoding='utf-8',
+    )
+    project_without_plugin.mkdir()
+
+    source_text = 'dsl::define greet {{name}} {puts $name}\ngreet World\n'
+    source_with_plugin = project_with_plugin / 'main.tcl'
+    source_with_plugin.write_text(source_text, encoding='utf-8')
+    source_without_plugin = project_without_plugin / 'main.tcl'
+    source_without_plugin.write_text(source_text, encoding='utf-8')
+
+    service_with_plugin = LanguageService()
+    service_without_plugin = LanguageService()
+
+    assert service_with_plugin.open_document(source_with_plugin.as_uri(), source_text, 1) == ()
+
+    diagnostics = service_without_plugin.open_document(
+        source_without_plugin.as_uri(), source_text, 1
+    )
+
+    assert len(diagnostics) == 2
+    assert all(diagnostic.code == 'unresolved-command' for diagnostic in diagnostics)
+
+    hover = service_with_plugin.hover(source_with_plugin.as_uri(), 1, 1)
+    assert hover is not None
+    assert hover.contents == 'proc ::greet(name)'
+
+
 def test_language_service_clears_project_library_paths_when_project_changes(
     tmp_path: Path,
 ) -> None:

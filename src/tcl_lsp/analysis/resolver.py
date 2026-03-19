@@ -49,7 +49,11 @@ from tcl_lsp.analysis.model import (
 )
 from tcl_lsp.cache import metadata_lru_cache
 from tcl_lsp.common import HoverInfo, Location, Span
-from tcl_lsp.metadata_paths import metadata_lookup_names
+from tcl_lsp.metadata_paths import (
+    DEFAULT_METADATA_REGISTRY,
+    MetadataRegistry,
+    metadata_lookup_names,
+)
 from tcl_lsp.project.paths import source_id_to_path
 
 
@@ -60,7 +64,18 @@ class _BindingSummary:
 
 
 class Resolver:
-    __slots__ = ()
+    __slots__ = ('_metadata_registry',)
+
+    def __init__(
+        self,
+        *,
+        metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
+    ) -> None:
+        self._metadata_registry = metadata_registry
+
+    @property
+    def metadata_registry(self) -> MetadataRegistry:
+        return self._metadata_registry
 
     def analyze(
         self,
@@ -77,7 +92,11 @@ class Resolver:
         required_packages = direct_required_packages | additional_required_packages
         transitive_required_packages = required_packages - direct_required_packages
         hover_trace_parents = (
-            _build_hover_trace_parents(facts, workspace_index)
+            _build_hover_trace_parents(
+                facts,
+                workspace_index,
+                metadata_registry=self._metadata_registry,
+            )
             if (
                 source_id_to_path(uri) is not None
                 and (
@@ -167,6 +186,7 @@ class Resolver:
                 DiagnosticContext(
                     facts=facts,
                     workspace_index=workspace_index,
+                    metadata_registry=self._metadata_registry,
                     required_packages=required_packages,
                     command_targets=command_targets,
                     command_resolutions=tuple(command_resolutions),
@@ -288,7 +308,10 @@ class Resolver:
 
         metadata_bindings: list[VarBinding] = []
         for command_call, target in resolved_command_targets:
-            metadata_command = _metadata_command_for_target(target)
+            metadata_command = _metadata_command_for_target(
+                target,
+                metadata_registry=self._metadata_registry,
+            )
             if metadata_command is None:
                 continue
 
@@ -377,7 +400,11 @@ class Resolver:
             )
 
         builtin_name = _normalize_command_name(command_call.name)
-        if resolves_contextual_command(command_call.embedded_language, builtin_name):
+        if resolves_contextual_command(
+            command_call.embedded_language,
+            builtin_name,
+            metadata_registry=self._metadata_registry,
+        ):
             return (
                 ResolutionResult(
                     reference=reference,
@@ -386,6 +413,7 @@ class Resolver:
                         reason=contextual_resolution_reason(
                             command_call.embedded_language,
                             builtin_name,
+                            metadata_registry=self._metadata_registry,
                         ),
                     ),
                     target_symbol_ids=(),
@@ -394,7 +422,11 @@ class Resolver:
                 None,
             )
 
-        builtin_matches = builtin_commands_for_packages(builtin_name, required_packages)
+        builtin_matches = builtin_commands_for_packages(
+            builtin_name,
+            required_packages,
+            metadata_registry=self._metadata_registry,
+        )
         if len(builtin_matches) == 1:
             builtin = builtin_matches[0]
             return (
@@ -437,7 +469,10 @@ class Resolver:
                 None,
             )
         if '::' in builtin_name:
-            qualified_builtin_matches = builtin_commands_any(builtin_name)
+            qualified_builtin_matches = builtin_commands_any(
+                builtin_name,
+                metadata_registry=self._metadata_registry,
+            )
             if len(qualified_builtin_matches) == 1:
                 builtin = qualified_builtin_matches[0]
                 return (
@@ -783,7 +818,10 @@ class Resolver:
             namespace,
         ):
             normalized_target_name = _normalize_command_name(target_name)
-            for builtin in builtin_commands_any(normalized_target_name):
+            for builtin in builtin_commands_any(
+                normalized_target_name,
+                metadata_registry=self._metadata_registry,
+            ):
                 matches.setdefault(
                     f'{builtin.package}:{builtin.name}',
                     (command_import, builtin),
@@ -799,7 +837,10 @@ class Resolver:
         if command_call.name is None or '::' in command_call.name:
             return ()
 
-        return builtin_commands_any(f'tcltest::{_normalize_command_name(command_call.name)}')
+        return builtin_commands_any(
+            f'tcltest::{_normalize_command_name(command_call.name)}',
+            metadata_registry=self._metadata_registry,
+        )
 
 
 def _variable_hover_detail(detail: str, exact_values: tuple[str, ...]) -> str:
@@ -845,9 +886,11 @@ def _metadata_var_binding(
 
 
 @metadata_lru_cache(maxsize=1)
-def _annotated_metadata_commands() -> dict[tuple[str, str], MetadataCommand]:
+def _annotated_metadata_commands(
+    metadata_registry: MetadataRegistry,
+) -> dict[tuple[str, str], MetadataCommand]:
     commands_by_key: dict[tuple[str, str], MetadataCommand] = {}
-    for metadata_command in all_metadata_commands():
+    for metadata_command in all_metadata_commands(metadata_registry=metadata_registry):
         if metadata_command.context_name is not None:
             continue
         if not any(
@@ -870,14 +913,20 @@ def _annotated_metadata_commands() -> dict[tuple[str, str], MetadataCommand]:
     return commands_by_key
 
 
-def _metadata_command_for_target(target: ResolvedCommandTarget) -> MetadataCommand | None:
+def _metadata_command_for_target(
+    target: ResolvedCommandTarget,
+    *,
+    metadata_registry: MetadataRegistry,
+) -> MetadataCommand | None:
     if isinstance(target, BuiltinCommand):
-        return _annotated_metadata_commands().get((target.metadata_path_name, target.name))
+        return _annotated_metadata_commands(metadata_registry).get(
+            (target.metadata_path_name, target.name)
+        )
 
     source_path = source_id_to_path(target.uri)
     if source_path is None:
         return None
-    return _annotated_metadata_commands().get(
+    return _annotated_metadata_commands(metadata_registry).get(
         (source_path.name, _normalize_command_name(target.qualified_name))
     )
 
@@ -1013,6 +1062,8 @@ def _command_import_label(command_import: CommandImport) -> str:
 def _build_hover_trace_parents(
     facts: DocumentFacts,
     workspace_index: WorkspaceIndex,
+    *,
+    metadata_registry: MetadataRegistry,
 ) -> dict[tuple[str, str], tuple[str, str]]:
     documents_by_uri = {document.uri: document for document in workspace_index.documents()}
     documents_by_uri.setdefault(facts.uri, facts)
@@ -1034,6 +1085,7 @@ def _build_hover_trace_parents(
                 current_path,
                 current_facts,
                 workspace_index,
+                metadata_registry=metadata_registry,
             )
             package_names = {
                 package_require.name for package_require in current_facts.package_requires
