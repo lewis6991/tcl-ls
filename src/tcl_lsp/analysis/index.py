@@ -177,6 +177,9 @@ class WorkspaceIndex:
             source_uris.setdefault(entry.source_uri, None)
         return tuple(source_uris)
 
+    def package_indexes(self) -> tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...]:
+        return tuple(sorted(self._package_indexes_by_uri.items(), key=lambda item: item[0]))
+
     def has_package(self, package_name: str) -> bool:
         return bool(
             self._provided_packages_by_name.get(package_name)

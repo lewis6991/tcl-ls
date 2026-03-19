@@ -244,36 +244,41 @@ def _write_sample_plugin_bundle(metadata_root: Path) -> Path:
     return plugin_path
 
 
-def test_language_service_cross_document_navigation(service: LanguageService) -> None:
+def test_language_service_does_not_resolve_unrelated_open_documents(
+    service: LanguageService,
+) -> None:
     service.open_document('file:///defs.tcl', 'proc greet {name} {puts $name}\n', 1)
-    service.open_document('file:///use.tcl', 'greet World\n', 1)
+    diagnostics = service.open_document('file:///use.tcl', 'greet World\n', 1)
 
-    definition_locations = service.definition('file:///use.tcl', 0, 1)
-    assert len(definition_locations) == 1
-    assert definition_locations[0].uri == 'file:///defs.tcl'
-    assert definition_locations[0].span.start.line == 0
-    assert definition_locations[0].span.start.character == 5
-
-    hover = service.hover('file:///use.tcl', 0, 1)
-    assert hover is not None
-    assert hover.contents == 'proc ::greet(name)'
+    assert [diagnostic.code for diagnostic in diagnostics] == ['unresolved-command']
+    assert service.definition('file:///use.tcl', 0, 1) == ()
+    assert service.hover('file:///use.tcl', 0, 1) is None
 
     references = service.references('file:///defs.tcl', 0, 5)
     assert {(location.uri, location.span.start.line) for location in references} == {
         ('file:///defs.tcl', 0),
-        ('file:///use.tcl', 0),
     }
 
 
-def test_language_service_hover_includes_proc_comment_blocks(service: LanguageService) -> None:
-    service.open_document(
-        'file:///defs.tcl',
+def test_language_service_hover_includes_proc_comment_blocks(
+    service: LanguageService,
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / 'workspace'
+    project_root.mkdir()
+    (project_root / 'helper.inc').write_text(
         '# Greets a user by name.\n# Returns nothing.\nproc greet {name} {puts $name}\n',
+        encoding='utf-8',
+    )
+
+    main_uri = (project_root / 'main.tcl').as_uri()
+    service.open_document(
+        main_uri,
+        'source [file join [file dirname [info script]] helper.inc]\ngreet World\n',
         1,
     )
-    service.open_document('file:///use.tcl', 'greet World\n', 1)
 
-    hover = service.hover('file:///use.tcl', 0, 1)
+    hover = service.hover(main_uri, 1, 1)
     assert hover is not None
     assert hover.contents == 'proc ::greet(name)\n\nGreets a user by name.\nReturns nothing.'
 
@@ -778,20 +783,33 @@ def test_language_service_hover_shows_expr_ternary_assignment_domains(
 
 def test_language_service_rename_updates_proc_declaration_and_calls(
     service: LanguageService,
+    tmp_path: Path,
 ) -> None:
-    service.open_document('file:///defs.tcl', 'proc greet {name} {return $name}\n', 1)
-    service.open_document('file:///use.tcl', 'greet World\n', 1)
+    project_root = tmp_path / 'workspace'
+    project_root.mkdir()
+    helper_path = project_root / 'helper.inc'
+    helper_path.write_text(
+        'proc greet {name} {return $name}\n',
+        encoding='utf-8',
+    )
 
-    edits = service.rename('file:///use.tcl', 0, 1, 'welcome')
+    main_uri = (project_root / 'main.tcl').as_uri()
+    service.open_document(
+        main_uri,
+        'source [file join [file dirname [info script]] helper.inc]\ngreet World\n',
+        1,
+    )
+
+    edits = service.rename(main_uri, 1, 1, 'welcome')
 
     assert edits is not None
-    assert set(edits) == {'file:///defs.tcl', 'file:///use.tcl'}
-    assert edits['file:///defs.tcl'][0].span.start.line == 0
-    assert edits['file:///defs.tcl'][0].span.start.character == 5
-    assert edits['file:///defs.tcl'][0].new_text == 'welcome'
-    assert edits['file:///use.tcl'][0].span.start.line == 0
-    assert edits['file:///use.tcl'][0].span.start.character == 0
-    assert edits['file:///use.tcl'][0].new_text == 'welcome'
+    assert set(edits) == {helper_path.as_uri(), main_uri}
+    assert edits[helper_path.as_uri()][0].span.start.line == 0
+    assert edits[helper_path.as_uri()][0].span.start.character == 5
+    assert edits[helper_path.as_uri()][0].new_text == 'welcome'
+    assert edits[main_uri][0].span.start.line == 1
+    assert edits[main_uri][0].span.start.character == 0
+    assert edits[main_uri][0].new_text == 'welcome'
 
 
 def test_language_service_rename_updates_variable_bindings_and_references(
@@ -1405,6 +1423,63 @@ def test_language_service_loads_static_source_commands(
     assert hover.contents == 'proc ::greet()'
 
 
+def test_language_service_unloads_removed_static_source_commands(
+    service: LanguageService,
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / 'workspace'
+    project_root.mkdir()
+    (project_root / 'helper.inc').write_text(
+        'proc greet {} {return ok}\n',
+        encoding='utf-8',
+    )
+
+    main_uri = (project_root / 'main.tcl').as_uri()
+    assert (
+        service.open_document(
+            main_uri,
+            'source [file join [file dirname [info script]] helper.inc]\ngreet\n',
+            1,
+        )
+        == ()
+    )
+
+    diagnostics = service.change_document(main_uri, 'greet\n', 2)
+
+    assert [diagnostic.code for diagnostic in diagnostics] == ['unresolved-command']
+    assert diagnostics[0].message == 'Unresolved command `greet`.'
+
+
+def test_language_service_removed_static_source_ignores_other_open_helper_window(
+    service: LanguageService,
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / 'workspace'
+    project_root.mkdir()
+    helper_path = project_root / 'helper.inc'
+    helper_path.write_text(
+        'proc greet {} {return ok}\n',
+        encoding='utf-8',
+    )
+
+    main_uri = (project_root / 'main.tcl').as_uri()
+    helper_uri = helper_path.as_uri()
+    assert (
+        service.open_document(
+            main_uri,
+            'source [file join [file dirname [info script]] helper.inc]\ngreet\n',
+            1,
+        )
+        == ()
+    )
+    assert service.open_document(helper_uri, helper_path.read_text(encoding='utf-8'), 1) == ()
+
+    diagnostics = service.change_document(main_uri, 'greet\n', 2)
+
+    assert [diagnostic.code for diagnostic in diagnostics] == ['unresolved-command']
+    assert diagnostics[0].message == 'Unresolved command `greet`.'
+
+
 def test_language_service_resolves_sourced_tcltest_imports(
     service: LanguageService,
     tmp_path: Path,
@@ -1605,6 +1680,7 @@ def test_language_server_process_message_reports_indexing_progress_when_supporte
         '$/progress',
         '$/progress',
         '$/progress',
+        '$/progress',
         'window/logMessage',
         'textDocument/publishDiagnostics',
         '$/progress',
@@ -1623,20 +1699,21 @@ def test_language_server_process_message_reports_indexing_progress_when_supporte
         'percentage': 0,
     }
 
-    report_values = [_as_dict(_as_dict(message['params'])['value']) for message in messages[2:5]]
+    report_values = [_as_dict(_as_dict(message['params'])['value']) for message in messages[2:6]]
     assert report_values == [
-        {'kind': 'report', 'message': 'Indexing open documents', 'percentage': 20},
+        {'kind': 'report', 'message': 'Rebuilding workspace index', 'percentage': 10},
+        {'kind': 'report', 'message': 'Indexing workspace files (1/1)', 'percentage': 45},
         {'kind': 'report', 'message': 'Loading workspace dependencies', 'percentage': 50},
         {'kind': 'report', 'message': 'Analyzing workspace (1/1)', 'percentage': 95},
     ]
 
-    log_params = _as_dict(messages[5]['params'])
+    log_params = _as_dict(messages[6]['params'])
     assert log_params == {'type': 3, 'message': 'Indexing workspace for file:///diag.tcl.'}
 
-    diagnostics = cast(list[dict[str, object]], _as_dict(messages[6]['params'])['diagnostics'])
+    diagnostics = cast(list[dict[str, object]], _as_dict(messages[7]['params'])['diagnostics'])
     assert [diagnostic['code'] for diagnostic in diagnostics] == ['unresolved-variable']
 
-    end_params = _as_dict(messages[7]['params'])
+    end_params = _as_dict(messages[8]['params'])
     assert end_params['token'] == 'tcl-ls/indexing/1'
     end_value = _as_dict(end_params['value'])
     assert end_value == {'kind': 'end', 'message': 'Indexing complete.'}

@@ -148,7 +148,7 @@ This repository contains an early but working bootstrap of a Tcl language server
   - [x] duplicate and unresolved diagnostics
   - [x] namespace-qualified procedure resolution
 - [x] LSP tests cover:
-  - [x] cross-document definition/reference/hover behavior
+  - [x] dependency-linked cross-document definition/reference/hover behavior
   - [x] diagnostics publication
   - [x] local package inference from `pkgIndex.tcl`
   - [x] unresolved package diagnostics

@@ -88,23 +88,10 @@ class LanguageService:
         if uri not in self._documents:
             return ()
 
-        previous_plugin_paths = self._active_plugin_paths()
-        previous_library_paths = self._active_library_paths()
         self._open_document_uris.discard(uri)
         self._plugin_paths_by_uri.pop(uri, None)
         self._library_paths_by_uri.pop(uri, None)
-        del self._documents[uri]
-        self._workspace_index.remove(uri)
-
-        if (
-            self._active_plugin_paths() != previous_plugin_paths
-            or self._active_library_paths() != previous_library_paths
-        ):
-            self._rebuild_documents()
-            return ()
-
-        self._ensure_background_documents_loaded()
-        self._recompute_workspace_analyses()
+        self._rebuild_documents()
         return ()
 
     def diagnostics(self, uri: str) -> tuple[Diagnostic, ...]:
@@ -286,36 +273,13 @@ class LanguageService:
         if not pending_documents:
             return
 
-        previous_plugin_paths = self._active_plugin_paths()
-        previous_library_paths = self._active_library_paths()
         for uri, _, _ in pending_documents:
             self._open_document_uris.add(uri)
             self._plugin_paths_by_uri[uri] = self._configured_plugin_paths(uri)
             self._library_paths_by_uri[uri] = self._configured_library_paths(uri)
 
-        if (
-            self._active_plugin_paths() != previous_plugin_paths
-            or self._active_library_paths() != previous_library_paths
-        ):
-            self._report_progress(progress, 'Rebuilding workspace index', 10)
-            self._rebuild_documents(pending_documents, progress=progress)
-            return
-
-        self._report_progress(progress, 'Indexing open documents', 20)
-        for uri, text, version in pending_documents:
-            self._index_document(uri=uri, text=text, version=version)
-            self._discover_package_roots(uri)
-        self._report_progress(progress, 'Loading workspace dependencies', 50)
-        self._ensure_background_documents_loaded(
-            progress=progress,
-            start_percentage=50,
-            end_percentage=75,
-        )
-        self._recompute_workspace_analyses(
-            progress=progress,
-            start_percentage=75,
-            end_percentage=95,
-        )
+        self._report_progress(progress, 'Rebuilding workspace index', 10)
+        self._rebuild_documents(pending_documents, progress=progress)
 
     def _index_document(self, uri: str, text: str, version: int) -> None:
         parse_result = self._parser.parse_document(path=uri, text=text)
@@ -422,6 +386,7 @@ class LanguageService:
         documents = list(self._documents.items())
         total_documents = len(documents)
         for index, (uri, document) in enumerate(documents, start=1):
+            analysis_workspace_index = self._analysis_workspace_index(uri)
             source_path = source_id_to_path(uri)
             additional_required_packages: frozenset[str]
             if source_path is None:
@@ -430,12 +395,12 @@ class LanguageService:
                 additional_required_packages = dependency_required_packages(
                     source_path,
                     document.facts,
-                    self._workspace_index,
+                    analysis_workspace_index,
                 )
             analysis = self._resolver.analyze(
                 uri=uri,
                 facts=document.facts,
-                workspace_index=self._workspace_index,
+                workspace_index=analysis_workspace_index,
                 additional_required_packages=additional_required_packages,
             )
             self._documents[uri] = ManagedDocument(
@@ -456,6 +421,34 @@ class LanguageService:
                     end=end_percentage,
                 ),
             )
+
+    def _analysis_workspace_index(self, root_uri: str) -> WorkspaceIndex:
+        workspace_index = WorkspaceIndex()
+        for pkg_index_uri, entries in self._workspace_index.package_indexes():
+            workspace_index.update_package_index(pkg_index_uri, entries)
+        for uri in self._reachable_analysis_uris(root_uri):
+            document = self._documents.get(uri)
+            if document is None:
+                continue
+            workspace_index.update(uri, document.facts)
+        return workspace_index
+
+    def _reachable_analysis_uris(self, root_uri: str) -> tuple[str, ...]:
+        reachable_uris: dict[str, None] = {}
+        pending_uris = [root_uri]
+        while pending_uris:
+            uri = pending_uris.pop()
+            if uri in reachable_uris:
+                continue
+            reachable_uris[uri] = None
+            document = self._documents.get(uri)
+            if document is None:
+                continue
+            for dependency_uri in self._background_document_uris(document.facts):
+                if dependency_uri in reachable_uris:
+                    continue
+                pending_uris.append(dependency_uri)
+        return tuple(reachable_uris)
 
     def _configured_plugin_paths(self, uri: str) -> tuple[Path, ...]:
         path = source_id_to_path(uri)
