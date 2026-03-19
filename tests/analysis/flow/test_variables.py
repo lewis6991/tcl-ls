@@ -146,6 +146,31 @@ def test_variable_flow_tracks_expr_ternary_variable_branch_values(parser: Parser
     assert state.exact_values('mode') == ('fast', 'slow')
 
 
+def test_variable_flow_tracks_nested_expr_ternary_result_domains(parser: Parser) -> None:
+    state = VariableFlowState.empty()
+    state = state_with_set_command(state, _single_command(parser, 'set on fast\n'))
+    state = state_with_set_command(state, _single_command(parser, 'set off slow\n'))
+    state = state_with_set_command(
+        state,
+        _single_command(
+            parser,
+            'set mode [expr {$outer == 1 ? ($inner == 1 ? $on : $off) : "none"}]\n',
+        ),
+    )
+
+    assert state.exact_values('mode') == ('fast', 'slow', 'none')
+
+
+def test_variable_flow_tracks_expr_comparison_result_domains(parser: Parser) -> None:
+    state = VariableFlowState({'bg': ('0', '1')})
+    state = state_with_set_command(
+        state,
+        _single_command(parser, 'set enabled [expr {$bg == 1}]\n'),
+    )
+
+    assert state.exact_values('enabled') == ('0', '1')
+
+
 def test_variable_flow_tracks_switch_command_substitution_result_domains(
     parser: Parser,
 ) -> None:
@@ -200,6 +225,26 @@ def test_variable_flow_preserves_unknown_else_branch_for_unknown_domains() -> No
     assert else_state.exact_values('kind') == ()
 
 
+def test_variable_flow_narrows_and_conditions_with_parentheses() -> None:
+    then_state, _ = condition_branch_flow_states(
+        VariableFlowState({'kind': ('prove', 'lint'), 'mode': ('fast', 'slow')}),
+        '($kind eq "prove") && ($mode eq "fast")',
+    )
+
+    assert then_state.exact_values('kind') == ('prove',)
+    assert then_state.exact_values('mode') == ('fast',)
+
+
+def test_variable_flow_narrows_or_conditions_with_parentheses() -> None:
+    then_state, else_state = condition_branch_flow_states(
+        VariableFlowState({'kind': ('prove', 'lint', 'scan')}),
+        '($kind eq "prove") || ($kind eq "lint")',
+    )
+
+    assert then_state.exact_values('kind') == ('prove', 'lint')
+    assert else_state.exact_values('kind') == ('scan',)
+
+
 def test_variable_flow_narrows_exact_switch_branches(parser: Parser) -> None:
     command = _single_command(parser, 'switch -- $kind {alpha {return ok} beta {return ok}}\n')
 
@@ -251,12 +296,13 @@ def test_variable_flow_supports_literal_on_left_side_and_elseif_residuals() -> N
     assert else_state.exact_values('kind') == ('scan',)
 
 
-def test_variable_flow_ignores_complex_conditions() -> None:
+def test_variable_flow_narrows_logical_and_conditions() -> None:
     state = VariableFlowState({'kind': ('prove', 'lint')})
     then_state, else_state = condition_branch_flow_states(
         state,
         '$kind eq "prove" && $mode eq "fast"',
     )
 
-    assert then_state == state
-    assert else_state == state
+    assert then_state.exact_values('kind') == ('prove',)
+    assert then_state.exact_values('mode') == ('fast',)
+    assert set(else_state.exact_values('kind')) == {'prove', 'lint'}

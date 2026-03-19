@@ -3,17 +3,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from tcl_lsp.analysis.facts.parsing import is_simple_name, split_tcl_list
+from tcl_lsp.analysis.flow.exprs import eval_expr_text, expr_branch_flow_states
 from tcl_lsp.common import Diagnostic, Position
 from tcl_lsp.parser import Parser, word_static_text
 from tcl_lsp.parser.model import (
     BracedWord,
     Command,
     CommandSubstitution,
+    Script,
     VariableSubstitution,
     Word,
 )
 
-_ZERO_POSITION = Position(offset=0, line=0, character=0)
+_ZERO_POSITION = Position(0, 0, 0)
 _FLOW_PARSER = Parser()
 
 
@@ -64,13 +66,6 @@ class VariableFlowState:
 
 
 @dataclass(frozen=True, slots=True)
-class _ConditionComparison:
-    variable_name: str
-    operator: str
-    literal_value: str
-
-
-@dataclass(frozen=True, slots=True)
 class _SwitchCommandOptionState:
     value_index: int
     match_mode: str
@@ -117,7 +112,7 @@ def exact_word_values(word: Word, state: VariableFlowState) -> tuple[str, ...]:
     if not isinstance(part, VariableSubstitution):
         if not isinstance(part, CommandSubstitution):
             return ()
-        return _command_substitution_values(part, state)
+        return _script_result_values(part.script, state)
     return state.exact_values(part.name)
 
 
@@ -146,27 +141,14 @@ def script_body_flow_state(
     if selected_word is not argument_words[-1]:
         return state
 
-    return state.merged(_foreach_like_variable_domains(argument_words[:-1], state))
+    return state.merged(_foreach_like_var_domains(argument_words[:-1], state))
 
 
 def condition_branch_flow_states(
     state: VariableFlowState,
     condition_text: str,
 ) -> tuple[VariableFlowState, VariableFlowState]:
-    comparison = _condition_comparison(condition_text)
-    if comparison is None:
-        return state, state
-
-    if comparison.operator in {'eq', '=='}:
-        return (
-            state.with_exact_values(comparison.variable_name, (comparison.literal_value,)),
-            _state_without_exact_value(state, comparison.variable_name, comparison.literal_value),
-        )
-
-    return (
-        _state_without_exact_value(state, comparison.variable_name, comparison.literal_value),
-        state.with_exact_values(comparison.variable_name, (comparison.literal_value,)),
-    )
+    return expr_branch_flow_states(state, condition_text)
 
 
 def switch_branch_flow_state(
@@ -180,21 +162,21 @@ def switch_branch_flow_state(
     if value_word is None or nocase or not patterns:
         return state
 
-    variable_name = _switch_value_variable_name(value_word)
-    if variable_name is None:
+    var_name = _switch_value_var_name(value_word)
+    if var_name is None:
         return state
 
     branch_values = _switch_pattern_exact_values(patterns, match_mode)
     if not branch_values:
         return state
 
-    current_values = state.exact_values(variable_name)
+    current_values = state.exact_values(var_name)
     if current_values:
         narrowed_values = tuple(value for value in branch_values if value in current_values)
         if narrowed_values:
-            return state.with_exact_values(variable_name, narrowed_values)
+            return state.with_exact_values(var_name, narrowed_values)
 
-    return state.with_exact_values(variable_name, branch_values)
+    return state.with_exact_values(var_name, branch_values)
 
 
 def state_with_set_command(
@@ -204,7 +186,7 @@ def state_with_set_command(
     if len(command.words) < 2:
         return state
 
-    target_name = _simple_variable_name(command.words[1])
+    target_name = _simple_var_name(command.words[1])
     if target_name is not None:
         if len(command.words) < 3:
             return state
@@ -227,7 +209,7 @@ def state_with_unset_command(
 ) -> VariableFlowState:
     names: list[str] = []
     for word in unset_target_words(command):
-        target_name = _simple_variable_name(word)
+        target_name = _simple_var_name(word)
         if target_name is not None:
             if target_name not in names:
                 names.append(target_name)
@@ -253,14 +235,14 @@ def unset_target_words(command: Command) -> tuple[Word, ...]:
     return tuple(targets)
 
 
-def _simple_variable_name(word: Word) -> str | None:
-    variable_name = normalize_variable_name(word_static_text(word) or '')
-    if not variable_name or not is_simple_name(variable_name):
+def _simple_var_name(word: Word) -> str | None:
+    var_name = normalize_variable_name(word_static_text(word) or '')
+    if not var_name or not is_simple_name(var_name):
         return None
-    return variable_name
+    return var_name
 
 
-def _switch_value_variable_name(word: Word) -> str | None:
+def _switch_value_var_name(word: Word) -> str | None:
     if isinstance(word, BracedWord) or len(word.parts) != 1:
         return None
 
@@ -285,7 +267,7 @@ def _exact_list_item_texts(
     return tuple(items)
 
 
-def _foreach_like_variable_domains(
+def _foreach_like_var_domains(
     argument_words: tuple[Word, ...],
     state: VariableFlowState,
 ) -> dict[str, tuple[str, ...]]:
@@ -295,64 +277,26 @@ def _foreach_like_variable_domains(
     domains: dict[str, list[str]] = {}
     pair_words = argument_words[: len(argument_words) - (len(argument_words) % 2)]
     for index in range(0, len(pair_words), 2):
-        variable_items = _exact_list_item_texts(pair_words[index], state)
+        var_items = _exact_list_item_texts(pair_words[index], state)
         value_items = _exact_list_item_texts(pair_words[index + 1], state)
-        if not variable_items or not value_items:
+        if not var_items or not value_items:
             continue
 
-        variable_count = len(variable_items)
-        for variable_index, variable_name in enumerate(variable_items):
-            if not is_simple_name(variable_name):
+        var_count = len(var_items)
+        for var_index, var_name in enumerate(var_items):
+            if not is_simple_name(var_name):
                 continue
-            values = value_items[variable_index::variable_count]
+            values = value_items[var_index::var_count]
             if not values:
                 continue
 
-            existing_values = domains.setdefault(variable_name, [])
+            existing_values = domains.setdefault(var_name, [])
             for value in values:
                 if value in existing_values:
                     continue
                 existing_values.append(value)
 
     return {name: tuple(values) for name, values in domains.items()}
-
-
-def _condition_comparison(text: str) -> _ConditionComparison | None:
-    items = split_tcl_list(text, _ZERO_POSITION)
-    if len(items) != 3:
-        return None
-
-    left = _condition_operand(items[0].text)
-    operator = items[1].text
-    right = _condition_operand(items[2].text)
-    if operator not in {'eq', 'ne', '==', '!='}:
-        return None
-    if left is None or right is None or left[0] == right[0]:
-        return None
-
-    variable_name = left[1] if left[0] == 'variable' else right[1]
-    literal_value = right[1] if left[0] == 'variable' else left[1]
-    return _ConditionComparison(
-        variable_name=variable_name,
-        operator=operator,
-        literal_value=literal_value,
-    )
-
-
-def _condition_operand(text: str) -> tuple[str, str] | None:
-    if text.startswith('${') and text.endswith('}'):
-        variable_name = text[2:-1].strip()
-        if is_simple_name(variable_name):
-            return 'variable', variable_name
-        return None
-
-    if text.startswith('$'):
-        variable_name = text[1:]
-        if is_simple_name(variable_name):
-            return 'variable', variable_name
-        return None
-
-    return 'literal', text
 
 
 def _switch_pattern_exact_values(
@@ -373,17 +317,20 @@ def _switch_pattern_exact_values(
 def _switch_pattern_exact_value(pattern: str | None, match_mode: str) -> str | None:
     if pattern is None or pattern == 'default':
         return None
-    if match_mode == 'exact':
-        return pattern
-    if match_mode == 'glob':
-        if any(char in pattern for char in '*?[]\\'):
+
+    match match_mode:
+        case 'exact':
+            return pattern
+        case 'glob':
+            if any(char in pattern for char in '*?[]\\'):
+                return None
+            return pattern
+        case 'regexp':
+            if any(char in pattern for char in '.^$*+?()[]{}|\\'):
+                return None
+            return pattern
+        case _:
             return None
-        return pattern
-    if match_mode == 'regexp':
-        if any(char in pattern for char in '.^$*+?()[]{}|\\'):
-            return None
-        return pattern
-    return None
 
 
 def _switch_command_values(
@@ -394,11 +341,11 @@ def _switch_command_values(
     if layout is None or layout.nocase:
         return ()
 
-    variable_name = _switch_value_variable_name(layout.value_word)
-    if variable_name is None:
+    var_name = _switch_value_var_name(layout.value_word)
+    if var_name is None:
         return ()
 
-    remaining_values = state.exact_values(variable_name)
+    remaining_values = state.exact_values(var_name)
     if not remaining_values:
         return ()
 
@@ -407,13 +354,13 @@ def _switch_command_values(
         matched_values = _switch_branch_matched_values(
             remaining_values,
             branch.patterns,
-            match_mode=layout.match_mode,
+            layout.match_mode,
         )
         if not matched_values:
             continue
 
-        branch_state = state.with_exact_values(variable_name, matched_values)
-        branch_values = _switch_body_result_values(branch.body_text, branch_state)
+        branch_state = state.with_exact_values(var_name, matched_values)
+        branch_values = _embedded_script_result_values(branch.body_text, branch_state)
         if not branch_values:
             return ()
 
@@ -448,10 +395,10 @@ def _switch_command_layout(command: Command) -> _SwitchCommandLayout | None:
         return None
 
     return _SwitchCommandLayout(
-        value_word=command.words[option_state.value_index],
-        match_mode=option_state.match_mode,
-        nocase=option_state.nocase,
-        branches=branches,
+        command.words[option_state.value_index],
+        option_state.match_mode,
+        option_state.nocase,
+        branches,
     )
 
 
@@ -494,11 +441,7 @@ def _scan_switch_command_options(words: tuple[Word, ...]) -> _SwitchCommandOptio
 
     if index >= len(words):
         return None
-    return _SwitchCommandOptionState(
-        value_index=index,
-        match_mode=match_mode,
-        nocase=nocase,
-    )
+    return _SwitchCommandOptionState(index, match_mode, nocase)
 
 
 def _switch_command_branches_from_list_word(word: Word) -> tuple[_SwitchCommandBranch, ...]:
@@ -517,12 +460,7 @@ def _switch_command_branches_from_list_word(word: Word) -> tuple[_SwitchCommandB
         body_text = items[index + 1].text
         if body_text == '-':
             continue
-        branches.append(
-            _SwitchCommandBranch(
-                patterns=tuple(pending_patterns),
-                body_text=body_text,
-            )
-        )
+        branches.append(_SwitchCommandBranch(tuple(pending_patterns), body_text))
         pending_patterns = []
 
     if pending_patterns:
@@ -545,12 +483,7 @@ def _switch_command_branches_from_words(
             return ()
         if body_text == '-':
             continue
-        branches.append(
-            _SwitchCommandBranch(
-                patterns=tuple(pending_patterns),
-                body_text=body_text,
-            )
-        )
+        branches.append(_SwitchCommandBranch(tuple(pending_patterns), body_text))
         pending_patterns = []
 
     if pending_patterns:
@@ -561,7 +494,6 @@ def _switch_command_branches_from_words(
 def _switch_branch_matched_values(
     current_values: tuple[str, ...],
     patterns: tuple[str | None, ...],
-    *,
     match_mode: str,
 ) -> tuple[str, ...]:
     if not patterns:
@@ -575,239 +507,55 @@ def _switch_branch_matched_values(
     return tuple(value for value in current_values if value in branch_values)
 
 
-def _switch_body_result_values(
+def _embedded_script_result_values(
     text: str,
     state: VariableFlowState,
 ) -> tuple[str, ...]:
     diagnostics: list[Diagnostic] = []
     script = _FLOW_PARSER.parse_embedded_script_for_analysis(
-        'file:///flow_switch.tcl',
+        'file:///flow_expr.tcl',
         text,
         _ZERO_POSITION,
         diagnostics=diagnostics,
     )
-    if diagnostics or len(script.commands) != 1:
+    if diagnostics:
         return ()
+    return _script_result_values(script, state)
 
-    return _command_result_values(script.commands[0], state)
 
-
-def _command_result_values(
-    command: Command,
+def _script_result_values(
+    script: Script,
     state: VariableFlowState,
 ) -> tuple[str, ...]:
-    if not command.words:
-        return ()
-
-    command_name = word_static_text(command.words[0])
-    if command_name == 'concat' and len(command.words) == 2:
-        return exact_word_values(command.words[1], state)
-    if command_name == 'set':
-        if len(command.words) == 2:
-            target_name = _simple_variable_name(command.words[1])
-            if target_name is None:
-                return ()
-            return state.exact_values(target_name)
-        if len(command.words) == 3:
-            return exact_word_values(command.words[2], state)
-    return ()
-
-
-def _state_without_exact_value(
-    state: VariableFlowState,
-    name: str,
-    value: str,
-) -> VariableFlowState:
-    existing_values = state.exact_values(name)
-    if not existing_values:
-        return state
-
-    remaining_values = tuple(existing for existing in existing_values if existing != value)
-    return state.with_exact_values(name, remaining_values)
-
-
-def _command_substitution_values(
-    substitution: CommandSubstitution,
-    state: VariableFlowState,
-) -> tuple[str, ...]:
-    script = substitution.script
     if len(script.commands) != 1:
         return ()
-
     command = script.commands[0]
     if not command.words:
         return ()
 
     command_name = word_static_text(command.words[0])
-    if command_name == 'switch':
-        return _switch_command_values(command, state)
-    if command_name != 'expr' or len(command.words) != 2:
-        return ()
+    match command_name:
+        case 'concat' if len(command.words) == 2:
+            return exact_word_values(command.words[1], state)
+        case 'set':
+            match len(command.words):
+                case 2:
+                    target_name = _simple_var_name(command.words[1])
+                    if target_name is None:
+                        return ()
+                    return state.exact_values(target_name)
+                case 3:
+                    return exact_word_values(command.words[2], state)
+                case _:
+                    pass
+        case 'switch':
+            return _switch_command_values(command, state)
+        case 'expr' if len(command.words) == 2:
+            expr_text = word_static_text(command.words[1])
+            if expr_text is None:
+                return ()
+            return eval_expr_text(state, expr_text, _embedded_script_result_values).values
+        case _:
+            return ()
 
-    expression_text = word_static_text(command.words[1])
-    if expression_text is None:
-        return ()
-
-    ternary_parts = _split_top_level_ternary(expression_text)
-    if ternary_parts is None:
-        return ()
-
-    condition_text, true_text, false_text = ternary_parts
-    true_possible, false_possible = _condition_branch_possibilities(state, condition_text)
-    values: list[str] = []
-    if true_possible:
-        for value in _expr_result_values(true_text, state):
-            if value not in values:
-                values.append(value)
-    if false_possible:
-        for value in _expr_result_values(false_text, state):
-            if value not in values:
-                values.append(value)
-    return tuple(values)
-
-
-def _expr_result_values(
-    text: str,
-    state: VariableFlowState,
-) -> tuple[str, ...]:
-    items = split_tcl_list(text.strip(), _ZERO_POSITION)
-    if len(items) != 1:
-        return ()
-
-    item_text = items[0].text
-    variable_name = _expr_variable_name(item_text)
-    if variable_name is None:
-        return (item_text,)
-    return state.exact_values(variable_name)
-
-
-def _expr_variable_name(text: str) -> str | None:
-    if text.startswith('${') and text.endswith('}'):
-        variable_name = text[2:-1].strip()
-        if is_simple_name(variable_name):
-            return variable_name
-        return None
-
-    if not text.startswith('$'):
-        return None
-
-    variable_name = text[1:]
-    if not is_simple_name(variable_name):
-        return None
-    return variable_name
-
-
-def _condition_branch_possibilities(
-    state: VariableFlowState,
-    condition_text: str,
-) -> tuple[bool, bool]:
-    comparison = _condition_comparison(condition_text)
-    if comparison is None:
-        return True, True
-
-    exact_values = state.exact_values(comparison.variable_name)
-    if not exact_values:
-        return True, True
-
-    true_possible = any(
-        _condition_value_matches(
-            value,
-            operator=comparison.operator,
-            literal_value=comparison.literal_value,
-        )
-        for value in exact_values
-    )
-    false_possible = any(
-        not _condition_value_matches(
-            value,
-            operator=comparison.operator,
-            literal_value=comparison.literal_value,
-        )
-        for value in exact_values
-    )
-    return true_possible, false_possible
-
-
-def _condition_value_matches(
-    value: str,
-    *,
-    operator: str,
-    literal_value: str,
-) -> bool:
-    if operator in {'eq', '=='}:
-        return value == literal_value
-    return value != literal_value
-
-
-def _split_top_level_ternary(text: str) -> tuple[str, str, str] | None:
-    question_index: int | None = None
-    ternary_depth = 0
-    paren_depth = 0
-    brace_depth = 0
-    bracket_depth = 0
-    in_quote = False
-    index = 0
-
-    while index < len(text):
-        current_char = text[index]
-        if current_char == '\\':
-            index += 2
-            continue
-
-        if in_quote:
-            if current_char == '"':
-                in_quote = False
-            index += 1
-            continue
-
-        if current_char == '"':
-            in_quote = True
-            index += 1
-            continue
-        if current_char == '(':
-            paren_depth += 1
-            index += 1
-            continue
-        if current_char == ')' and paren_depth > 0:
-            paren_depth -= 1
-            index += 1
-            continue
-        if current_char == '{':
-            brace_depth += 1
-            index += 1
-            continue
-        if current_char == '}' and brace_depth > 0:
-            brace_depth -= 1
-            index += 1
-            continue
-        if current_char == '[':
-            bracket_depth += 1
-            index += 1
-            continue
-        if current_char == ']' and bracket_depth > 0:
-            bracket_depth -= 1
-            index += 1
-            continue
-
-        if paren_depth or brace_depth or bracket_depth:
-            index += 1
-            continue
-
-        if current_char == '?':
-            if question_index is None:
-                question_index = index
-            else:
-                ternary_depth += 1
-            index += 1
-            continue
-        if current_char == ':' and question_index is not None:
-            if ternary_depth == 0:
-                return (
-                    text[:question_index].strip(),
-                    text[question_index + 1 : index].strip(),
-                    text[index + 1 :].strip(),
-                )
-            ternary_depth -= 1
-        index += 1
-
-    return None
+    return ()
