@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from collections.abc import Callable
 from io import BytesIO
 from pathlib import Path
@@ -9,10 +10,12 @@ from typing import Any, cast
 
 import pytest
 from lsprotocol import types
+from pygls.protocol.json_rpc import RPCMessage
 from tests.lsp_service import LanguageService
 from tests.lsp_support import process_message
 
 from tcl_lsp.analysis.builtins import builtin_command
+from tcl_lsp.common import Diagnostic, Position, Span
 from tcl_lsp.lsp import LanguageServer
 from tcl_lsp.lsp import server as lsp_server
 
@@ -24,6 +27,18 @@ class _NonClosingBytesIO(BytesIO):
         self.flush()
 
 
+class _CaptureWriter:
+    def __init__(self, stream: BytesIO) -> None:
+        self._stream = stream
+
+    def close(self) -> None:
+        self._stream.flush()
+
+    def write(self, data: bytes) -> None:
+        self._stream.write(data)
+        self._stream.flush()
+
+
 def _fresh_server() -> LanguageServer:
     lsp_server.reset()
     return lsp_server
@@ -31,6 +46,10 @@ def _fresh_server() -> LanguageServer:
 
 def _override_open_document(server: LanguageServer, open_document: object) -> None:
     cast(Any, server).open_document = open_document
+
+
+def _override_change_document(server: LanguageServer, change_document: object) -> None:
+    cast(Any, server)._change_document = change_document
 
 
 def _open_server_document(
@@ -1933,6 +1952,113 @@ def test_language_server_process_message_publishes_diagnostics(server: LanguageS
     assert params['uri'] == 'file:///diag.tcl'
     diagnostics = cast(list[dict[str, object]], params['diagnostics'])
     assert [diagnostic['code'] for diagnostic in diagnostics] == ['unresolved-variable']
+
+
+def test_language_server_process_message_coalesces_stale_document_changes(
+    server: LanguageServer,
+) -> None:
+    class SlowChangeService:
+        def __init__(self) -> None:
+            self.started = threading.Event()
+            self.finished = threading.Event()
+            self.versions: list[int] = []
+
+        def change_document(
+            self,
+            uri: str,
+            text: str,
+            version: int,
+            *,
+            should_cancel: Callable[[], bool] | None = None,
+        ) -> tuple[Diagnostic, ...] | None:
+            del uri, text
+            self.versions.append(version)
+            if version == 2:
+                self.started.set()
+                deadline = time.monotonic() + 1
+                while should_cancel is not None and not should_cancel():
+                    assert time.monotonic() < deadline
+                    time.sleep(0.01)
+                return None
+
+            self.finished.set()
+            return (
+                Diagnostic(
+                    span=Span(
+                        start=Position(offset=0, line=0, character=0),
+                        end=Position(offset=1, line=0, character=1),
+                    ),
+                    severity='error',
+                    message='latest version',
+                    source='test',
+                    code='latest-only',
+                ),
+            )
+
+    def send(message: dict[str, object]) -> None:
+        structured = cast(RPCMessage, server.protocol.structure_message(message))
+        server.protocol.handle_message(structured)
+
+    _open_server_document(server, 'puts ok\n')
+
+    output_stream = _NonClosingBytesIO()
+    server.protocol.set_writer(_CaptureWriter(output_stream))
+
+    service = SlowChangeService()
+    _override_change_document(server, service.change_document)
+
+    send(
+        {
+            'jsonrpc': '2.0',
+            'method': 'textDocument/didChange',
+            'params': {
+                'textDocument': {'uri': _MAIN_URI, 'version': 2},
+                'contentChanges': [{'text': 'puts first\n'}],
+            },
+        }
+    )
+    assert service.started.wait(timeout=1)
+
+    send(
+        {
+            'jsonrpc': '2.0',
+            'method': 'textDocument/didChange',
+            'params': {
+                'textDocument': {'uri': _MAIN_URI, 'version': 3},
+                'contentChanges': [{'text': 'puts latest\n'}],
+            },
+        }
+    )
+    assert service.finished.wait(timeout=1)
+
+    deadline = time.monotonic() + 1
+    publish_messages: list[dict[str, object]] = []
+    while time.monotonic() < deadline:
+        publish_messages = [
+            message
+            for message in _decode_frames(output_stream.getvalue())
+            if message.get('method') == 'textDocument/publishDiagnostics'
+        ]
+        if publish_messages:
+            break
+        time.sleep(0.01)
+
+    assert service.versions == [2, 3]
+    assert len(publish_messages) == 1
+    params = _as_dict(publish_messages[0]['params'])
+    diagnostics = cast(list[dict[str, object]], params['diagnostics'])
+    assert diagnostics == [
+        {
+            'range': {
+                'start': {'line': 0, 'character': 0},
+                'end': {'line': 0, 'character': 1},
+            },
+            'severity': types.DiagnosticSeverity.Error,
+            'code': 'latest-only',
+            'source': 'test',
+            'message': 'latest version',
+        }
+    ]
 
 
 def test_language_server_process_message_logs_startup(server: LanguageServer) -> None:

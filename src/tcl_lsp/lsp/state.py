@@ -6,9 +6,10 @@ from pathlib import Path
 
 from lsprotocol import types
 
-from tcl_lsp.analysis import AnalysisResult
+from tcl_lsp.analysis import AnalysisResult, WorkspaceIndex
 from tcl_lsp.analysis.model import DocumentFacts
 from tcl_lsp.common import Span
+from tcl_lsp.metadata_paths import MetadataRegistry
 from tcl_lsp.parser import ParseResult
 from tcl_lsp.project.paths import source_id_to_path
 
@@ -27,6 +28,13 @@ class ManagedDocument:
 class RenameEdit:
     span: Span
     new_text: str
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisSnapshot:
+    documents: dict[str, ManagedDocument]
+    workspace_index: WorkspaceIndex
+    metadata_registry: MetadataRegistry
 
 
 type IndexingProgressCallback = Callable[[str, int], None]

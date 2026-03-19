@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable, Iterable
 from concurrent.futures import Future
 from pathlib import Path
@@ -11,8 +12,8 @@ from pygls.protocol.language_server import LanguageServerProtocol
 
 from tcl_lsp import __version__
 from tcl_lsp.analysis import FactExtractor, Resolver, WorkspaceIndex
-from tcl_lsp.analysis.metadata_effects import dependency_required_packages
 from tcl_lsp.common import Diagnostic, lsp_range
+from tcl_lsp.lsp.document_changes import DocumentChangeWorker
 from tcl_lsp.lsp.features.completion import completion_items
 from tcl_lsp.lsp.features.highlights import document_highlights
 from tcl_lsp.lsp.features.hover import hover
@@ -26,24 +27,18 @@ from tcl_lsp.lsp.semantic_tokens import (
     encode_document_semantic_tokens,
 )
 from tcl_lsp.lsp.state import (
+    AnalysisSnapshot,
     IndexingProgressCallback,
     ManagedDocument,
-    empty_analysis,
-    managed_document_details,
 )
+from tcl_lsp.lsp.workspace_rebuild import DocumentBuildSnapshot, WorkspaceRebuilder
 from tcl_lsp.metadata_paths import (
     DEFAULT_METADATA_REGISTRY,
     MetadataRegistry,
-    create_metadata_registry,
 )
 from tcl_lsp.parser import Parser
 from tcl_lsp.project.config import configured_library_paths, configured_plugin_paths
-from tcl_lsp.project.indexing import (
-    load_dependency_documents,
-    reachable_document_uris,
-    scan_package_root,
-)
-from tcl_lsp.project.paths import candidate_package_roots, read_source_file, source_id_to_path
+from tcl_lsp.project.paths import source_id_to_path
 
 _DIAGNOSTIC_SEVERITY_MAP = {
     'error': types.DiagnosticSeverity.Error,
@@ -55,6 +50,7 @@ _DIAGNOSTIC_SEVERITY_MAP = {
 
 class LanguageServer(PyglsLanguageServer):
     documents: dict[str, ManagedDocument]
+    _change_worker: DocumentChangeWorker
     _extractor: FactExtractor
     _indexing_notification_shown: bool
     _library_paths_by_uri: dict[str, tuple[Path, ...]]
@@ -66,6 +62,8 @@ class LanguageServer(PyglsLanguageServer):
     _plugin_paths_by_uri: dict[str, tuple[Path, ...]]
     _resolver: Resolver
     _scanned_package_roots: set[Path]
+    _state_lock: threading.RLock
+    _toolkit_lock: threading.RLock
     _workspace_index: WorkspaceIndex
 
     def __init__(
@@ -82,6 +80,8 @@ class LanguageServer(PyglsLanguageServer):
             text_document_sync_kind=types.TextDocumentSyncKind.Full,
             protocol_cls=_TclLanguageServerProtocol,
         )
+        self._state_lock = threading.RLock()
+        self._toolkit_lock = threading.RLock()
         self._indexing_notification_shown = False
         self._next_progress_token = 1
         self._next_server_request_id = 1
@@ -92,6 +92,12 @@ class LanguageServer(PyglsLanguageServer):
             resolver=resolver,
             metadata_registry=metadata_registry,
         )
+        self._change_worker = DocumentChangeWorker(
+            apply_change=self._queued_change_document,
+            current_document_version=self._current_document_version,
+            publish_diagnostics=self._publish_document_diagnostics,
+        )
+        self._change_worker.start()
 
     def reset(self) -> None:
         self.shutdown()
@@ -108,6 +114,13 @@ class LanguageServer(PyglsLanguageServer):
         self.__dict__.pop('open_document', None)
         cast(_TclLanguageServerProtocol, self.protocol).reset_runtime_state()
         self._initialize_analysis_state()
+        self._change_worker.start()
+
+    def shutdown(self) -> None:
+        self._change_worker.stop()
+        with self._toolkit_lock:
+            self._extractor.close()
+        super().shutdown()
 
     def open_document(
         self,
@@ -117,27 +130,63 @@ class LanguageServer(PyglsLanguageServer):
         *,
         progress: IndexingProgressCallback | None = None,
     ) -> tuple[Diagnostic, ...]:
-        self.load_documents(((uri, text, version),), progress=progress)
-        document = self.documents.get(uri)
+        self._change_worker.invalidate()
+        self._load_documents(((uri, text, version),), progress=progress)
+        document = self.analysis_snapshot().documents.get(uri)
         if document is None:
             return ()
         return document.analysis.diagnostics
 
     def change_document(self, uri: str, text: str, version: int) -> tuple[Diagnostic, ...]:
-        self.load_documents(((uri, text, version),))
-        document = self.documents.get(uri)
+        self._change_worker.invalidate()
+        diagnostics = self._change_document(uri, text, version)
+        return () if diagnostics is None else diagnostics
+
+    def schedule_document_change(self, uri: str, version: int) -> None:
+        self._change_worker.schedule(uri, version)
+
+    def _change_document(
+        self,
+        uri: str,
+        text: str,
+        version: int,
+        *,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> tuple[Diagnostic, ...] | None:
+        if not self._load_documents(((uri, text, version),), should_cancel=should_cancel):
+            return None
+        document = self.analysis_snapshot().documents.get(uri)
         if document is None:
             return ()
         return document.analysis.diagnostics
 
-    def close_document(self, uri: str) -> None:
-        if uri not in self.documents:
-            return
+    def _queued_change_document(
+        self,
+        uri: str,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> tuple[Diagnostic, ...] | None:
+        with self._state_lock:
+            if uri not in self._open_document_uris:
+                return ()
+        text_document = self.workspace.get_text_document(uri)
+        return self._change_document(
+            uri,
+            text_document.source,
+            0 if text_document.version is None else text_document.version,
+            should_cancel=should_cancel,
+        )
 
-        self._open_document_uris.discard(uri)
-        self._plugin_paths_by_uri.pop(uri, None)
-        self._library_paths_by_uri.pop(uri, None)
-        self._rebuild_documents()
+    def close_document(self, uri: str) -> None:
+        with self._state_lock:
+            if uri not in self.documents:
+                return
+
+            self._open_document_uris.discard(uri)
+            self._plugin_paths_by_uri.pop(uri, None)
+            self._library_paths_by_uri.pop(uri, None)
+
+        self._change_worker.discard(uri)
+        self._load_documents(())
 
     @property
     def metadata_registry(self) -> MetadataRegistry:
@@ -155,28 +204,66 @@ class LanguageServer(PyglsLanguageServer):
     def workspace_index(self) -> WorkspaceIndex:
         return self._workspace_index
 
-    def load_documents(
+    def analysis_snapshot(self) -> AnalysisSnapshot:
+        with self._state_lock:
+            return AnalysisSnapshot(
+                documents=self.documents,
+                workspace_index=self._workspace_index,
+                metadata_registry=self._metadata_registry,
+            )
+
+    def _current_document_version(self, uri: str) -> int | None:
+        with self._state_lock:
+            document = self.documents.get(uri)
+        if document is None:
+            return None
+        return document.version
+
+    def completion_items_at(
         self,
-        documents: Iterable[tuple[str, str, int]],
+        snapshot: AnalysisSnapshot,
         *,
-        progress: IndexingProgressCallback | None = None,
+        uri: str,
+        line: int,
+        character: int,
+    ) -> tuple[types.CompletionItem, ...]:
+        with self._toolkit_lock:
+            return completion_items(
+                snapshot.documents,
+                workspace_index=snapshot.workspace_index,
+                metadata_registry=snapshot.metadata_registry,
+                parser=self.parser,
+                extractor=self.extractor,
+                uri=uri,
+                line=line,
+                character=character,
+            )
+
+    def signature_help_at(
+        self,
+        snapshot: AnalysisSnapshot,
+        *,
+        uri: str,
+        line: int,
+        character: int,
+    ) -> types.SignatureHelp | None:
+        with self._toolkit_lock:
+            return signature_help(
+                snapshot.documents,
+                metadata_registry=snapshot.metadata_registry,
+                parser=self.parser,
+                extractor=self.extractor,
+                uri=uri,
+                line=line,
+                character=character,
+            )
+
+    def publish_document_diagnostics(
+        self,
+        uri: str,
+        diagnostics: tuple[Diagnostic, ...],
     ) -> None:
-        pending_documents = tuple(documents)
-        if not pending_documents:
-            return
-
-        for uri, _, _ in pending_documents:
-            self._open_document_uris.add(uri)
-            path = source_id_to_path(uri)
-            if path is None:
-                self._plugin_paths_by_uri[uri] = ()
-                self._library_paths_by_uri[uri] = ()
-                continue
-            self._plugin_paths_by_uri[uri] = configured_plugin_paths(path)
-            self._library_paths_by_uri[uri] = configured_library_paths(path)
-
-        self._report_progress(progress, 'Rebuilding workspace index', 10)
-        self._rebuild_documents(pending_documents, progress=progress)
+        self._publish_document_diagnostics(uri, diagnostics)
 
     def begin_indexing_feedback(self) -> tuple[IndexingProgressCallback | None, Callable[[], None]]:
         if self._indexing_notification_shown:
@@ -282,203 +369,77 @@ class LanguageServer(PyglsLanguageServer):
         self._plugin_paths_by_uri = {}
         self._library_paths_by_uri = {}
 
-    def _build_document(self, *, uri: str, text: str, version: int) -> ManagedDocument:
-        parse_result = self._parser.parse_document(path=uri, text=text)
-        facts = self._extractor.extract(parse_result)
-        return ManagedDocument(
-            uri=uri,
-            version=version,
-            text=text,
-            parse_result=parse_result,
-            facts=facts,
-            analysis=empty_analysis(uri, facts.document_symbols),
-        )
-
-    def _discover_package_roots(self, uri: str) -> None:
-        path = source_id_to_path(uri)
-        if path is None:
-            return
-
-        package_roots = (*candidate_package_roots(path), *self._library_paths_by_uri.get(uri, ()))
-        for package_root in package_roots:
-            resolved_root = package_root.resolve(strict=False)
-            if resolved_root in self._scanned_package_roots:
-                continue
-            self._scanned_package_roots.add(resolved_root)
-            scan_package_root(
-                resolved_root,
-                parser=self._parser,
-                extractor=self._extractor,
-                workspace_index=self._workspace_index,
+    def _document_build_snapshot(self) -> DocumentBuildSnapshot:
+        with self._state_lock:
+            return DocumentBuildSnapshot(
+                documents=self.documents,
+                open_document_uris=tuple(self._open_document_uris),
+                plugin_paths_by_uri=dict(self._plugin_paths_by_uri),
+                library_paths_by_uri=dict(self._library_paths_by_uri),
             )
 
-    def _ensure_background_documents_loaded(
+    def _load_documents(
         self,
+        documents: Iterable[tuple[str, str, int]],
         *,
         progress: IndexingProgressCallback | None = None,
-        start_percentage: int = 50,
-        end_percentage: int = 75,
-    ) -> None:
-        def load_document(uri: str) -> ManagedDocument | None:
-            path = source_id_to_path(uri)
-            if path is None:
-                return None
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> bool:
+        pending_documents = tuple(documents)
+        with self._state_lock:
+            for uri, _, _ in pending_documents:
+                self._open_document_uris.add(uri)
+                path = source_id_to_path(uri)
+                if path is None:
+                    self._plugin_paths_by_uri[uri] = ()
+                    self._library_paths_by_uri[uri] = ()
+                    continue
+                self._plugin_paths_by_uri[uri] = configured_plugin_paths(path)
+                self._library_paths_by_uri[uri] = configured_library_paths(path)
 
-            try:
-                text = read_source_file(path)
-            except OSError:
-                return None
+        if progress is not None:
+            progress('Rebuilding workspace index', 10)
 
-            return self._build_document(uri=uri, text=text, version=0)
-
-        loaded_documents = load_dependency_documents(
-            self.documents,
-            workspace_index=self._workspace_index,
-            describe_document=managed_document_details,
-            load_document=load_document,
-            metadata_registry=self._metadata_registry,
-            on_document_loaded=lambda document: self._discover_package_roots(document.uri),
+        rebuild_result = WorkspaceRebuilder(
+            progress=progress,
+            should_cancel=should_cancel,
+        ).rebuild(
+            self._document_build_snapshot(),
+            pending_documents,
         )
+        if rebuild_result is None:
+            return False
 
-        loaded_background_documents = 0
-        for _ in loaded_documents:
-            loaded_background_documents += 1
-            self._report_progress(
-                progress,
-                f'Loading workspace dependencies ({loaded_background_documents})',
-                min(end_percentage, start_percentage + loaded_background_documents),
-            )
+        with self._state_lock:
+            if should_cancel is not None and should_cancel():
+                return False
+            with self._toolkit_lock:
+                self._set_metadata_registry(rebuild_result.metadata_registry)
+            self.documents = rebuild_result.documents
+            self._workspace_index = rebuild_result.workspace_index
+            self._scanned_package_roots = rebuild_result.scanned_package_roots
+        return True
 
-    def _recompute_workspace_analyses(
+    def _publish_document_diagnostics(
         self,
-        *,
-        progress: IndexingProgressCallback | None = None,
-        start_percentage: int = 75,
-        end_percentage: int = 95,
+        uri: str,
+        diagnostics: tuple[Diagnostic, ...],
     ) -> None:
-        documents = list(self.documents.items())
-        total_documents = len(documents)
-        for index, (uri, document) in enumerate(documents, start=1):
-            analysis_workspace_index = self._analysis_workspace_index(uri)
-            source_path = source_id_to_path(uri)
-            additional_required_packages: frozenset[str]
-            if source_path is None:
-                additional_required_packages = frozenset()
-            else:
-                additional_required_packages = dependency_required_packages(
-                    source_path,
-                    document.facts,
-                    analysis_workspace_index,
-                    metadata_registry=self._metadata_registry,
-                )
-            analysis = self._resolver.analyze(
+        self.text_document_publish_diagnostics(
+            types.PublishDiagnosticsParams(
                 uri=uri,
-                facts=document.facts,
-                workspace_index=analysis_workspace_index,
-                additional_required_packages=additional_required_packages,
+                diagnostics=[
+                    types.Diagnostic(
+                        range=lsp_range(diagnostic.span),
+                        severity=_DIAGNOSTIC_SEVERITY_MAP[diagnostic.severity],
+                        code=diagnostic.code,
+                        source=diagnostic.source,
+                        message=diagnostic.message,
+                    )
+                    for diagnostic in diagnostics
+                ],
             )
-            self.documents[uri] = ManagedDocument(
-                uri=document.uri,
-                version=document.version,
-                text=document.text,
-                parse_result=document.parse_result,
-                facts=document.facts,
-                analysis=analysis,
-            )
-            self._report_progress(
-                progress,
-                f'Analyzing workspace ({index}/{total_documents})',
-                _progress_percentage(
-                    index=index,
-                    total=total_documents,
-                    start=start_percentage,
-                    end=end_percentage,
-                ),
-            )
-
-    def _analysis_workspace_index(self, root_uri: str) -> WorkspaceIndex:
-        workspace_index = WorkspaceIndex()
-        for pkg_index_uri, entries in self._workspace_index.package_indexes():
-            workspace_index.update_package_index(pkg_index_uri, entries)
-        for uri in reachable_document_uris(
-            root_uri,
-            documents_by_uri=self.documents,
-            workspace_index=self._workspace_index,
-            describe_document=managed_document_details,
-            metadata_registry=self._metadata_registry,
-        ):
-            document = self.documents.get(uri)
-            if document is None:
-                continue
-            workspace_index.update(uri, document.facts)
-        return workspace_index
-
-    def _rebuild_documents(
-        self,
-        pending_documents: Iterable[tuple[str, str, int]] = (),
-        *,
-        progress: IndexingProgressCallback | None = None,
-    ) -> None:
-        snapshots: dict[str, tuple[str, int]] = {}
-        for uri in self._open_document_uris:
-            document = self.documents.get(uri)
-            if document is None:
-                continue
-            snapshots[uri] = (document.text, document.version)
-        for uri, text, version in pending_documents:
-            snapshots[uri] = (text, version)
-
-        self._set_metadata_registry(create_metadata_registry(self._active_plugin_paths()))
-
-        self.documents = {}
-        self._workspace_index = WorkspaceIndex()
-        self._scanned_package_roots = set()
-
-        total_snapshots = len(snapshots)
-        for index, (uri, (text, version)) in enumerate(snapshots.items(), start=1):
-            document = self._build_document(uri=uri, text=text, version=version)
-            self.documents[uri] = document
-            self._workspace_index.update(uri, document.facts)
-            self._discover_package_roots(uri)
-            self._report_progress(
-                progress,
-                f'Indexing workspace files ({index}/{total_snapshots})',
-                _progress_percentage(
-                    index=index,
-                    total=total_snapshots,
-                    start=20,
-                    end=45,
-                ),
-            )
-
-        self._report_progress(progress, 'Loading workspace dependencies', 50)
-        self._ensure_background_documents_loaded(
-            progress=progress,
-            start_percentage=50,
-            end_percentage=75,
         )
-        self._recompute_workspace_analyses(
-            progress=progress,
-            start_percentage=75,
-            end_percentage=95,
-        )
-
-    def _report_progress(
-        self,
-        progress: IndexingProgressCallback | None,
-        message: str,
-        percentage: int,
-    ) -> None:
-        if progress is None:
-            return
-        progress(message, percentage)
-
-    def _active_plugin_paths(self) -> tuple[Path, ...]:
-        active_paths: dict[Path, None] = {}
-        for uri in self._open_document_uris:
-            for plugin_path in self._plugin_paths_by_uri.get(uri, ()):
-                active_paths.setdefault(plugin_path, None)
-        return tuple(active_paths)
 
     def _set_metadata_registry(self, metadata_registry: MetadataRegistry) -> None:
         if metadata_registry == self._metadata_registry:
@@ -547,48 +508,16 @@ def did_open(server: LanguageServer, params: types.DidOpenTextDocumentParams) ->
                 message=f'Indexing workspace for {uri}.',
             )
         )
-        server.text_document_publish_diagnostics(
-            types.PublishDiagnosticsParams(
-                uri=uri,
-                diagnostics=[
-                    types.Diagnostic(
-                        range=lsp_range(diagnostic.span),
-                        severity=_DIAGNOSTIC_SEVERITY_MAP[diagnostic.severity],
-                        code=diagnostic.code,
-                        source=diagnostic.source,
-                        message=diagnostic.message,
-                    )
-                    for diagnostic in diagnostics
-                ],
-            )
-        )
+        server.publish_document_diagnostics(uri, diagnostics)
     finally:
         finish_progress()
 
 
 @server.feature(types.TEXT_DOCUMENT_DID_CHANGE)
 def did_change(server: LanguageServer, params: types.DidChangeTextDocumentParams) -> None:
-    uri = params.text_document.uri
-    document = server.workspace.get_text_document(uri)
-    diagnostics = server.change_document(
-        uri=uri,
-        text=document.source,
+    server.schedule_document_change(
+        uri=params.text_document.uri,
         version=params.text_document.version,
-    )
-    server.text_document_publish_diagnostics(
-        types.PublishDiagnosticsParams(
-            uri=uri,
-            diagnostics=[
-                types.Diagnostic(
-                    range=lsp_range(diagnostic.span),
-                    severity=_DIAGNOSTIC_SEVERITY_MAP[diagnostic.severity],
-                    code=diagnostic.code,
-                    source=diagnostic.source,
-                    message=diagnostic.message,
-                )
-                for diagnostic in diagnostics
-            ],
-        )
     )
 
 
@@ -596,9 +525,7 @@ def did_change(server: LanguageServer, params: types.DidChangeTextDocumentParams
 def did_close(server: LanguageServer, params: types.DidCloseTextDocumentParams) -> None:
     uri = params.text_document.uri
     server.close_document(uri)
-    server.text_document_publish_diagnostics(
-        types.PublishDiagnosticsParams(uri=uri, diagnostics=[])
-    )
+    server.publish_document_diagnostics(uri, ())
 
 
 @server.feature(types.TEXT_DOCUMENT_DEFINITION)
@@ -606,10 +533,11 @@ def definition_request(
     server: LanguageServer,
     params: types.DefinitionParams,
 ) -> list[types.Location] | None:
+    snapshot = server.analysis_snapshot()
     locations = definition(
-        server.documents,
-        workspace_index=server.workspace_index,
-        metadata_registry=server.metadata_registry,
+        snapshot.documents,
+        workspace_index=snapshot.workspace_index,
+        metadata_registry=snapshot.metadata_registry,
         uri=params.text_document.uri,
         line=params.position.line,
         character=params.position.character,
@@ -622,9 +550,10 @@ def references_request(
     server: LanguageServer,
     params: types.ReferenceParams,
 ) -> list[types.Location]:
+    snapshot = server.analysis_snapshot()
     locations = references(
-        server.documents,
-        metadata_registry=server.metadata_registry,
+        snapshot.documents,
+        metadata_registry=snapshot.metadata_registry,
         uri=params.text_document.uri,
         line=params.position.line,
         character=params.position.character,
@@ -637,8 +566,9 @@ def references_request(
 def rename_request(
     server: LanguageServer, params: types.RenameParams
 ) -> types.WorkspaceEdit | None:
+    snapshot = server.analysis_snapshot()
     edits = rename(
-        server.documents,
+        snapshot.documents,
         uri=params.text_document.uri,
         line=params.position.line,
         character=params.position.character,
@@ -663,8 +593,9 @@ def rename_request(
 
 @server.feature(types.TEXT_DOCUMENT_HOVER)
 def hover_request(server: LanguageServer, params: types.HoverParams) -> types.Hover | None:
+    snapshot = server.analysis_snapshot()
     hover_info = hover(
-        server.documents,
+        snapshot.documents,
         uri=params.text_document.uri,
         line=params.position.line,
         character=params.position.character,
@@ -707,12 +638,9 @@ def completion_request(
     server: LanguageServer,
     params: types.CompletionParams,
 ) -> types.CompletionList:
-    items = completion_items(
-        server.documents,
-        workspace_index=server.workspace_index,
-        metadata_registry=server.metadata_registry,
-        parser=server.parser,
-        extractor=server.extractor,
+    snapshot = server.analysis_snapshot()
+    items = server.completion_items_at(
+        snapshot,
         uri=params.text_document.uri,
         line=params.position.line,
         character=params.position.character,
@@ -728,11 +656,9 @@ def signature_help_request(
     server: LanguageServer,
     params: types.SignatureHelpParams,
 ) -> types.SignatureHelp | None:
-    return signature_help(
-        server.documents,
-        metadata_registry=server.metadata_registry,
-        parser=server.parser,
-        extractor=server.extractor,
+    snapshot = server.analysis_snapshot()
+    return server.signature_help_at(
+        snapshot,
         uri=params.text_document.uri,
         line=params.position.line,
         character=params.position.character,
@@ -744,9 +670,10 @@ def document_highlight_request(
     server: LanguageServer,
     params: types.DocumentHighlightParams,
 ) -> list[types.DocumentHighlight]:
+    snapshot = server.analysis_snapshot()
     return list(
         document_highlights(
-            server.documents,
+            snapshot.documents,
             uri=params.text_document.uri,
             line=params.position.line,
             character=params.position.character,
@@ -759,7 +686,7 @@ def document_symbols(
     server: LanguageServer,
     params: types.DocumentSymbolParams,
 ) -> list[types.DocumentSymbol]:
-    document = server.documents.get(params.text_document.uri)
+    document = server.analysis_snapshot().documents.get(params.text_document.uri)
     if document is None:
         return []
     return list(document.analysis.document_symbols)
@@ -776,7 +703,7 @@ def semantic_tokens_full(
     server: LanguageServer,
     params: types.SemanticTokensParams,
 ) -> types.SemanticTokens | None:
-    document = server.documents.get(params.text_document.uri)
+    document = server.analysis_snapshot().documents.get(params.text_document.uri)
     if document is None:
         return None
     data = encode_document_semantic_tokens(
@@ -792,11 +719,4 @@ def workspace_symbol_request(
     server: LanguageServer,
     params: types.WorkspaceSymbolParams,
 ) -> list[types.WorkspaceSymbol]:
-    return list(workspace_symbols(server.documents, query=params.query))
-
-
-def _progress_percentage(*, index: int, total: int, start: int, end: int) -> int:
-    if total <= 0 or start >= end:
-        return end
-    completed = (index * (end - start)) // total
-    return min(end, start + completed)
+    return list(workspace_symbols(server.analysis_snapshot().documents, query=params.query))
