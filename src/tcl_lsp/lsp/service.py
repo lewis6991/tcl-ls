@@ -1,22 +1,31 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from collections.abc import Iterable
 from pathlib import Path
 
-from tcl_lsp.analysis import AnalysisResult, FactExtractor, Resolver, WorkspaceIndex
-from tcl_lsp.analysis.builtins import builtin_definition_targets
-from tcl_lsp.analysis.facts.parsing import is_simple_name
+from tcl_lsp.analysis import FactExtractor, Resolver, WorkspaceIndex
 from tcl_lsp.analysis.metadata_effects import dependency_required_packages
-from tcl_lsp.analysis.model import CommandImport, DefinitionTarget, DocumentFacts
-from tcl_lsp.common import Diagnostic, DocumentSymbol, HoverInfo, Location, Span
+from tcl_lsp.common import Diagnostic, DocumentSymbol, HoverInfo, Location
+from tcl_lsp.lsp.features.hover import hover as hover_at_position
+from tcl_lsp.lsp.features.navigation import (
+    definition as definition_at_position,
+    references as references_at_position,
+)
+from tcl_lsp.lsp.features.rename import rename as rename_at_position
 from tcl_lsp.lsp.semantic_tokens import encode_document_semantic_tokens
+from tcl_lsp.lsp.state import (
+    IndexingProgressCallback,
+    ManagedDocument,
+    RenameEdit,
+    empty_analysis,
+    managed_document_details,
+)
 from tcl_lsp.metadata_paths import (
     DEFAULT_METADATA_REGISTRY,
     MetadataRegistry,
     create_metadata_registry,
 )
-from tcl_lsp.parser import Parser, ParseResult
+from tcl_lsp.parser import Parser
 from tcl_lsp.project.config import configured_library_paths, configured_plugin_paths
 from tcl_lsp.project.indexing import (
     load_dependency_documents,
@@ -24,25 +33,6 @@ from tcl_lsp.project.indexing import (
     scan_package_root,
 )
 from tcl_lsp.project.paths import candidate_package_roots, read_source_file, source_id_to_path
-
-
-@dataclass(frozen=True, slots=True)
-class ManagedDocument:
-    uri: str
-    version: int
-    text: str
-    parse_result: ParseResult
-    facts: DocumentFacts
-    analysis: AnalysisResult
-
-
-@dataclass(frozen=True, slots=True)
-class RenameEdit:
-    span: Span
-    new_text: str
-
-
-type IndexingProgressCallback = Callable[[str, int], None]
 
 
 class LanguageService:
@@ -136,19 +126,14 @@ class LanguageService:
         return document.analysis.diagnostics
 
     def definition(self, uri: str, line: int, character: int) -> tuple[Location, ...]:
-        package_locations = self._package_definition_locations(uri, line, character)
-        if package_locations:
-            return package_locations
-
-        command_import_locations = self._command_import_definition_locations(uri, line, character)
-        if command_import_locations:
-            return command_import_locations
-
-        symbol_ids = self._symbol_ids_at_position(uri, line, character)
-        if not symbol_ids:
-            return ()
-        definitions = self._definitions_for_symbols(symbol_ids)
-        return tuple(definition.location for definition in definitions)
+        return definition_at_position(
+            self._documents,
+            workspace_index=self._workspace_index,
+            metadata_registry=self._metadata_registry,
+            uri=uri,
+            line=line,
+            character=character,
+        )
 
     def references(
         self,
@@ -157,27 +142,14 @@ class LanguageService:
         character: int,
         include_declaration: bool = True,
     ) -> tuple[Location, ...]:
-        symbol_ids = self._symbol_ids_at_position(uri, line, character)
-        if not symbol_ids:
-            return ()
-
-        locations: list[Location] = []
-        if include_declaration:
-            locations.extend(
-                definition.location for definition in self._definitions_for_symbols(symbol_ids)
-            )
-
-        for document in self._documents.values():
-            for resolved_reference in document.analysis.resolved_references:
-                if resolved_reference.symbol_id not in symbol_ids:
-                    continue
-                locations.append(
-                    Location(
-                        uri=resolved_reference.reference.uri, span=resolved_reference.reference.span
-                    )
-                )
-
-        return _deduplicate_locations(locations)
+        return references_at_position(
+            self._documents,
+            metadata_registry=self._metadata_registry,
+            uri=uri,
+            line=line,
+            character=character,
+            include_declaration=include_declaration,
+        )
 
     def rename(
         self,
@@ -186,98 +158,21 @@ class LanguageService:
         character: int,
         new_name: str,
     ) -> dict[str, tuple[RenameEdit, ...]] | None:
-        if not _is_valid_rename_name(new_name):
-            return None
-
-        symbol_id = self._rename_symbol_id_at_position(uri, line, character)
-        if symbol_id is None:
-            return None
-
-        target_kind = self._symbol_kind(symbol_id)
-        if target_kind is None:
-            return None
-
-        edits_by_uri: dict[str, dict[tuple[int, int], RenameEdit]] = {}
-        for document in self._documents.values():
-            if target_kind == 'function':
-                for procedure in document.facts.procedures:
-                    if procedure.symbol_id != symbol_id:
-                        continue
-                    _add_rename_edit(
-                        edits_by_uri,
-                        uri=document.uri,
-                        span=procedure.name_span,
-                        new_text=_rename_command_text(
-                            document.text[
-                                procedure.name_span.start.offset : procedure.name_span.end.offset
-                            ],
-                            new_name,
-                        ),
-                    )
-            else:
-                for binding in document.facts.variable_bindings:
-                    if binding.symbol_id != symbol_id:
-                        continue
-                    _add_rename_edit(
-                        edits_by_uri,
-                        uri=document.uri,
-                        span=binding.span,
-                        new_text=_rename_variable_text(
-                            document.text[binding.span.start.offset : binding.span.end.offset],
-                            new_name,
-                        ),
-                    )
-
-            for resolved_reference in document.analysis.resolved_references:
-                if resolved_reference.symbol_id != symbol_id:
-                    continue
-                if target_kind == 'function' and resolved_reference.reference.kind != 'command':
-                    continue
-                if target_kind == 'variable' and resolved_reference.reference.kind != 'variable':
-                    continue
-                reference_span = resolved_reference.reference.span
-                reference_text = document.text[
-                    reference_span.start.offset : reference_span.end.offset
-                ]
-                replacement = (
-                    _rename_command_text(reference_text, new_name)
-                    if target_kind == 'function'
-                    else _rename_variable_text(reference_text, new_name)
-                )
-                _add_rename_edit(
-                    edits_by_uri,
-                    uri=document.uri,
-                    span=reference_span,
-                    new_text=replacement,
-                )
-
-        if not edits_by_uri:
-            return None
-
-        return {
-            uri: tuple(
-                edit
-                for _, edit in sorted(
-                    edits.items(),
-                    key=lambda item: (item[1].span.start.offset, item[1].span.end.offset),
-                )
-            )
-            for uri, edits in sorted(edits_by_uri.items())
-        }
+        return rename_at_position(
+            self._documents,
+            uri=uri,
+            line=line,
+            character=character,
+            new_name=new_name,
+        )
 
     def hover(self, uri: str, line: int, character: int) -> HoverInfo | None:
-        document = self._documents.get(uri)
-        if document is None:
-            return None
-
-        matches = [
-            hover
-            for hover in document.analysis.hovers
-            if hover.span.contains(line=line, character=character)
-        ]
-        if not matches:
-            return None
-        return min(matches, key=lambda hover: hover.span.end.offset - hover.span.start.offset)
+        return hover_at_position(
+            self._documents,
+            uri=uri,
+            line=line,
+            character=character,
+        )
 
     def document_symbols(self, uri: str) -> tuple[DocumentSymbol, ...]:
         document = self._documents.get(uri)
@@ -329,7 +224,7 @@ class LanguageService:
             text=text,
             parse_result=parse_result,
             facts=facts,
-            analysis=_empty_analysis(uri, facts.document_symbols),
+            analysis=empty_analysis(uri, facts.document_symbols),
         )
 
     def _store_document(self, document: ManagedDocument) -> None:
@@ -370,7 +265,7 @@ class LanguageService:
         loaded_documents = load_dependency_documents(
             self._documents,
             workspace_index=self._workspace_index,
-            describe_document=_managed_document_details,
+            describe_document=managed_document_details,
             load_document=load_document,
             metadata_registry=self._metadata_registry,
             on_document_loaded=lambda document: self._discover_package_roots(document.uri),
@@ -460,7 +355,7 @@ class LanguageService:
             root_uri,
             documents_by_uri=self._documents,
             workspace_index=self._workspace_index,
-            describe_document=_managed_document_details,
+            describe_document=managed_document_details,
             metadata_registry=self._metadata_registry,
         )
 
@@ -547,135 +442,6 @@ class LanguageService:
             return
         progress(message, percentage)
 
-    def _symbol_ids_at_position(self, uri: str, line: int, character: int) -> tuple[str, ...]:
-        document = self._documents.get(uri)
-        if document is None:
-            return ()
-
-        direct_matches = [
-            definition.symbol_id
-            for definition in document.analysis.definitions
-            if definition.location.uri == uri
-            and definition.location.span.contains(line=line, character=character)
-        ]
-        if direct_matches:
-            return tuple(dict.fromkeys(direct_matches))
-
-        resolved_matches: list[str] = []
-        for resolution in document.analysis.resolutions:
-            if resolution.reference.span.contains(line=line, character=character):
-                resolved_matches.extend(resolution.target_symbol_ids)
-        return tuple(dict.fromkeys(resolved_matches))
-
-    def _package_definition_locations(
-        self,
-        uri: str,
-        line: int,
-        character: int,
-    ) -> tuple[Location, ...]:
-        document = self._documents.get(uri)
-        if document is None:
-            return ()
-
-        for package_require in document.facts.package_requires:
-            if not package_require.span.contains(line=line, character=character):
-                continue
-            provided_locations = [
-                Location(uri=package.uri, span=package.span)
-                for package in self._workspace_index.provided_packages_for_name(
-                    package_require.name
-                )
-            ]
-            if provided_locations:
-                return _deduplicate_locations(provided_locations)
-
-            index_locations = [
-                Location(uri=entry.uri, span=entry.span)
-                for entry in self._workspace_index.package_index_entries_for_name(
-                    package_require.name
-                )
-            ]
-            return _deduplicate_locations(index_locations)
-
-        return ()
-
-    def _command_import_definition_locations(
-        self,
-        uri: str,
-        line: int,
-        character: int,
-    ) -> tuple[Location, ...]:
-        document = self._documents.get(uri)
-        if document is None:
-            return ()
-
-        for command_import in document.facts.command_imports:
-            if not command_import.span.contains(line=line, character=character):
-                continue
-            return tuple(
-                definition.location
-                for definition in self._definitions_for_command_import(command_import)
-            )
-
-        return ()
-
-    def _rename_symbol_id_at_position(self, uri: str, line: int, character: int) -> str | None:
-        symbol_ids = self._symbol_ids_at_position(uri, line, character)
-        if len(symbol_ids) != 1:
-            return None
-
-        symbol_id = symbol_ids[0]
-        if symbol_id.startswith('builtin::'):
-            return None
-        return symbol_id
-
-    def _symbol_kind(self, symbol_id: str) -> str | None:
-        for document in self._documents.values():
-            for procedure in document.facts.procedures:
-                if procedure.symbol_id == symbol_id:
-                    return 'function'
-            for binding in document.facts.variable_bindings:
-                if binding.symbol_id == symbol_id:
-                    return 'variable'
-        return None
-
-    def _definitions_for_command_import(
-        self,
-        command_import: CommandImport,
-    ) -> tuple[DefinitionTarget, ...]:
-        definitions: list[DefinitionTarget] = []
-        seen: set[str] = set()
-        target_name = _qualified_command_name(command_import.target_name)
-
-        def add_definition(definition: DefinitionTarget) -> None:
-            if definition.kind != 'function':
-                return
-            if definition.symbol_id in seen:
-                return
-            seen.add(definition.symbol_id)
-            definitions.append(definition)
-
-        for document in self._documents.values():
-            for definition in document.analysis.definitions:
-                qualified_name = _qualified_command_name(definition.name)
-                if command_import.kind == 'exact':
-                    if qualified_name != target_name:
-                        continue
-                elif not _is_direct_namespace_member(qualified_name, target_name):
-                    continue
-                add_definition(definition)
-
-        for definition in builtin_definition_targets(metadata_registry=self._metadata_registry):
-            qualified_name = _qualified_command_name(definition.name)
-            if command_import.kind == 'exact':
-                if qualified_name != target_name:
-                    continue
-            elif not _is_direct_namespace_member(qualified_name, target_name):
-                continue
-            add_definition(definition)
-
-        return tuple(definitions)
-
     def _set_metadata_registry(self, metadata_registry: MetadataRegistry) -> None:
         if metadata_registry == self._metadata_registry:
             return
@@ -684,120 +450,6 @@ class LanguageService:
         self._metadata_registry = metadata_registry
         self._extractor = FactExtractor(self._parser, metadata_registry=metadata_registry)
         self._resolver = Resolver(metadata_registry=metadata_registry)
-
-    def _definitions_for_symbols(self, symbol_ids: tuple[str, ...]) -> tuple[DefinitionTarget, ...]:
-        definitions: list[DefinitionTarget] = []
-        seen: set[str] = set()
-        for document in self._documents.values():
-            for definition in document.analysis.definitions:
-                if definition.symbol_id not in symbol_ids or definition.symbol_id in seen:
-                    continue
-                seen.add(definition.symbol_id)
-                definitions.append(definition)
-        for definition in builtin_definition_targets(metadata_registry=self._metadata_registry):
-            if definition.symbol_id not in symbol_ids or definition.symbol_id in seen:
-                continue
-            seen.add(definition.symbol_id)
-            definitions.append(definition)
-        return tuple(definitions)
-
-
-def _managed_document_details(document: ManagedDocument) -> tuple[str, Path | None, DocumentFacts]:
-    return (document.uri, source_id_to_path(document.uri), document.facts)
-
-
-def _deduplicate_locations(locations: list[Location]) -> tuple[Location, ...]:
-    deduplicated: dict[tuple[str, int, int], Location] = {}
-    for location in locations:
-        key = (location.uri, location.span.start.offset, location.span.end.offset)
-        deduplicated.setdefault(key, location)
-    return tuple(deduplicated.values())
-
-
-def _empty_analysis(uri: str, document_symbols: tuple[DocumentSymbol, ...]) -> AnalysisResult:
-    return AnalysisResult(
-        uri=uri,
-        diagnostics=(),
-        definitions=(),
-        resolutions=(),
-        resolved_references=(),
-        document_symbols=document_symbols,
-        hovers=(),
-    )
-
-
-def _add_rename_edit(
-    edits_by_uri: dict[str, dict[tuple[int, int], RenameEdit]],
-    *,
-    uri: str,
-    span: Span,
-    new_text: str,
-) -> None:
-    edits_for_uri = edits_by_uri.setdefault(uri, {})
-    edits_for_uri.setdefault(
-        (span.start.offset, span.end.offset),
-        RenameEdit(span=span, new_text=new_text),
-    )
-
-
-def _is_valid_rename_name(new_name: str) -> bool:
-    return bool(new_name) and ':' not in new_name and is_simple_name(new_name)
-
-
-def _rename_command_text(text: str, new_name: str) -> str:
-    if text.startswith('{') and text.endswith('}'):
-        return '{' + _rename_command_name_body(text[1:-1], new_name) + '}'
-    if text.startswith('"') and text.endswith('"'):
-        return '"' + _rename_command_name_body(text[1:-1], new_name) + '"'
-    return _rename_command_name_body(text, new_name)
-
-
-def _rename_command_name_body(text: str, new_name: str) -> str:
-    prefix, separator, _ = text.rpartition('::')
-    if separator:
-        return f'{prefix}{separator}{new_name}'
-    return new_name
-
-
-def _rename_variable_text(text: str, new_name: str) -> str:
-    if text.startswith('${') and text.endswith('}'):
-        return '${' + _rename_variable_name_body(text[2:-1], new_name) + '}'
-    if text.startswith('$'):
-        return '$' + _rename_variable_name_body(text[1:], new_name)
-    if text.startswith('{') and text.endswith('}'):
-        return '{' + _rename_variable_name_body(text[1:-1], new_name) + '}'
-    if text.startswith('"') and text.endswith('"'):
-        return '"' + _rename_variable_name_body(text[1:-1], new_name) + '"'
-    return _rename_variable_name_body(text, new_name)
-
-
-def _rename_variable_name_body(text: str, new_name: str) -> str:
-    suffix = ''
-    open_paren = text.find('(')
-    if open_paren > 0 and text.endswith(')'):
-        suffix = text[open_paren:]
-        text = text[:open_paren]
-
-    prefix, separator, _ = text.rpartition('::')
-    if separator:
-        return f'{prefix}{separator}{new_name}{suffix}'
-    return new_name + suffix
-
-
-def _qualified_command_name(name: str) -> str:
-    if name.startswith('::'):
-        return name
-    return f'::{name}'
-
-
-def _is_direct_namespace_member(qualified_name: str, namespace: str) -> bool:
-    if namespace == '::':
-        return qualified_name.startswith('::') and '::' not in qualified_name[2:]
-
-    prefix = namespace + '::'
-    if not qualified_name.startswith(prefix):
-        return False
-    return '::' not in qualified_name[len(prefix) :]
 
 
 def _progress_percentage(*, index: int, total: int, start: int, end: int) -> int:

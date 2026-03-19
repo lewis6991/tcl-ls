@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from tcl_lsp.analysis.metadata_commands import MetadataPlugin
-from tcl_lsp.analysis.tcl_plugins import PluginProcedureEffect, TclPluginHost
+from tcl_lsp.plugins.host import PluginProcedureEffect, TclPluginHost
 
 
 def test_tcl_plugin_host_returns_procedure_effect(tmp_path: Path) -> None:

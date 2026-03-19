@@ -85,7 +85,6 @@ from tcl_lsp.analysis.model import (
     VarBinding,
     VariableReference,
 )
-from tcl_lsp.analysis.tcl_plugins import PluginProcedureEffect, TclPluginHost
 from tcl_lsp.common import Diagnostic, DocumentSymbol, Position, Span
 from tcl_lsp.metadata_paths import DEFAULT_METADATA_REGISTRY, MetadataRegistry
 from tcl_lsp.parser import Parser, word_static_text
@@ -99,6 +98,7 @@ from tcl_lsp.parser.model import (
     VariableSubstitution,
     Word,
 )
+from tcl_lsp.plugins.host import PluginProcedureEffect, TclPluginHost
 
 
 @dataclass(frozen=True, slots=True)

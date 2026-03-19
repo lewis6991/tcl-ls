@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from tcl_lsp.check import check_project, format_report, main
+from tcl_lsp.checker import check_project, format_report, main
 
 
 def _write_sample_plugin_bundle(metadata_root: Path) -> Path:
