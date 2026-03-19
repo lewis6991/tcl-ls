@@ -9,8 +9,8 @@ from tcl_lsp.analysis.metadata_commands import (
     MetadataContext,
     MetadataPlugin,
     MetadataProcedure,
-    MetadataSelector,
     MetadataScriptBody,
+    MetadataSelector,
     load_metadata_commands,
     select_argument_indices,
 )

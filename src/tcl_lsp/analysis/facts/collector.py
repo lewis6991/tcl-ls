@@ -15,18 +15,6 @@ from tcl_lsp.analysis.embedded_languages import (
     match_embedded_language_command,
     match_embedded_language_entry,
 )
-from tcl_lsp.analysis.flow import (
-    VariableFlowState,
-    condition_branch_flow_states,
-    dynamic_variable_target_names,
-    exact_word_values,
-    normalize_variable_name,
-    script_body_flow_state,
-    switch_branch_flow_state,
-    state_with_set_command,
-    state_with_unset_command,
-    unset_target_words,
-)
 from tcl_lsp.analysis.facts.lowering import (
     LoweredCatchCommand,
     LoweredCommand,
@@ -59,6 +47,18 @@ from tcl_lsp.analysis.facts.utils import (
     qualify_name,
     qualify_namespace,
     variable_symbol_id,
+)
+from tcl_lsp.analysis.flow import (
+    VariableFlowState,
+    condition_branch_flow_states,
+    dynamic_variable_target_names,
+    exact_word_values,
+    normalize_variable_name,
+    script_body_flow_state,
+    state_with_set_command,
+    state_with_unset_command,
+    switch_branch_flow_state,
+    unset_target_words,
 )
 from tcl_lsp.analysis.metadata_commands import (
     MetadataBind,

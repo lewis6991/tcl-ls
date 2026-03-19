@@ -1,18 +1,17 @@
 from __future__ import annotations
 
-from tcl_lsp.parser import Parser
-from tcl_lsp.parser.model import Command
-
 from tcl_lsp.analysis.flow import (
     VariableFlowState,
     condition_branch_flow_states,
     dynamic_variable_target_names,
     exact_word_values,
     script_body_flow_state,
-    switch_branch_flow_state,
     state_with_set_command,
     state_with_unset_command,
+    switch_branch_flow_state,
 )
+from tcl_lsp.parser import Parser
+from tcl_lsp.parser.model import Command
 
 
 def _single_command(parser: Parser, text: str) -> Command:

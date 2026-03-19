@@ -9,11 +9,6 @@ from tcl_lsp.analysis.builtins import (
     builtin_commands_for_packages,
     canonical_builtin_package_name,
 )
-from tcl_lsp.analysis.embedded_languages import (
-    contextual_resolution_reason,
-    resolves_contextual_command,
-)
-from tcl_lsp.analysis.metadata_effects import metadata_dependency_overlay
 from tcl_lsp.analysis.diagnostics import (
     DiagnosticContext,
     ResolvedCommand,
@@ -22,6 +17,10 @@ from tcl_lsp.analysis.diagnostics import (
     collect_diagnostics,
 )
 from tcl_lsp.analysis.diagnostics.helpers import command_call_key
+from tcl_lsp.analysis.embedded_languages import (
+    contextual_resolution_reason,
+    resolves_contextual_command,
+)
 from tcl_lsp.analysis.facts.parsing import is_simple_name, split_tcl_list
 from tcl_lsp.analysis.facts.utils import name_tail, variable_symbol_id
 from tcl_lsp.analysis.index import WorkspaceIndex
@@ -31,10 +30,11 @@ from tcl_lsp.analysis.metadata_commands import (
     all_metadata_commands,
     select_argument_indices,
 )
+from tcl_lsp.analysis.metadata_effects import metadata_dependency_overlay
 from tcl_lsp.analysis.model import (
+    BINDING_KINDS,
     AnalysisResult,
     AnalysisUncertainty,
-    BINDING_KINDS,
     BindingKind,
     CommandCall,
     CommandImport,

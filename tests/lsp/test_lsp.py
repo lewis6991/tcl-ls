@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Callable
 from io import BytesIO
 from pathlib import Path
-from typing import Callable, cast
+from typing import cast
 
 import pytest
 

@@ -113,11 +113,11 @@ class TclPluginHost:
                 raise RuntimeError(
                     f'Tcl plugin `{plugin.proc_name}` timed out after {_PLUGIN_TIMEOUT_SECONDS:g}s.'
                 ) from error
-            except _PluginHostExitedError:
+            except _PluginHostExitedError as error:
                 self._stop_process_locked()
                 if attempt == 0:
                     continue
-                raise RuntimeError(self._host_failure_message())
+                raise RuntimeError(self._host_failure_message()) from error
             except OSError as error:
                 self._stop_process_locked()
                 if attempt == 0:

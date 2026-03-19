@@ -8,17 +8,17 @@ import sys
 import textwrap
 import urllib.error
 import urllib.request
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Sequence
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SRC_ROOT = _REPO_ROOT / 'src'
 if str(_SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(_SRC_ROOT))
 
-from tcl_lsp.parser import Parser, word_static_text
-from tcl_lsp.parser.model import BracedWord, Command, Word
+from tcl_lsp.parser import Parser, word_static_text  # noqa: E402
+from tcl_lsp.parser.model import BracedWord, Command, Word  # noqa: E402
 
 _DEFAULT_METADATA_PATH = _REPO_ROOT / 'meta' / 'tcl8.6' / 'tcl.meta.tcl'
 _DEFAULT_DOC_ROOT_TEMPLATE = 'https://www.tcl-lang.org/man/tcl{series}/TclCmd'
@@ -51,7 +51,7 @@ class GeneratedEntry:
 class GeneratedNode:
     segment: str
     entries: list[GeneratedEntry]
-    children: dict[str, 'GeneratedNode']
+    children: dict[str, GeneratedNode]
 
 
 _MANUAL_ENTRIES: dict[str, tuple[GeneratedEntry, ...]] = {
@@ -665,8 +665,8 @@ def _normalize_unicode(text: str) -> str:
         text.replace('\xa0', ' ')
         .replace('“', '"')
         .replace('”', '"')
-        .replace('’', "'")
-        .replace('‘', "'")
+        .replace('\u2019', "'")
+        .replace('\u2018', "'")
     )
 
 

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import BinaryIO, Callable, cast
+from collections.abc import Callable
+from typing import BinaryIO, cast
 
 from pydantic import BaseModel, ValidationError
 
@@ -29,9 +30,9 @@ from tcl_lsp.lsp.model import (
     OutgoingMessage,
     ProgressParams,
     PublishDiagnosticsParams,
-    RequestMessage,
-    RenameParams,
     ReferenceParams,
+    RenameParams,
+    RequestMessage,
     SemanticTokens,
     SemanticTokensLegend,
     SemanticTokensOptions,
@@ -39,8 +40,8 @@ from tcl_lsp.lsp.model import (
     ShowMessageParams,
     SuccessResponseMessage,
     TextDocumentIdentifierParams,
-    TextEdit,
     TextDocumentPositionParams,
+    TextEdit,
     WorkDoneProgressBeginValue,
     WorkDoneProgressCreateParams,
     WorkDoneProgressEndValue,

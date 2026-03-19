@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import TypeVar
 
 from tcl_lsp.analysis.facts import FactExtractor
 from tcl_lsp.analysis.index import WorkspaceIndex
@@ -13,8 +12,6 @@ from tcl_lsp.project.paths import candidate_package_roots, read_source_file
 
 type PackageIndexCatalog = tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...]
 type DocumentDescription = tuple[str, Path | None, DocumentFacts]
-
-DocumentT = TypeVar('DocumentT')
 
 
 def build_package_index_catalog(
@@ -95,7 +92,7 @@ def dependency_source_uris_for_facts(
     return tuple(uris)
 
 
-def load_dependency_documents(
+def load_dependency_documents[DocumentT](
     documents_by_uri: dict[str, DocumentT],
     *,
     workspace_index: WorkspaceIndex,
@@ -140,7 +137,7 @@ def load_dependency_documents(
             return tuple(loaded_documents)
 
 
-def reachable_document_uris(
+def reachable_document_uris[DocumentT](
     root_uri: str,
     *,
     documents_by_uri: dict[str, DocumentT],
