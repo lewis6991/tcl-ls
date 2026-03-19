@@ -433,6 +433,35 @@ def test_language_service_resolves_transitive_required_packages(tmp_path: Path) 
     assert 'Imported via: helper -> json (transitive)' in hover.contents
 
 
+def test_language_service_hover_omits_tcl_transitive_import_notes(
+    service: LanguageService,
+    tmp_path: Path,
+) -> None:
+    modules_root = tmp_path / 'workspace' / 'modules'
+    helper_dir = modules_root / 'helper'
+    app_dir = modules_root / 'app'
+    helper_dir.mkdir(parents=True)
+    app_dir.mkdir()
+
+    (helper_dir / 'pkgIndex.tcl').write_text(
+        'package ifneeded helper 1.0 [list source [file join $dir helper.tcl]]\n',
+        encoding='utf-8',
+    )
+    (helper_dir / 'helper.tcl').write_text(
+        'package require Tcl\npackage provide helper 1.0\n',
+        encoding='utf-8',
+    )
+
+    main_uri = (app_dir / 'main.tcl').as_uri()
+    diagnostics = service.open_document(main_uri, 'package require helper\nclock seconds\n', 1)
+
+    assert diagnostics == ()
+    hover = service.hover(main_uri, 1, 1)
+    assert hover is not None
+    assert hover.contents.startswith('builtin command clock ')
+    assert 'Imported via:' not in hover.contents
+
+
 def test_language_service_uses_helper_metadata_for_embedded_dependencies(
     tmp_path: Path,
 ) -> None:

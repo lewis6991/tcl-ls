@@ -1024,6 +1024,8 @@ def _builtin_transitive_trace(
     transitive_required_packages: frozenset[str],
     hover_trace_parents: dict[tuple[str, str], tuple[str, str]],
 ) -> tuple[str, ...] | None:
+    if builtin.package == 'Tcl':
+        return None
     for package_name in sorted(transitive_required_packages):
         if canonical_builtin_package_name(package_name) == builtin.package:
             return _trace_labels(('package', package_name), hover_trace_parents)
