@@ -23,7 +23,7 @@ def symbol_ids_at_position(
         definition.symbol_id
         for definition in document.analysis.definitions
         if definition.location.uri == uri
-        and definition.location.span.contains(line=line, character=character)
+        and definition.span.contains(line=line, character=character)
     ]
     if direct_matches:
         return tuple(dict.fromkeys(direct_matches))

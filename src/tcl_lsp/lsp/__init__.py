@@ -1,4 +1,3 @@
-from tcl_lsp.lsp.server import LanguageServer
-from tcl_lsp.lsp.service import LanguageService
+from tcl_lsp.lsp.server import LanguageServer, server
 
-__all__ = ['LanguageServer', 'LanguageService']
+__all__ = ['LanguageServer', 'server']

@@ -5,14 +5,31 @@ import threading
 from collections.abc import Callable
 from io import BytesIO
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
+from tests.lsp_service import LanguageService
+from tests.lsp_support import process_message
 
 from tcl_lsp.analysis.builtins import builtin_command
-from tcl_lsp.lsp import LanguageServer, LanguageService
+from tcl_lsp.lsp import LanguageServer
+from tcl_lsp.lsp import server as lsp_server
 
 _MAIN_URI = 'file:///main.tcl'
+
+
+class _NonClosingBytesIO(BytesIO):
+    def close(self) -> None:
+        self.flush()
+
+
+def _fresh_server() -> LanguageServer:
+    lsp_server.reset()
+    return lsp_server
+
+
+def _override_open_document(server: LanguageServer, open_document: object) -> None:
+    cast(Any, server).open_document = open_document
 
 
 def _open_server_document(
@@ -22,7 +39,8 @@ def _open_server_document(
     uri: str = _MAIN_URI,
     version: int = 1,
 ) -> None:
-    server.process_message(
+    process_message(
+        server,
         {
             'jsonrpc': '2.0',
             'method': 'textDocument/didOpen',
@@ -34,7 +52,7 @@ def _open_server_document(
                     'text': text,
                 }
             },
-        }
+        },
     )
 
 
@@ -77,7 +95,8 @@ def _server_position_request(
     uri: str = _MAIN_URI,
     request_id: int = 1,
 ) -> dict[str, object]:
-    messages = server.process_message(
+    messages = process_message(
+        server,
         {
             'jsonrpc': '2.0',
             'id': request_id,
@@ -86,7 +105,7 @@ def _server_position_request(
                 'textDocument': {'uri': uri},
                 'position': {'line': line, 'character': character},
             },
-        }
+        },
     )
     response = next(message for message in messages if message.get('id') == request_id)
     return _as_dict(response)
@@ -99,7 +118,8 @@ def _server_document_request(
     uri: str = _MAIN_URI,
     request_id: int = 1,
 ) -> dict[str, object]:
-    messages = server.process_message(
+    messages = process_message(
+        server,
         {
             'jsonrpc': '2.0',
             'id': request_id,
@@ -107,25 +127,18 @@ def _server_document_request(
             'params': {
                 'textDocument': {'uri': uri},
             },
-        }
+        },
     )
     response = next(message for message in messages if message.get('id') == request_id)
     return _as_dict(response)
 
 
 def _semantic_tokens_legend(server: LanguageServer) -> tuple[list[str], list[str]]:
-    initialize_messages = server.process_message(
-        {'jsonrpc': '2.0', 'id': 999, 'method': 'initialize', 'params': {}}
-    )
-    initialize_response = next(
-        message for message in initialize_messages if message.get('id') == 999
-    )
-    result = _as_dict(_as_dict(initialize_response)['result'])
-    capabilities = _as_dict(result['capabilities'])
-    semantic_tokens = _as_dict(capabilities['semanticTokensProvider'])
-    legend = _as_dict(semantic_tokens['legend'])
-    token_types = cast(list[str], legend['tokenTypes'])
-    token_modifiers = cast(list[str], legend['tokenModifiers'])
+    semantic_tokens_provider = server.server_capabilities.semantic_tokens_provider
+    assert semantic_tokens_provider is not None
+    legend = semantic_tokens_provider.legend
+    token_types = cast(list[str], legend.token_types)
+    token_modifiers = cast(list[str], legend.token_modifiers)
     return token_types, token_modifiers
 
 
@@ -256,7 +269,7 @@ def test_language_service_does_not_resolve_unrelated_open_documents(
     assert service.hover('file:///use.tcl', 0, 1) is None
 
     references = service.references('file:///defs.tcl', 0, 5)
-    assert {(location.uri, location.span.start.line) for location in references} == {
+    assert {(location.uri, location.range.start.line) for location in references} == {
         ('file:///defs.tcl', 0),
     }
 
@@ -565,8 +578,8 @@ def test_language_service_definition_resolves_global_variable_links(
     definition_locations = service.definition(_MAIN_URI, 4, 11)
     assert len(definition_locations) == 1
     assert definition_locations[0].uri == _MAIN_URI
-    assert definition_locations[0].span.start.line == 0
-    assert definition_locations[0].span.start.character == 4
+    assert definition_locations[0].range.start.line == 0
+    assert definition_locations[0].range.start.character == 4
 
     hover = service.hover(_MAIN_URI, 4, 11)
     assert hover is not None
@@ -591,8 +604,8 @@ def test_language_service_definition_resolves_namespace_variable_links(
     definition_locations = service.definition(_MAIN_URI, 4, 16)
     assert len(definition_locations) == 1
     assert definition_locations[0].uri == _MAIN_URI
-    assert definition_locations[0].span.start.line == 1
-    assert definition_locations[0].span.start.character == 13
+    assert definition_locations[0].range.start.line == 1
+    assert definition_locations[0].range.start.character == 13
 
     hover = service.hover(_MAIN_URI, 4, 16)
     assert hover is not None
@@ -617,8 +630,8 @@ def test_language_service_definition_resolves_variable_alias_sites(
     alias_definition_locations = service.definition(_MAIN_URI, 4, 18)
     assert len(alias_definition_locations) == 1
     assert alias_definition_locations[0].uri == _MAIN_URI
-    assert alias_definition_locations[0].span.start.line == 1
-    assert alias_definition_locations[0].span.start.character == 13
+    assert alias_definition_locations[0].range.start.line == 1
+    assert alias_definition_locations[0].range.start.character == 13
 
     alias_hover = service.hover(_MAIN_URI, 4, 18)
     assert alias_hover is not None
@@ -627,8 +640,8 @@ def test_language_service_definition_resolves_variable_alias_sites(
     namespace_write_definition_locations = service.definition(_MAIN_URI, 2, 38)
     assert len(namespace_write_definition_locations) == 1
     assert namespace_write_definition_locations[0].uri == _MAIN_URI
-    assert namespace_write_definition_locations[0].span.start.line == 1
-    assert namespace_write_definition_locations[0].span.start.character == 13
+    assert namespace_write_definition_locations[0].range.start.line == 1
+    assert namespace_write_definition_locations[0].range.start.character == 13
 
 
 def test_language_service_definition_resolves_dynamic_set_targets_from_foreach_domains(
@@ -649,8 +662,8 @@ def test_language_service_definition_resolves_dynamic_set_targets_from_foreach_d
     definition_locations = service.definition(_MAIN_URI, 4, target_character)
     assert len(definition_locations) == 1
     assert definition_locations[0].uri == _MAIN_URI
-    assert definition_locations[0].span.start.line == 2
-    assert definition_locations[0].span.start.character == source_text.splitlines()[2].index('$v')
+    assert definition_locations[0].range.start.line == 2
+    assert definition_locations[0].range.start.character == source_text.splitlines()[2].index('$v')
 
     hover = service.hover(_MAIN_URI, 4, target_character)
     assert hover is not None
@@ -681,8 +694,8 @@ def test_language_service_definition_resolves_dynamic_set_targets_from_variable_
     definition_locations = service.definition(_MAIN_URI, 6, target_character)
     assert len(definition_locations) == 1
     assert definition_locations[0].uri == _MAIN_URI
-    assert definition_locations[0].span.start.line == 4
-    assert definition_locations[0].span.start.character == source_text.splitlines()[4].index('$v')
+    assert definition_locations[0].range.start.line == 4
+    assert definition_locations[0].range.start.character == source_text.splitlines()[4].index('$v')
 
     hover = service.hover(_MAIN_URI, 6, target_character)
     assert hover is not None
@@ -731,8 +744,8 @@ def test_language_service_preserves_switch_branch_list_body_positions_after_cont
     definition_locations = service.definition(_MAIN_URI, puts_line, target_character)
     assert len(definition_locations) == 1
     assert definition_locations[0].uri == _MAIN_URI
-    assert definition_locations[0].span.start.line == set_line
-    assert definition_locations[0].span.start.character == (
+    assert definition_locations[0].range.start.line == set_line
+    assert definition_locations[0].range.start.character == (
         source_text.splitlines()[set_line].index('mapped_mode')
     )
 
@@ -929,9 +942,13 @@ def test_language_server_hover_uses_markdown_code_fences_for_signatures(
     assert hover_value == '```tcl\nproc ::greet(name)\n```\n\nGreets a user by name.'
 
 
-def test_language_server_initialize_advertises_semantic_tokens(server: LanguageServer) -> None:
+def test_language_server_initialize_advertises_semantic_tokens() -> None:
+    server = _fresh_server()
     response = _as_dict(
-        server.process_message({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {}})[0]
+        process_message(
+            server,
+            {'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {'capabilities': {}}},
+        )[0]
     )
 
     capabilities = _as_dict(_as_dict(response['result'])['capabilities'])
@@ -1401,8 +1418,8 @@ def test_language_service_definition_resolves_required_package_to_provider(
     definition_locations = service.definition(main_uri, 0, 17)
     assert len(definition_locations) == 1
     assert definition_locations[0].uri == helper_path.as_uri()
-    assert definition_locations[0].span.start.line == 0
-    assert definition_locations[0].span.start.character == 16
+    assert definition_locations[0].range.start.line == 0
+    assert definition_locations[0].range.start.character == 16
 
 
 def test_language_service_hover_notes_imported_package_commands(
@@ -1472,8 +1489,8 @@ def test_language_service_definition_resolves_namespace_import_patterns(
     definition_locations = service.definition(main_uri, 1, 20)
     assert len(definition_locations) == 1
     assert definition_locations[0].uri == helper_path.as_uri()
-    assert definition_locations[0].span.start.line == 1
-    assert definition_locations[0].span.start.character == 5
+    assert definition_locations[0].range.start.line == 1
+    assert definition_locations[0].range.start.character == 5
 
 
 def test_language_service_loads_static_source_commands(
@@ -1640,8 +1657,8 @@ def test_language_service_resolves_references_inside_braced_if_conditions(
     definition_locations = service.definition(_MAIN_URI, 2, 18)
     assert len(definition_locations) == 1
     assert definition_locations[0].uri == _MAIN_URI
-    assert definition_locations[0].span.start.line == 0
-    assert definition_locations[0].span.start.character == 5
+    assert definition_locations[0].range.start.line == 0
+    assert definition_locations[0].range.start.character == 5
 
 
 def test_language_service_reports_unresolved_packages(
@@ -1684,7 +1701,8 @@ def test_language_server_hover_formats_meta_builtin_command(server: LanguageServ
 
 
 def test_language_server_process_message_publishes_diagnostics(server: LanguageServer) -> None:
-    messages = server.process_message(
+    messages = process_message(
+        server,
         {
             'jsonrpc': '2.0',
             'method': 'textDocument/didOpen',
@@ -1696,7 +1714,7 @@ def test_language_server_process_message_publishes_diagnostics(server: LanguageS
                     'text': 'proc greet {} {puts $name}\n',
                 }
             },
-        }
+        },
     )
 
     assert len(messages) == 3
@@ -1721,7 +1739,7 @@ def test_language_server_process_message_publishes_diagnostics(server: LanguageS
 
 
 def test_language_server_process_message_logs_startup(server: LanguageServer) -> None:
-    messages = server.process_message({'jsonrpc': '2.0', 'method': 'initialized'})
+    messages = process_message(server, {'jsonrpc': '2.0', 'method': 'initialized', 'params': {}})
 
     assert len(messages) == 1
     log_notification = messages[0]
@@ -1730,19 +1748,20 @@ def test_language_server_process_message_logs_startup(server: LanguageServer) ->
     assert params == {'type': 3, 'message': 'tcl-ls started.'}
 
 
-def test_language_server_process_message_reports_indexing_progress_when_supported(
-    server: LanguageServer,
-) -> None:
-    server.process_message(
+def test_language_server_process_message_reports_indexing_progress_when_supported() -> None:
+    server = _fresh_server()
+    process_message(
+        server,
         {
             'jsonrpc': '2.0',
             'id': 1,
             'method': 'initialize',
             'params': {'capabilities': {'window': {'workDoneProgress': True}}},
-        }
+        },
     )
 
-    messages = server.process_message(
+    messages = process_message(
+        server,
         {
             'jsonrpc': '2.0',
             'method': 'textDocument/didOpen',
@@ -1754,7 +1773,7 @@ def test_language_server_process_message_reports_indexing_progress_when_supporte
                     'text': 'proc greet {} {puts $name}\n',
                 }
             },
-        }
+        },
     )
 
     assert [message['method'] for message in messages] == [
@@ -1805,7 +1824,8 @@ def test_language_server_process_message_reports_indexing_progress_when_supporte
 def test_language_server_process_message_shows_indexing_only_once(
     server: LanguageServer,
 ) -> None:
-    first_messages = server.process_message(
+    first_messages = process_message(
+        server,
         {
             'jsonrpc': '2.0',
             'method': 'textDocument/didOpen',
@@ -1817,9 +1837,10 @@ def test_language_server_process_message_shows_indexing_only_once(
                     'text': 'puts ok\n',
                 }
             },
-        }
+        },
     )
-    second_messages = server.process_message(
+    second_messages = process_message(
+        server,
         {
             'jsonrpc': '2.0',
             'method': 'textDocument/didOpen',
@@ -1831,7 +1852,7 @@ def test_language_server_process_message_shows_indexing_only_once(
                     'text': 'puts ok\n',
                 }
             },
-        }
+        },
     )
 
     assert [message['method'] for message in first_messages] == [
@@ -1848,7 +1869,8 @@ def test_language_server_process_message_shows_indexing_only_once(
 def test_language_server_process_message_renames_symbols(server: LanguageServer) -> None:
     _open_server_document(server, 'proc greet {} {return ok}\ngreet\n')
 
-    messages = server.process_message(
+    messages = process_message(
+        server,
         {
             'jsonrpc': '2.0',
             'id': 8,
@@ -1858,7 +1880,7 @@ def test_language_server_process_message_renames_symbols(server: LanguageServer)
                 'position': {'line': 1, 'character': 1},
                 'newName': 'welcome',
             },
-        }
+        },
     )
 
     assert len(messages) == 1
@@ -1885,13 +1907,13 @@ def test_language_server_process_message_renames_symbols(server: LanguageServer)
     ]
 
 
-def test_language_server_run_stdio_round_trip() -> None:
+def test_language_server_start_io_round_trip() -> None:
     input_stream = BytesIO()
-    output_stream = BytesIO()
-    server = LanguageServer(input_stream=input_stream, output_stream=output_stream)
+    output_stream = _NonClosingBytesIO()
+    server = _fresh_server()
 
     frames: list[dict[str, object]] = [
-        {'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {}},
+        {'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {'capabilities': {}}},
         {
             'jsonrpc': '2.0',
             'method': 'textDocument/didOpen',
@@ -1919,7 +1941,7 @@ def test_language_server_run_stdio_round_trip() -> None:
     input_stream.write(b''.join(_encode_frame(frame) for frame in frames))
     input_stream.seek(0)
 
-    server.run_stdio()
+    server.start_io(input_stream, output_stream)
 
     messages = _decode_frames(output_stream.getvalue())
     initialize_response = next(message for message in messages if message.get('id') == 1)
@@ -1945,7 +1967,7 @@ def test_language_server_run_stdio_round_trip() -> None:
     assert shutdown_response['result'] is None
 
 
-def test_language_server_run_stdio_emits_indexing_notification_before_open_finishes() -> None:
+def test_language_server_start_io_emits_indexing_notification_before_open_finishes() -> None:
     class BlockingService:
         def __init__(self) -> None:
             self.started = threading.Event()
@@ -1965,14 +1987,12 @@ def test_language_server_run_stdio_emits_indexing_notification_before_open_finis
 
     service = BlockingService()
     input_stream = BytesIO()
-    output_stream = BytesIO()
-    server = LanguageServer(
-        service=cast(LanguageService, service),
-        input_stream=input_stream,
-        output_stream=output_stream,
-    )
+    output_stream = _NonClosingBytesIO()
+    server = _fresh_server()
+    _override_open_document(server, service.open_document)
 
     frames: list[dict[str, object]] = [
+        {'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {'capabilities': {}}},
         {
             'jsonrpc': '2.0',
             'method': 'textDocument/didOpen',
@@ -1990,11 +2010,15 @@ def test_language_server_run_stdio_emits_indexing_notification_before_open_finis
     input_stream.write(b''.join(_encode_frame(frame) for frame in frames))
     input_stream.seek(0)
 
-    thread = threading.Thread(target=server.run_stdio)
+    thread = threading.Thread(target=server.start_io, args=(input_stream, output_stream))
     thread.start()
 
     assert service.started.wait(timeout=1)
-    assert _decode_frames(output_stream.getvalue()) == [
+    messages = _decode_frames(output_stream.getvalue())
+    show_messages = [
+        message for message in messages if message.get('method') == 'window/showMessage'
+    ]
+    assert show_messages == [
         {
             'jsonrpc': '2.0',
             'method': 'window/showMessage',
@@ -2007,7 +2031,7 @@ def test_language_server_run_stdio_emits_indexing_notification_before_open_finis
     assert thread.is_alive() is False
 
 
-def test_language_server_run_stdio_emits_indexing_progress_before_open_finishes() -> None:
+def test_language_server_start_io_emits_indexing_progress_before_open_finishes() -> None:
     class BlockingService:
         def __init__(self) -> None:
             self.started = threading.Event()
@@ -2031,12 +2055,9 @@ def test_language_server_run_stdio_emits_indexing_progress_before_open_finishes(
 
     service = BlockingService()
     input_stream = BytesIO()
-    output_stream = BytesIO()
-    server = LanguageServer(
-        service=cast(LanguageService, service),
-        input_stream=input_stream,
-        output_stream=output_stream,
-    )
+    output_stream = _NonClosingBytesIO()
+    server = _fresh_server()
+    _override_open_document(server, service.open_document)
 
     frames: list[dict[str, object]] = [
         {
@@ -2062,7 +2083,7 @@ def test_language_server_run_stdio_emits_indexing_progress_before_open_finishes(
     input_stream.write(b''.join(_encode_frame(frame) for frame in frames))
     input_stream.seek(0)
 
-    thread = threading.Thread(target=server.run_stdio)
+    thread = threading.Thread(target=server.start_io, args=(input_stream, output_stream))
     thread.start()
 
     assert service.started.wait(timeout=1)

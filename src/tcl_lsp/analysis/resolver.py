@@ -48,7 +48,7 @@ from tcl_lsp.analysis.model import (
     VariableReference,
 )
 from tcl_lsp.cache import metadata_lru_cache
-from tcl_lsp.common import HoverInfo, Location, Span
+from tcl_lsp.common import HoverInfo, Span, lsp_location
 from tcl_lsp.metadata_paths import (
     DEFAULT_METADATA_REGISTRY,
     MetadataRegistry,
@@ -217,7 +217,8 @@ class Resolver:
                     symbol_id=proc.symbol_id,
                     name=proc.qualified_name,
                     kind='function',
-                    location=Location(uri=proc.uri, span=proc.name_span),
+                    location=lsp_location(proc.uri, proc.name_span),
+                    span=proc.name_span,
                     detail=_proc_hover(proc),
                 )
             )
@@ -232,7 +233,8 @@ class Resolver:
                     symbol_id=binding.symbol_id,
                     name=binding.name,
                     kind='variable',
-                    location=Location(uri=binding.uri, span=binding.span),
+                    location=lsp_location(binding.uri, binding.span),
+                    span=binding.span,
                     detail=f'{binding.kind} {binding.name}',
                     exact_values=binding.exact_values,
                 )
@@ -264,8 +266,8 @@ class Resolver:
         for definition in definitions:
             key = (
                 definition.location.uri,
-                definition.location.span.start.offset,
-                definition.location.span.end.offset,
+                definition.span.start.offset,
+                definition.span.end.offset,
             )
             if key not in grouped_definitions:
                 ordered_keys.append(key)
@@ -277,7 +279,7 @@ class Resolver:
             if len(group) == 1 or any(definition.kind != 'variable' for definition in group):
                 hovers.extend(
                     HoverInfo(
-                        span=definition.location.span,
+                        span=definition.span,
                         contents=_definition_hover_detail(definition),
                     )
                     for definition in group
@@ -289,7 +291,7 @@ class Resolver:
             )
             hovers.append(
                 HoverInfo(
-                    span=group[0].location.span,
+                    span=group[0].span,
                     contents='\n\n'.join(details)
                     if any('\n\n' in detail for detail in details)
                     else '\n'.join(details),

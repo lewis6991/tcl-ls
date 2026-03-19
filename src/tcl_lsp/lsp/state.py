@@ -4,9 +4,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from lsprotocol import types
+
 from tcl_lsp.analysis import AnalysisResult
 from tcl_lsp.analysis.model import DocumentFacts
-from tcl_lsp.common import DocumentSymbol, Span
+from tcl_lsp.common import Span
 from tcl_lsp.parser import ParseResult
 from tcl_lsp.project.paths import source_id_to_path
 
@@ -34,7 +36,7 @@ def managed_document_details(document: ManagedDocument) -> tuple[str, Path | Non
     return (document.uri, source_id_to_path(document.uri), document.facts)
 
 
-def empty_analysis(uri: str, document_symbols: tuple[DocumentSymbol, ...]) -> AnalysisResult:
+def empty_analysis(uri: str, document_symbols: tuple[types.DocumentSymbol, ...]) -> AnalysisResult:
     return AnalysisResult(
         uri=uri,
         diagnostics=(),

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from lsprotocol import types
+
 from tcl_lsp.analysis import WorkspaceIndex
-from tcl_lsp.common import Location
+from tcl_lsp.common import lsp_location
 from tcl_lsp.lsp.features.symbols import (
     definitions_for_command_import,
     definitions_for_symbols,
@@ -21,7 +23,7 @@ def definition(
     uri: str,
     line: int,
     character: int,
-) -> tuple[Location, ...]:
+) -> tuple[types.Location, ...]:
     package_locations = package_definition_locations(
         documents_by_uri,
         workspace_index=workspace_index,
@@ -61,12 +63,12 @@ def references(
     line: int,
     character: int,
     include_declaration: bool = True,
-) -> tuple[Location, ...]:
+) -> tuple[types.Location, ...]:
     symbol_ids = symbol_ids_at_position(documents_by_uri, uri=uri, line=line, character=character)
     if not symbol_ids:
         return ()
 
-    locations: list[Location] = []
+    locations: list[types.Location] = []
     if include_declaration:
         locations.extend(
             definition.location
@@ -82,8 +84,9 @@ def references(
             if resolved_reference.symbol_id not in symbol_ids:
                 continue
             locations.append(
-                Location(
-                    uri=resolved_reference.reference.uri, span=resolved_reference.reference.span
+                lsp_location(
+                    resolved_reference.reference.uri,
+                    resolved_reference.reference.span,
                 )
             )
 
@@ -97,7 +100,7 @@ def package_definition_locations(
     uri: str,
     line: int,
     character: int,
-) -> tuple[Location, ...]:
+) -> tuple[types.Location, ...]:
     document = documents_by_uri.get(uri)
     if document is None:
         return ()
@@ -106,14 +109,14 @@ def package_definition_locations(
         if not package_require.span.contains(line=line, character=character):
             continue
         provided_locations = [
-            Location(uri=package.uri, span=package.span)
+            lsp_location(package.uri, package.span)
             for package in workspace_index.provided_packages_for_name(package_require.name)
         ]
         if provided_locations:
             return deduplicate_locations(provided_locations)
 
         index_locations = [
-            Location(uri=entry.uri, span=entry.span)
+            lsp_location(entry.uri, entry.span)
             for entry in workspace_index.package_index_entries_for_name(package_require.name)
         ]
         return deduplicate_locations(index_locations)
@@ -128,7 +131,7 @@ def command_import_definition_locations(
     uri: str,
     line: int,
     character: int,
-) -> tuple[Location, ...]:
+) -> tuple[types.Location, ...]:
     document = documents_by_uri.get(uri)
     if document is None:
         return ()
@@ -148,9 +151,15 @@ def command_import_definition_locations(
     return ()
 
 
-def deduplicate_locations(locations: list[Location]) -> tuple[Location, ...]:
-    deduplicated: dict[tuple[str, int, int], Location] = {}
+def deduplicate_locations(locations: list[types.Location]) -> tuple[types.Location, ...]:
+    deduplicated: dict[tuple[str, int, int, int, int], types.Location] = {}
     for location in locations:
-        key = (location.uri, location.span.start.offset, location.span.end.offset)
+        key = (
+            location.uri,
+            location.range.start.line,
+            location.range.start.character,
+            location.range.end.line,
+            location.range.end.character,
+        )
         deduplicated.setdefault(key, location)
     return tuple(deduplicated.values())

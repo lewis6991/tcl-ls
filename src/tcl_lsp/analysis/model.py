@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from tcl_lsp.common import Diagnostic, DocumentSymbol, HoverInfo, Location, Span, SymbolKind
+from lsprotocol import types
+
+from tcl_lsp.common import Diagnostic, HoverInfo, Span, SymbolKind
 from tcl_lsp.parser.model import ParseResult
 
 type BindingKind = Literal[
@@ -213,7 +215,8 @@ class DefinitionTarget:
     symbol_id: str
     name: str
     kind: SymbolKind
-    location: Location
+    location: types.Location
+    span: Span
     detail: str
     exact_values: tuple[str, ...] = ()
 
@@ -241,7 +244,7 @@ class DocumentFacts:
     variable_bindings: tuple[VarBinding, ...]
     command_calls: tuple[CommandCall, ...]
     variable_references: tuple[VariableReference, ...]
-    document_symbols: tuple[DocumentSymbol, ...]
+    document_symbols: tuple[types.DocumentSymbol, ...]
     diagnostics: tuple[Diagnostic, ...]
 
 
@@ -252,5 +255,5 @@ class AnalysisResult:
     definitions: tuple[DefinitionTarget, ...]
     resolutions: tuple[ResolutionResult, ...]
     resolved_references: tuple[ResolvedReference, ...]
-    document_symbols: tuple[DocumentSymbol, ...]
+    document_symbols: tuple[types.DocumentSymbol, ...]
     hovers: tuple[HoverInfo, ...]

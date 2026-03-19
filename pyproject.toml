@@ -5,7 +5,7 @@ description = "A typed Python Tcl language server."
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-    "pydantic>=2.12.5",
+    "pygls>=2.1.0",
 ]
 
 [project.scripts]

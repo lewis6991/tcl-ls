@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from lsprotocol import types
+
 from tcl_lsp.analysis.arity import proc_parameter_arity
 from tcl_lsp.analysis.builtins import (
     annotated_metadata_commands_for_packages,
@@ -85,7 +87,7 @@ from tcl_lsp.analysis.model import (
     VarBinding,
     VariableReference,
 )
-from tcl_lsp.common import Diagnostic, DocumentSymbol, Position, Span
+from tcl_lsp.common import Diagnostic, Position, Span, lsp_range
 from tcl_lsp.metadata_paths import DEFAULT_METADATA_REGISTRY, MetadataRegistry
 from tcl_lsp.parser import Parser, word_static_text
 from tcl_lsp.parser.model import (
@@ -2235,26 +2237,26 @@ class _FactCollector:
             return None, item.span
         return subitems[0].text, subitems[0].span
 
-    def _build_document_symbols(self) -> list[DocumentSymbol]:
-        symbols: list[DocumentSymbol] = []
+    def _build_document_symbols(self) -> list[types.DocumentSymbol]:
+        symbols: list[types.DocumentSymbol] = []
         for namespace in sorted(self._namespaces, key=lambda item: item.span.start.offset):
             symbols.append(
-                DocumentSymbol(
+                types.DocumentSymbol(
                     name=namespace.qualified_name,
-                    kind='namespace',
-                    span=namespace.span,
-                    selection_span=namespace.selection_span,
-                    children=(),
+                    kind=types.SymbolKind.Namespace,
+                    range=lsp_range(namespace.span),
+                    selection_range=lsp_range(namespace.selection_span),
+                    children=None,
                 )
             )
         for proc in sorted(self._procedures, key=lambda item: item.name_span.start.offset):
             symbols.append(
-                DocumentSymbol(
+                types.DocumentSymbol(
                     name=proc.qualified_name,
-                    kind='function',
-                    span=proc.span,
-                    selection_span=proc.name_span,
-                    children=(),
+                    kind=types.SymbolKind.Function,
+                    range=lsp_range(proc.span),
+                    selection_range=lsp_range(proc.name_span),
+                    children=None,
                 )
             )
         return symbols

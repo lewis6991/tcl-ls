@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from lsprotocol import types
+
 from tcl_lsp.analysis.arity import metadata_signature_arity
 from tcl_lsp.analysis.metadata_commands import (
     MetadataCommand,
@@ -11,7 +13,7 @@ from tcl_lsp.analysis.metadata_commands import (
 )
 from tcl_lsp.analysis.model import CommandArity, DefinitionTarget
 from tcl_lsp.cache import metadata_lru_cache
-from tcl_lsp.common import Location
+from tcl_lsp.common import Span, lsp_location
 from tcl_lsp.metadata_paths import DEFAULT_METADATA_REGISTRY, MetadataRegistry
 from tcl_lsp.parser import Parser, word_static_text
 
@@ -32,7 +34,8 @@ class BuiltinOverload:
     options: tuple[MetadataOption, ...]
     subcommands: tuple[str, ...]
     documentation: str | None
-    location: Location
+    location: types.Location
+    span: Span
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,6 +253,7 @@ def _builtin_definition_targets(
                         name=builtin.name,
                         kind='function',
                         location=overload.location,
+                        span=overload.span,
                         detail=overload.signature,
                     )
                 )
@@ -277,7 +281,8 @@ def _load_metadata_file(
                 options=metadata_command.options,
                 subcommands=metadata_command.subcommands,
                 documentation=metadata_command.documentation,
-                location=Location(uri=metadata_command.uri, span=metadata_command.name_span),
+                location=lsp_location(metadata_command.uri, metadata_command.name_span),
+                span=metadata_command.name_span,
             )
         )
 

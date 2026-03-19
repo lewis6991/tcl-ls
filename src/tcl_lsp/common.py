@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from lsprotocol import types
+
 type DiagnosticSeverity = Literal['error', 'warning', 'information', 'hint']
 type SymbolKind = Literal['namespace', 'function', 'variable']
 
@@ -49,10 +51,16 @@ class Span:
         return True
 
 
-@dataclass(frozen=True, slots=True)
-class Location:
-    uri: str
-    span: Span
+def lsp_position(position: Position) -> types.Position:
+    return types.Position(line=position.line, character=position.character)
+
+
+def lsp_range(span: Span) -> types.Range:
+    return types.Range(start=lsp_position(span.start), end=lsp_position(span.end))
+
+
+def lsp_location(uri: str, span: Span) -> types.Location:
+    return types.Location(uri=uri, range=lsp_range(span))
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,15 +70,6 @@ class Diagnostic:
     message: str
     source: str
     code: str
-
-
-@dataclass(frozen=True, slots=True)
-class DocumentSymbol:
-    name: str
-    kind: SymbolKind
-    span: Span
-    selection_span: Span
-    children: tuple[DocumentSymbol, ...]
 
 
 @dataclass(frozen=True, slots=True)
