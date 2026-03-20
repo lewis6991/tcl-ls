@@ -52,6 +52,13 @@ def _override_change_document(server: LanguageServer, change_document: object) -
     cast(Any, server)._change_document = change_document
 
 
+def _override_schedule_document_change(
+    server: LanguageServer,
+    schedule_document_change: object,
+) -> None:
+    cast(Any, server).schedule_document_change = schedule_document_change
+
+
 def _open_server_document(
     server: LanguageServer,
     text: str,
@@ -71,6 +78,29 @@ def _open_server_document(
                     'version': version,
                     'text': text,
                 }
+            },
+        },
+    )
+
+
+def _change_server_document(
+    server: LanguageServer,
+    text: str,
+    *,
+    uri: str = _MAIN_URI,
+    version: int = 2,
+) -> None:
+    process_message(
+        server,
+        {
+            'jsonrpc': '2.0',
+            'method': 'textDocument/didChange',
+            'params': {
+                'textDocument': {
+                    'uri': uri,
+                    'version': version,
+                },
+                'contentChanges': [{'text': text}],
             },
         },
     )
@@ -1487,6 +1517,70 @@ def test_language_server_returns_semantic_tokens_for_braced_variable_substitutio
         _semantic_token(line=1, character=12, length=1, token_type='operator'),
     ):
         assert expected_token in decoded
+
+
+@pytest.mark.parametrize(
+    ('initial_text', 'changed_text', 'expected_line'),
+    [
+        (
+            'proc greet {} {\n    return ok\n}\n',
+            '\nproc greet {} {\n    return ok\n}\n',
+            1,
+        ),
+        (
+            '\nproc greet {} {\n    return ok\n}\n',
+            'proc greet {} {\n    return ok\n}\n',
+            0,
+        ),
+    ],
+)
+def test_language_server_returns_semantic_tokens_for_latest_workspace_text_after_line_changes(
+    server: LanguageServer,
+    initial_text: str,
+    changed_text: str,
+    expected_line: int,
+) -> None:
+    def skip_document_change(uri: str, version: int) -> None:
+        del uri, version
+
+    _open_server_document(server, initial_text)
+    original_schedule_document_change = server.schedule_document_change
+    try:
+        _override_schedule_document_change(server, skip_document_change)
+        _change_server_document(server, changed_text)
+
+        token_types, token_modifiers = _semantic_tokens_legend(server)
+        response = _server_document_request(server, method='textDocument/semanticTokens/full')
+        result = _as_dict(response['result'])
+        data = cast(list[int], result['data'])
+
+        decoded = _decode_semantic_tokens(
+            data,
+            token_types=token_types,
+            token_modifiers=token_modifiers,
+        )
+
+        assert (
+            _semantic_token(
+                line=expected_line,
+                character=0,
+                length=4,
+                token_type='keyword',
+            )
+            in decoded
+        )
+        assert (
+            _semantic_token(
+                line=expected_line,
+                character=5,
+                length=5,
+                token_type='function',
+                modifiers=['declaration'],
+            )
+            in decoded
+        )
+    finally:
+        _override_schedule_document_change(server, original_schedule_document_change)
 
 
 @pytest.mark.parametrize(

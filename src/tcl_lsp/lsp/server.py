@@ -12,6 +12,7 @@ from pygls.protocol.language_server import LanguageServerProtocol
 
 from tcl_lsp import __version__
 from tcl_lsp.analysis import FactExtractor, Resolver, WorkspaceIndex
+from tcl_lsp.analysis.metadata_effects import dependency_required_packages
 from tcl_lsp.common import Diagnostic, lsp_range
 from tcl_lsp.lsp.document_changes import DocumentChangeWorker
 from tcl_lsp.lsp.features.completion import completion_items
@@ -30,8 +31,13 @@ from tcl_lsp.lsp.state import (
     AnalysisSnapshot,
     IndexingProgressCallback,
     ManagedDocument,
+    empty_analysis,
 )
-from tcl_lsp.lsp.workspace_rebuild import DocumentBuildSnapshot, WorkspaceRebuilder
+from tcl_lsp.lsp.workspace_rebuild import (
+    DocumentBuildSnapshot,
+    WorkspaceRebuilder,
+    analysis_workspace_index,
+)
 from tcl_lsp.metadata_paths import (
     DEFAULT_METADATA_REGISTRY,
     MetadataRegistry,
@@ -218,6 +224,94 @@ class LanguageServer(PyglsLanguageServer):
         if document is None:
             return None
         return document.version
+
+    def current_managed_document(self, uri: str) -> ManagedDocument | None:
+        snapshot = self.analysis_snapshot()
+        document = snapshot.documents.get(uri)
+        workspace_document = self._workspace_document_state(uri)
+        if workspace_document is None:
+            return document
+
+        text, version = workspace_document
+        if document is not None and document.version == version and document.text == text:
+            return document
+
+        return self._analyze_workspace_document(
+            snapshot,
+            uri=uri,
+            text=text,
+            version=version,
+        )
+
+    def _workspace_document_state(self, uri: str) -> tuple[str, int] | None:
+        try:
+            text_document = cast(Any, self.workspace.get_text_document(uri))
+        except KeyError:
+            return None
+        version = 0 if text_document.version is None else text_document.version
+        return cast(str, text_document.source), cast(int, version)
+
+    def _analyze_workspace_document(
+        self,
+        snapshot: AnalysisSnapshot,
+        *,
+        uri: str,
+        text: str,
+        version: int,
+    ) -> ManagedDocument:
+        parser = Parser()
+        extractor = FactExtractor(parser, metadata_registry=snapshot.metadata_registry)
+        resolver = Resolver(metadata_registry=snapshot.metadata_registry)
+
+        try:
+            parse_result = parser.parse_document(path=uri, text=text)
+            facts = extractor.extract(parse_result)
+            managed_document = ManagedDocument(
+                uri=uri,
+                version=version,
+                text=text,
+                parse_result=parse_result,
+                facts=facts,
+                analysis=empty_analysis(uri, facts.document_symbols),
+            )
+
+            documents = dict(snapshot.documents)
+            documents[uri] = managed_document
+            document_workspace_index = analysis_workspace_index(
+                root_uri=uri,
+                documents=documents,
+                workspace_index=snapshot.workspace_index,
+                metadata_registry=snapshot.metadata_registry,
+            )
+
+            source_path = source_id_to_path(uri)
+            additional_required_packages: frozenset[str]
+            if source_path is None:
+                additional_required_packages = frozenset()
+            else:
+                additional_required_packages = dependency_required_packages(
+                    source_path,
+                    facts,
+                    document_workspace_index,
+                    metadata_registry=snapshot.metadata_registry,
+                )
+            analysis = resolver.analyze(
+                uri=uri,
+                facts=facts,
+                workspace_index=document_workspace_index,
+                additional_required_packages=additional_required_packages,
+            )
+
+            return ManagedDocument(
+                uri=uri,
+                version=version,
+                text=text,
+                parse_result=parse_result,
+                facts=facts,
+                analysis=analysis,
+            )
+        finally:
+            extractor.close()
 
     def completion_items_at(
         self,
@@ -703,7 +797,7 @@ def semantic_tokens_full(
     server: LanguageServer,
     params: types.SemanticTokensParams,
 ) -> types.SemanticTokens | None:
-    document = server.analysis_snapshot().documents.get(params.text_document.uri)
+    document = server.current_managed_document(params.text_document.uri)
     if document is None:
         return None
     data = encode_document_semantic_tokens(

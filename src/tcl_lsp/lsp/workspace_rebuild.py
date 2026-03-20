@@ -319,21 +319,12 @@ class WorkspaceRebuilder:
         workspace_index: WorkspaceIndex,
         metadata_registry: MetadataRegistry,
     ) -> WorkspaceIndex:
-        analysis_workspace_index = WorkspaceIndex()
-        for pkg_index_uri, entries in workspace_index.package_indexes():
-            analysis_workspace_index.update_package_index(pkg_index_uri, entries)
-        for uri in reachable_document_uris(
-            root_uri,
-            documents_by_uri=documents,
+        return analysis_workspace_index(
+            root_uri=root_uri,
+            documents=documents,
             workspace_index=workspace_index,
-            describe_document=managed_document_details,
             metadata_registry=metadata_registry,
-        ):
-            document = documents.get(uri)
-            if document is None:
-                continue
-            analysis_workspace_index.update(uri, document.facts)
-        return analysis_workspace_index
+        )
 
     def _active_plugin_paths(self, snapshot: DocumentBuildSnapshot) -> tuple[Path, ...]:
         active_paths: dict[Path, None] = {}
@@ -357,3 +348,27 @@ def _progress_percentage(*, index: int, total: int, start: int, end: int) -> int
         return end
     completed = (index * (end - start)) // total
     return min(end, start + completed)
+
+
+def analysis_workspace_index(
+    *,
+    root_uri: str,
+    documents: dict[str, ManagedDocument],
+    workspace_index: WorkspaceIndex,
+    metadata_registry: MetadataRegistry,
+) -> WorkspaceIndex:
+    analysis_index = WorkspaceIndex()
+    for pkg_index_uri, entries in workspace_index.package_indexes():
+        analysis_index.update_package_index(pkg_index_uri, entries)
+    for uri in reachable_document_uris(
+        root_uri,
+        documents_by_uri=documents,
+        workspace_index=workspace_index,
+        describe_document=managed_document_details,
+        metadata_registry=metadata_registry,
+    ):
+        document = documents.get(uri)
+        if document is None:
+            continue
+        analysis_index.update(uri, document.facts)
+    return analysis_index
