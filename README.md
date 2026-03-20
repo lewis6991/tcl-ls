@@ -2,6 +2,18 @@
 
 A language server for Tcl
 
+## Documentation
+
+Build the Sphinx docs locally with:
+
+```sh
+make docs
+```
+
+The rendered site is written to `docs/_build/html/index.html` and covers
+getting started, editor and checker workflows, metadata authoring, support,
+and development notes.
+
 ## Maintenance
 
 Refresh builtin subcommand metadata with:

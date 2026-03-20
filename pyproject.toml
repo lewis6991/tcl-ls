@@ -16,8 +16,10 @@ tcl-meta = "tcl_lsp.meta:main"
 [dependency-groups]
 dev = [
     "basedpyright>=1.37.4",
+    "furo>=2024.8.6",
     "pytest>=9.0.0",
     "ruff>=0.15.5",
+    "sphinx>=8.2.3",
 ]
 
 [build-system]
