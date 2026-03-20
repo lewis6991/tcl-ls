@@ -4,6 +4,9 @@ A language server for Tcl
 
 ## Documentation
 
+Published docs are available at
+<https://lewis6991.github.io/tcl-ls/>.
+
 Build the Sphinx docs locally with:
 
 ```sh
