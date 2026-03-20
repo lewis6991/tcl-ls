@@ -56,6 +56,10 @@ _DIAGNOSTIC_SEVERITY_MAP = {
     'information': types.DiagnosticSeverity.Information,
     'hint': types.DiagnosticSeverity.Hint,
 }
+_DIAGNOSTIC_TAG_MAP = {
+    'deprecated': types.DiagnosticTag.Deprecated,
+    'unnecessary': types.DiagnosticTag.Unnecessary,
+}
 _SEMANTIC_TOKEN_CACHE_LIMIT = 8
 
 
@@ -631,6 +635,7 @@ class LanguageServer(PyglsLanguageServer):
                         code=diagnostic.code,
                         source=diagnostic.source,
                         message=diagnostic.message,
+                        tags=[_DIAGNOSTIC_TAG_MAP[tag] for tag in diagnostic.tags] or None,
                     )
                     for diagnostic in diagnostics
                 ],

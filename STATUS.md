@@ -75,6 +75,7 @@ This repository contains an early but working bootstrap of a Tcl language server
   - [x] missing option values for commands with metadata option specs
   - [x] unknown options for commands with metadata option specs
   - [x] unknown subcommands for statically resolved builtin commands
+  - [x] unreachable commands after statically non-fallthrough control flow
   - [x] wrong argument counts for statically resolved commands with simple arity metadata
   - [x] unresolved commands
   - [x] unresolved packages

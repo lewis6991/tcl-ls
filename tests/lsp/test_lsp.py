@@ -2196,6 +2196,39 @@ def test_language_server_process_message_publishes_diagnostics(server: LanguageS
     assert [diagnostic['code'] for diagnostic in diagnostics] == ['unresolved-variable']
 
 
+def test_language_server_publishes_unreachable_code_as_unnecessary(
+    server: LanguageServer,
+) -> None:
+    messages = process_message(
+        server,
+        {
+            'jsonrpc': '2.0',
+            'method': 'textDocument/didOpen',
+            'params': {
+                'textDocument': {
+                    'uri': 'file:///unreachable.tcl',
+                    'languageId': 'tcl',
+                    'version': 1,
+                    'text': 'proc run {} {\n    return ok\n    set later 1\n}\n',
+                }
+            },
+        },
+    )
+
+    publish = messages[2]
+    assert publish['method'] == 'textDocument/publishDiagnostics'
+    params = _as_dict(publish['params'])
+    diagnostics = cast(list[dict[str, object]], params['diagnostics'])
+
+    assert [diagnostic['code'] for diagnostic in diagnostics] == ['unreachable-code']
+    assert diagnostics[0]['severity'] == int(types.DiagnosticSeverity.Hint)
+    assert diagnostics[0]['tags'] == [int(types.DiagnosticTag.Unnecessary)]
+
+    diagnostic_range = _as_dict(diagnostics[0]['range'])
+    end = _as_dict(diagnostic_range['end'])
+    assert end['character'] == 15
+
+
 def test_language_server_process_message_coalesces_stale_document_changes(
     server: LanguageServer,
 ) -> None:

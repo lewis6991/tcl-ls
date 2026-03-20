@@ -19,6 +19,7 @@ from .invalid_regex import InvalidRegexChecker
 from .missing_option_value import MissingOptionValueChecker
 from .unknown_option import UnknownOptionChecker
 from .unknown_subcommand import UnknownSubcommandChecker
+from .unreachable_code import UnreachableCodeChecker
 from .unresolved_command import UnresolvedCommandChecker
 from .unresolved_package import UnresolvedPackageChecker
 from .unresolved_variable import UnresolvedVariableChecker
@@ -34,6 +35,7 @@ DIAGNOSTIC_CHECKERS: Final[tuple[DiagnosticChecker, ...]] = (
     UnknownOptionChecker(),
     MissingOptionValueChecker(),
     InvalidRegexChecker(),
+    UnreachableCodeChecker(),
     AmbiguousVariableChecker(),
     UnresolvedVariableChecker(),
 )

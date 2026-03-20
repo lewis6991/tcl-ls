@@ -14,12 +14,12 @@ from tcl_lsp.analysis.model import (
     ResolutionResult,
     VariableReference,
 )
-from tcl_lsp.common import Diagnostic, Span
+from tcl_lsp.common import Diagnostic, DiagnosticTag, Span
 from tcl_lsp.metadata_paths import MetadataRegistry
 
 type CommandCallKey = tuple[str, int, int, int, int]
 type ResolvedCommandTarget = BuiltinCommand | ProcDecl
-type AnalysisDiagnosticSeverity = Literal['error', 'warning']
+type AnalysisDiagnosticSeverity = Literal['error', 'warning', 'hint']
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +61,7 @@ class DiagnosticChecker(ABC):
         *,
         span: Span,
         message: str,
+        tags: tuple[DiagnosticTag, ...] = (),
     ) -> Diagnostic:
         return Diagnostic(
             span=span,
@@ -68,4 +69,5 @@ class DiagnosticChecker(ABC):
             message=message,
             source='analysis',
             code=self.CODE,
+            tags=tags,
         )

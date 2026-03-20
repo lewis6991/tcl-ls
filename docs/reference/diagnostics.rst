@@ -83,6 +83,12 @@ Warnings:
 ``ambiguous-variable``
    A procedure-scoped variable reference matched multiple bindings.
 
+Hints:
+
+``unreachable-code``
+   A later command in the same statically analyzed script cannot run because
+   control flow always leaves the script first.
+
 Errors:
 
 ``duplicate-proc``
@@ -130,4 +136,3 @@ For the best results:
   project depends on custom DSLs or external package trees
 * use ``uv run tcl-check --context-lines 2 path/to/project`` when you need the
   most readable terminal diagnostics
-

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from lsprotocol import types
 
 from tcl_lsp.common import Diagnostic, HoverInfo, Span, SymbolKind
 from tcl_lsp.parser.model import ParseResult
+
+if TYPE_CHECKING:
+    from tcl_lsp.analysis.control_flow import ControlFlowScript
 
 type BindingKind = Literal[
     'append',
@@ -231,6 +234,7 @@ class ResolvedReference:
 class DocumentFacts:
     uri: str
     parse_result: ParseResult | None
+    control_flow: ControlFlowScript
     comment_spans: tuple[Span, ...]
     string_spans: tuple[Span, ...]
     operator_spans: tuple[Span, ...]

@@ -11,6 +11,7 @@ from tcl_lsp.analysis.builtins import (
     canonical_builtin_package_name,
     is_builtin_package,
 )
+from tcl_lsp.analysis.control_flow import build_control_flow_script
 from tcl_lsp.analysis.embedded_languages import (
     EmbeddedLanguageEntry,
     EmbeddedLanguageName,
@@ -246,6 +247,7 @@ class _FactCollector:
         return DocumentFacts(
             uri=self._parse_result.source_id,
             parse_result=self._parse_result if self._include_parse_result else None,
+            control_flow=build_control_flow_script(self._lowered_script),
             comment_spans=tuple(self._comment_spans),
             string_spans=tuple(self._string_spans),
             operator_spans=tuple(self._operator_spans),

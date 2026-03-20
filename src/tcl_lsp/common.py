@@ -6,6 +6,7 @@ from typing import Literal
 from lsprotocol import types
 
 type DiagnosticSeverity = Literal['error', 'warning', 'information', 'hint']
+type DiagnosticTag = Literal['deprecated', 'unnecessary']
 type SymbolKind = Literal['namespace', 'function', 'variable']
 
 
@@ -101,6 +102,7 @@ class Diagnostic:
     message: str
     source: str
     code: str
+    tags: tuple[DiagnosticTag, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
