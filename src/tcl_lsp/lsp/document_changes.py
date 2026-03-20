@@ -100,7 +100,7 @@ class DocumentChangeWorker:
             for uri, _ in pending_changes:
                 diagnostics = self._apply_change(
                     uri,
-                    lambda: self._request_is_stale(request_version),
+                    lambda request_version=request_version: self._request_is_stale(request_version),
                 )
                 if diagnostics is None:
                     cancelled = True

@@ -13,6 +13,12 @@ tcllib: $(TCLLIB_DIR)
 test: $(TCLLIB_DIR)
 	TCLLIB_DIR="$(TCLLIB_DIR)" uv run pytest
 
+.PHONY: check
+check:
+	uv run basedpyright
+	uv run ruff check
+	uv run ruff format --check
+
 .PHONY: check-tcllib
 check-tcllib: $(TCLLIB_DIR)
 	uv run tcl-check $(TCL_CHECK_ARGS) "$(TCLLIB_DIR)"
