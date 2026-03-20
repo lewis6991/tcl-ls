@@ -833,7 +833,7 @@ def hover_request(server: LanguageServer, params: types.HoverParams) -> types.Ho
 
 @server.feature(
     types.TEXT_DOCUMENT_COMPLETION,
-    types.CompletionOptions(trigger_characters=['$', ':']),
+    types.CompletionOptions(trigger_characters=['$', ':', '-']),
 )
 def completion_request(
     server: LanguageServer,

@@ -8,10 +8,13 @@ from lsprotocol import types
 
 from tcl_lsp.analysis import FactExtractor, WorkspaceIndex
 from tcl_lsp.analysis.builtins import (
+    BuiltinCommand,
     BuiltinOverload,
+    builtin_command_for_packages,
     builtin_commands_by_package,
     canonical_builtin_package_name,
 )
+from tcl_lsp.analysis.metadata_commands import MetadataOption, scan_command_options
 from tcl_lsp.analysis.metadata_effects import dependency_required_packages
 from tcl_lsp.analysis.model import CommandCall, DocumentFacts, ProcDecl
 from tcl_lsp.common import offset_at_position
@@ -20,7 +23,7 @@ from tcl_lsp.metadata_paths import MetadataRegistry
 from tcl_lsp.parser import Parser
 from tcl_lsp.project.paths import source_id_to_path
 
-type CompletionKind = Literal['command', 'package', 'variable']
+type CompletionKind = Literal['argument', 'command', 'package', 'variable']
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +32,8 @@ class _CompletionContext:
     prefix: str
     namespace: str
     scope_id: str | None = None
+    command_call: CommandCall | None = None
+    argument_index: int | None = None
 
 
 def completion_items(
@@ -75,6 +80,15 @@ def completion_items(
             metadata_registry=metadata_registry,
             prefix=context.prefix,
             current_namespace=context.namespace,
+        )
+    if context.kind == 'argument' and context.command_call is not None:
+        return _argument_completion_items(
+            document=document,
+            workspace_index=workspace_index,
+            metadata_registry=metadata_registry,
+            command_call=context.command_call,
+            argument_index=context.argument_index or 0,
+            prefix=context.prefix,
         )
     if context.kind == 'package':
         return _package_completion_items(
@@ -144,6 +158,17 @@ def _completion_context(
             namespace=attached_call.namespace,
         )
 
+    argument_context = _argument_context(prefix_text, attached_call)
+    if argument_context is not None and attached_call is not None:
+        argument_prefix, argument_index = argument_context
+        return _CompletionContext(
+            kind='argument',
+            prefix=argument_prefix,
+            namespace=attached_call.namespace,
+            command_call=attached_call,
+            argument_index=argument_index,
+        )
+
     if _is_empty_command_position(prefix_text):
         return _CompletionContext(
             kind='command',
@@ -191,6 +216,24 @@ def _last_attached_command_call(
         tail_text = prefix_text[command_call.span.end.offset :]
         if all(char in {' ', '\t'} for char in tail_text):
             return command_call
+    return None
+
+
+def _argument_context(
+    prefix_text: str,
+    attached_call: CommandCall | None,
+) -> tuple[str, int] | None:
+    if attached_call is None:
+        return None
+
+    if attached_call.arg_spans and attached_call.arg_spans[-1].end.offset == len(prefix_text):
+        argument_text = attached_call.arg_texts[-1]
+        return ('' if argument_text is None else argument_text, len(attached_call.arg_spans) - 1)
+
+    tail_text = prefix_text[attached_call.span.end.offset :]
+    if tail_text and all(char in {' ', '\t'} for char in tail_text):
+        return ('', len(attached_call.arg_spans))
+
     return None
 
 
@@ -306,6 +349,52 @@ def _command_completion_items(
     return tuple(sorted(items, key=lambda item: (item.sort_text or item.label, item.label)))
 
 
+def _argument_completion_items(
+    *,
+    document: ManagedDocument,
+    workspace_index: WorkspaceIndex,
+    metadata_registry: MetadataRegistry,
+    command_call: CommandCall,
+    argument_index: int,
+    prefix: str,
+) -> tuple[types.CompletionItem, ...]:
+    if command_call.name is None:
+        return ()
+
+    builtin = builtin_command_for_packages(
+        command_call.name,
+        frozenset(
+            _builtin_completion_packages(
+                document=document,
+                workspace_index=workspace_index,
+                metadata_registry=metadata_registry,
+            )
+        ),
+        metadata_registry=metadata_registry,
+    )
+    if builtin is None:
+        return ()
+
+    items: list[types.CompletionItem] = []
+    items.extend(
+        _subcommand_completion_items(
+            builtin=builtin,
+            metadata_registry=metadata_registry,
+            argument_index=argument_index,
+            prefix=prefix,
+        )
+    )
+    items.extend(
+        _option_completion_items(
+            command_call=command_call,
+            builtin=builtin,
+            argument_index=argument_index,
+            prefix=prefix,
+        )
+    )
+    return tuple(sorted(items, key=lambda item: (item.sort_text or item.label, item.label)))
+
+
 def _package_completion_items(
     documents_by_uri: Mapping[str, ManagedDocument],
     *,
@@ -371,6 +460,92 @@ def _variable_completion_items(
             )
         )
 
+    return tuple(items)
+
+
+def _subcommand_completion_items(
+    *,
+    builtin: BuiltinCommand,
+    metadata_registry: MetadataRegistry,
+    argument_index: int,
+    prefix: str,
+) -> tuple[types.CompletionItem, ...]:
+    if argument_index != 0:
+        return ()
+
+    subcommands = _builtin_shared_subcommands(builtin)
+    if subcommands is None:
+        return ()
+
+    items: list[types.CompletionItem] = []
+    for subcommand in subcommands:
+        if not _matches_prefix(subcommand, prefix):
+            continue
+
+        nested_name = f'{builtin.name} {subcommand}'
+        nested_builtin = builtin_command_for_packages(
+            nested_name,
+            frozenset({builtin.package}),
+            metadata_registry=metadata_registry,
+        )
+        detail = f'subcommand of {builtin.name}'
+        documentation = None
+        if nested_builtin is not None:
+            detail = _builtin_completion_detail(
+                nested_builtin.name,
+                nested_builtin.package,
+                nested_builtin.overloads,
+            )
+            documentation = _builtin_completion_documentation(nested_builtin.overloads)
+
+        items.append(
+            types.CompletionItem(
+                label=subcommand,
+                insert_text=subcommand,
+                kind=types.CompletionItemKind.Function,
+                detail=detail,
+                documentation=documentation,
+                sort_text=_command_sort_text(subcommand, rank=0),
+            )
+        )
+    return tuple(items)
+
+
+def _option_completion_items(
+    *,
+    command_call: CommandCall,
+    builtin: BuiltinCommand,
+    argument_index: int,
+    prefix: str,
+) -> tuple[types.CompletionItem, ...]:
+    if command_call.name == 'return':
+        return ()
+
+    options = _builtin_shared_option_specs(builtin)
+    if options is None:
+        return ()
+    if prefix and not prefix.startswith('-'):
+        return ()
+    if not _option_phase_active(
+        command_call.arg_texts[:argument_index],
+        options,
+        command_call.arg_expanded[:argument_index],
+    ):
+        return ()
+
+    items: list[types.CompletionItem] = []
+    for option in options:
+        if not _matches_prefix(option.name, prefix):
+            continue
+        items.append(
+            types.CompletionItem(
+                label=option.name,
+                insert_text=option.name,
+                kind=types.CompletionItemKind.Keyword,
+                detail=_option_completion_detail(builtin.name, option),
+                sort_text=_command_sort_text(option.name, rank=1),
+            )
+        )
     return tuple(items)
 
 
@@ -480,6 +655,56 @@ def _builtin_completion_documentation(overloads: tuple[BuiltinOverload, ...]) ->
 
 def _command_sort_text(label: str, *, rank: int) -> str:
     return f'{rank}:{label.casefold()}'
+
+
+def _builtin_shared_option_specs(builtin: BuiltinCommand) -> tuple[MetadataOption, ...] | None:
+    if not builtin.overloads:
+        return None
+    if any(not overload.options for overload in builtin.overloads):
+        return None
+
+    first_options = builtin.overloads[0].options
+    if any(overload.options != first_options for overload in builtin.overloads[1:]):
+        return None
+    return first_options
+
+
+def _builtin_shared_subcommands(
+    builtin: BuiltinCommand,
+) -> tuple[str, ...] | None:
+    if not builtin.overloads:
+        return None
+
+    first_subcommands = builtin.overloads[0].subcommands
+    if not first_subcommands:
+        return None
+    if any(overload.subcommands != first_subcommands for overload in builtin.overloads[1:]):
+        return None
+    return first_subcommands
+
+
+def _option_phase_active(
+    previous_arg_texts: tuple[str | None, ...],
+    options: tuple[MetadataOption, ...],
+    previous_arg_expanded: tuple[bool, ...],
+) -> bool:
+    if not previous_arg_texts:
+        return True
+
+    scan_result = scan_command_options(previous_arg_texts, options, previous_arg_expanded)
+    if scan_result.state != 'ok':
+        return False
+    if scan_result.positional_indices:
+        return False
+    return '--' not in previous_arg_texts
+
+
+def _option_completion_detail(command_name: str, option: MetadataOption) -> str:
+    if option.kind == 'value':
+        return f'option for {command_name} (requires value)'
+    if option.kind == 'stop':
+        return f'option terminator for {command_name}'
+    return f'option for {command_name}'
 
 
 def _is_implicit_tcltest_file(uri: str) -> bool:

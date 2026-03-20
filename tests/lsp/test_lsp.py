@@ -1145,7 +1145,7 @@ def test_language_server_initialize_advertises_semantic_tokens() -> None:
     assert semantic_tokens['full'] == {'delta': True}
     assert capabilities['renameProvider'] is True
     completion_provider = _as_dict(capabilities['completionProvider'])
-    assert completion_provider['triggerCharacters'] == ['$', ':']
+    assert completion_provider['triggerCharacters'] == ['$', ':', '-']
     signature_help_provider = _as_dict(capabilities['signatureHelpProvider'])
     assert signature_help_provider['triggerCharacters'] == [' ', '\t']
     assert capabilities['documentHighlightProvider'] is True
@@ -1160,6 +1160,28 @@ def test_language_server_returns_command_completion_items(server: LanguageServer
     greet_item = next(item for item in items if item['label'] == 'greet')
 
     assert greet_item['detail'] == 'proc ::greet()'
+
+
+def test_language_server_returns_builtin_subcommand_completion_items(
+    server: LanguageServer,
+) -> None:
+    _open_server_document(server, 'binary de\n')
+
+    items = _completion_items(server, line=0, character=len('binary de'))
+    decode_item = next(item for item in items if item['label'] == 'decode')
+
+    assert decode_item['detail'] == 'Tcl: binary decode {format ?-option value ...? data}'
+
+
+def test_language_server_returns_builtin_option_completion_items(
+    server: LanguageServer,
+) -> None:
+    _open_server_document(server, 'regexp -\n')
+
+    items = _completion_items(server, line=0, character=len('regexp -'))
+    nocase_item = next(item for item in items if item['label'] == '-nocase')
+
+    assert nocase_item['detail'] == 'option for regexp'
 
 
 def test_language_server_returns_variable_completion_items(server: LanguageServer) -> None:

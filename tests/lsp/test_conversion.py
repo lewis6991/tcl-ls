@@ -67,7 +67,7 @@ def test_language_server_initialize_serializes_protocol_models() -> None:
     assert capabilities['referencesProvider'] is True
     assert capabilities['hoverProvider'] is True
     completion_provider = cast(dict[str, object], capabilities['completionProvider'])
-    assert completion_provider['triggerCharacters'] == ['$', ':']
+    assert completion_provider['triggerCharacters'] == ['$', ':', '-']
     signature_help_provider = cast(dict[str, object], capabilities['signatureHelpProvider'])
     assert signature_help_provider['triggerCharacters'] == [' ', '\t']
     assert capabilities['documentHighlightProvider'] is True
