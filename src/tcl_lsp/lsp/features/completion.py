@@ -398,12 +398,22 @@ def _command_completion_items(
     prefix: str,
     current_namespace: str,
 ) -> CompletionResults:
+    absolute_prefix = prefix.startswith('::')
     candidates: list[_CommandCandidate] = []
     seen: set[tuple[str, str | None]] = set()
 
     for procedure in _iter_procedures(documents_by_uri):
-        label = _command_label(procedure.qualified_name, current_namespace=current_namespace)
-        if not _command_matches_prefix(procedure, label=label, prefix=prefix):
+        label = _command_completion_label(
+            procedure.qualified_name,
+            current_namespace=current_namespace,
+            absolute_prefix=absolute_prefix,
+        )
+        if not _command_matches_prefix(
+            procedure,
+            label=label,
+            prefix=prefix,
+            absolute_prefix=absolute_prefix,
+        ):
             continue
         key = (label, procedure.qualified_name)
         if key in seen:
@@ -424,6 +434,8 @@ def _command_completion_items(
         )
 
     for command_import in document.facts.command_imports:
+        if absolute_prefix:
+            continue
         if command_import.kind != 'exact' or command_import.imported_name is None:
             continue
         if not _matches_prefix(command_import.imported_name, prefix):
@@ -452,16 +464,17 @@ def _command_completion_items(
             .get(package_name, {})
             .values()
         ):
-            if ' ' in builtin.name or not _matches_prefix(builtin.name, prefix):
+            label = _builtin_completion_label(builtin.name, absolute_prefix=absolute_prefix)
+            if ' ' in builtin.name or not _matches_prefix(label, prefix):
                 continue
-            key = (builtin.name, builtin.package)
+            key = (label, builtin.package)
             if key in seen:
                 continue
             seen.add(key)
             candidates.append(
                 _CommandCandidate(
-                    label=builtin.name,
-                    sort_text=_command_sort_text(builtin.name, rank=2),
+                    label=label,
+                    sort_text=_command_sort_text(label, rank=2),
                     builtin_name=builtin.name,
                     builtin_package_name=package_name,
                     builtin_overloads=builtin.overloads,
@@ -738,6 +751,17 @@ def _iter_procedures(
     return tuple(latest_by_symbol.values())
 
 
+def _command_completion_label(
+    qualified_name: str,
+    *,
+    current_namespace: str,
+    absolute_prefix: bool,
+) -> str:
+    if absolute_prefix:
+        return qualified_name
+    return _command_label(qualified_name, current_namespace=current_namespace)
+
+
 def _command_label(qualified_name: str, *, current_namespace: str) -> str:
     if qualified_name == '::':
         return '::'
@@ -755,7 +779,21 @@ def _command_label(qualified_name: str, *, current_namespace: str) -> str:
     return normalized_name
 
 
-def _command_matches_prefix(procedure: ProcDecl, *, label: str, prefix: str) -> bool:
+def _builtin_completion_label(name: str, *, absolute_prefix: bool) -> str:
+    if absolute_prefix:
+        return f'::{name}'
+    return name
+
+
+def _command_matches_prefix(
+    procedure: ProcDecl,
+    *,
+    label: str,
+    prefix: str,
+    absolute_prefix: bool,
+) -> bool:
+    if absolute_prefix:
+        return procedure.qualified_name.startswith(prefix)
     normalized_name = procedure.qualified_name.removeprefix('::')
     return (
         _matches_prefix(label, prefix)
@@ -825,8 +863,8 @@ def _command_completion_item(candidate: _CommandCandidate) -> types.CompletionIt
 
     if candidate.imported_name is not None and candidate.import_target_name is not None:
         return types.CompletionItem(
-            label=candidate.imported_name,
-            insert_text=candidate.imported_name,
+            label=candidate.label,
+            insert_text=candidate.label,
             kind=types.CompletionItemKind.Function,
             detail=f'import {candidate.import_target_name}',
             sort_text=candidate.sort_text,
@@ -835,8 +873,8 @@ def _command_completion_item(candidate: _CommandCandidate) -> types.CompletionIt
     assert candidate.builtin_name is not None
     assert candidate.builtin_package_name is not None
     return types.CompletionItem(
-        label=candidate.builtin_name,
-        insert_text=candidate.builtin_name,
+        label=candidate.label,
+        insert_text=candidate.label,
         kind=types.CompletionItemKind.Function,
         detail=_builtin_completion_detail(
             candidate.builtin_name,

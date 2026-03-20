@@ -1162,6 +1162,35 @@ def test_language_server_returns_command_completion_items(server: LanguageServer
     assert greet_item['detail'] == 'proc ::greet()'
 
 
+def test_language_server_returns_absolute_plugin_metadata_completion_items(
+    server: LanguageServer,
+    tmp_path: Path,
+) -> None:
+    plugin_root = tmp_path / '.tcl-ls'
+    plugin_root.mkdir()
+    (plugin_root / 'sample.meta.tcl').write_text(
+        'meta module Tcl\nmeta command set_local_mode {args}\n',
+        encoding='utf-8',
+    )
+    (tmp_path / 'tcllsrc.tcl').write_text('plugin-path .tcl-ls\n', encoding='utf-8')
+
+    source_path = tmp_path / 'main.tcl'
+    source_text = '::set_lo\n'
+    source_path.write_text(source_text, encoding='utf-8')
+
+    _open_server_document(server, source_text, uri=source_path.as_uri())
+
+    items = _completion_items(
+        server,
+        uri=source_path.as_uri(),
+        line=0,
+        character=len('::set_lo'),
+    )
+    item = next(item for item in items if item['label'] == '::set_local_mode')
+
+    assert item['detail'] == 'Tcl: set_local_mode {args}'
+
+
 def test_language_server_marks_large_command_completion_lists_incomplete(
     server: LanguageServer,
 ) -> None:
