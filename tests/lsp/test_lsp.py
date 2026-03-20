@@ -1162,10 +1162,63 @@ def test_language_server_returns_command_completion_items(server: LanguageServer
     assert greet_item['detail'] == 'proc ::greet()'
 
 
+def test_language_server_marks_large_command_completion_lists_incomplete(
+    server: LanguageServer,
+) -> None:
+    source_text = ''.join(f'proc p{index} {{}} {{}}\n' for index in range(500)) + 'p\n'
+    _open_server_document(server, source_text)
+
+    completion_response = _server_position_request(
+        server,
+        method='textDocument/completion',
+        line=500,
+        character=1,
+    )
+    result = _as_dict(completion_response['result'])
+    items = cast(list[dict[str, object]], result['items'])
+
+    assert result['isIncomplete'] is True
+    assert len(items) == 200
+    assert items[0]['label'] == 'p0'
+
+
+def test_language_server_completion_uses_live_text_before_reanalysis(
+    server: LanguageServer,
+) -> None:
+    initial_text = 'namespace eval ::fts { proc hello {} {} }\n\n'
+    changed_text = 'namespace eval ::fts { proc hello {} {} }\nfts::\n'
+
+    def skip_document_change(uri: str, version: int) -> None:
+        del uri, version
+
+    _open_server_document(server, initial_text)
+
+    original_schedule_document_change = server.schedule_document_change
+    try:
+        _override_schedule_document_change(server, skip_document_change)
+        _change_server_document(server, changed_text)
+        items = _completion_items(server, line=1, character=len('fts::'))
+    finally:
+        _override_schedule_document_change(server, original_schedule_document_change)
+
+    assert any(item['label'] == 'fts::hello' for item in items)
+
+
 def test_language_server_returns_builtin_subcommand_completion_items(
     server: LanguageServer,
 ) -> None:
     _open_server_document(server, 'binary de\n')
+
+    items = _completion_items(server, line=0, character=len('binary de'))
+    decode_item = next(item for item in items if item['label'] == 'decode')
+
+    assert decode_item['detail'] == 'Tcl: binary decode {format ?-option value ...? data}'
+
+
+def test_language_server_returns_builtin_subcommand_completion_items_mid_word(
+    server: LanguageServer,
+) -> None:
+    _open_server_document(server, 'binary decode foo\n')
 
     items = _completion_items(server, line=0, character=len('binary de'))
     decode_item = next(item for item in items if item['label'] == 'decode')
@@ -1200,6 +1253,22 @@ def test_language_server_returns_variable_completion_items(server: LanguageServe
     assert item_by_label['value']['detail'] == 'parameter value'
 
 
+def test_language_server_returns_variable_completion_items_mid_word(
+    server: LanguageServer,
+) -> None:
+    source_text = 'proc run {value} {\n    puts $value\n}\n'
+    _open_server_document(server, source_text)
+
+    items = _completion_items(
+        server,
+        line=1,
+        character=len('    puts $va'),
+    )
+
+    value_item = next(item for item in items if item['label'] == 'value')
+    assert value_item['detail'] == 'parameter value'
+
+
 def test_language_server_returns_package_completion_items(
     server: LanguageServer, tmp_path: Path
 ) -> None:
@@ -1227,6 +1296,20 @@ def test_language_server_returns_package_completion_items(
 
 def test_language_server_returns_proc_signature_help(server: LanguageServer) -> None:
     _open_server_document(server, 'proc greet {name times} {return ok}\ngreet \n')
+
+    result = _signature_help_result(server, line=1, character=len('greet '))
+
+    assert result is not None
+    signatures = cast(list[dict[str, object]], result['signatures'])
+    assert signatures[0]['label'] == 'proc ::greet(name, times)'
+    assert result['activeSignature'] == 0
+    assert result['activeParameter'] == 0
+
+
+def test_language_server_returns_proc_signature_help_before_later_arguments(
+    server: LanguageServer,
+) -> None:
+    _open_server_document(server, 'proc greet {name times} {return ok}\ngreet name times\n')
 
     result = _signature_help_result(server, line=1, character=len('greet '))
 

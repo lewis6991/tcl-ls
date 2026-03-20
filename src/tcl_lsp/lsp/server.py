@@ -17,7 +17,7 @@ from tcl_lsp.analysis import FactExtractor, Resolver, WorkspaceIndex
 from tcl_lsp.analysis.metadata_effects import dependency_required_packages
 from tcl_lsp.common import Diagnostic, lsp_range
 from tcl_lsp.lsp.document_changes import DocumentChangeWorker
-from tcl_lsp.lsp.features.completion import completion_items
+from tcl_lsp.lsp.features.completion import CompletionResults, completion_items
 from tcl_lsp.lsp.features.highlights import document_highlights
 from tcl_lsp.lsp.features.hover import hover
 from tcl_lsp.lsp.features.navigation import definition, references
@@ -424,18 +424,18 @@ class LanguageServer(PyglsLanguageServer):
         uri: str,
         line: int,
         character: int,
-    ) -> tuple[types.CompletionItem, ...]:
-        with self._toolkit_lock:
-            return completion_items(
-                snapshot.documents,
-                workspace_index=snapshot.workspace_index,
-                metadata_registry=snapshot.metadata_registry,
-                parser=self.parser,
-                extractor=self.extractor,
-                uri=uri,
-                line=line,
-                character=character,
-            )
+    ) -> CompletionResults:
+        workspace_document = self._workspace_document_state(uri)
+        return completion_items(
+            snapshot.documents,
+            workspace_index=snapshot.workspace_index,
+            metadata_registry=snapshot.metadata_registry,
+            parser=self.parser,
+            live_text=None if workspace_document is None else workspace_document[0],
+            uri=uri,
+            line=line,
+            character=character,
+        )
 
     def signature_help_at(
         self,
@@ -445,16 +445,13 @@ class LanguageServer(PyglsLanguageServer):
         line: int,
         character: int,
     ) -> types.SignatureHelp | None:
-        with self._toolkit_lock:
-            return signature_help(
-                snapshot.documents,
-                metadata_registry=snapshot.metadata_registry,
-                parser=self.parser,
-                extractor=self.extractor,
-                uri=uri,
-                line=line,
-                character=character,
-            )
+        return signature_help(
+            snapshot.documents,
+            metadata_registry=snapshot.metadata_registry,
+            uri=uri,
+            line=line,
+            character=character,
+        )
 
     def publish_document_diagnostics(
         self,
@@ -840,13 +837,16 @@ def completion_request(
     params: types.CompletionParams,
 ) -> types.CompletionList:
     snapshot = server.analysis_snapshot()
-    items = server.completion_items_at(
+    result = server.completion_items_at(
         snapshot,
         uri=params.text_document.uri,
         line=params.position.line,
         character=params.position.character,
     )
-    return types.CompletionList(is_incomplete=False, items=list(items))
+    return types.CompletionList(
+        is_incomplete=result.is_incomplete,
+        items=list(result.items),
+    )
 
 
 @server.feature(

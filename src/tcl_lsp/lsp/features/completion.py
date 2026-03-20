@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import heapq
+from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
 from lsprotocol import types
 
-from tcl_lsp.analysis import FactExtractor, WorkspaceIndex
+from tcl_lsp.analysis import WorkspaceIndex
 from tcl_lsp.analysis.builtins import (
     BuiltinCommand,
     BuiltinOverload,
@@ -14,16 +16,40 @@ from tcl_lsp.analysis.builtins import (
     builtin_commands_by_package,
     canonical_builtin_package_name,
 )
+from tcl_lsp.analysis.facts.utils import normalize_command_name
 from tcl_lsp.analysis.metadata_commands import MetadataOption, scan_command_options
 from tcl_lsp.analysis.metadata_effects import dependency_required_packages
-from tcl_lsp.analysis.model import CommandCall, DocumentFacts, ProcDecl
-from tcl_lsp.common import offset_at_position
+from tcl_lsp.analysis.model import CommandCall, ProcDecl
+from tcl_lsp.common import Position, offset_at_position
+from tcl_lsp.lsp.features.cursor_context import (
+    CursorContext,
+    argument_context,
+    command_name_prefix,
+    cursor_context,
+    is_empty_command_position,
+    namespace_at_position,
+    scope_id_at_position,
+)
 from tcl_lsp.lsp.state import ManagedDocument
 from tcl_lsp.metadata_paths import MetadataRegistry
-from tcl_lsp.parser import Parser
+from tcl_lsp.parser import Parser, word_static_text
+from tcl_lsp.parser.model import Command as SyntaxCommand
 from tcl_lsp.project.paths import source_id_to_path
 
 type CompletionKind = Literal['argument', 'command', 'package', 'variable']
+
+_MAX_COMMAND_COMPLETION_ITEMS = 200
+_BUILTIN_COMPLETION_PACKAGE_CACHE_LIMIT = 128
+_builtin_completion_package_cache: OrderedDict[
+    tuple[str, int, WorkspaceIndex, MetadataRegistry],
+    tuple[str, ...],
+] = OrderedDict()
+
+
+@dataclass(frozen=True, slots=True)
+class CompletionResults:
+    items: tuple[types.CompletionItem, ...]
+    is_incomplete: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,42 +62,80 @@ class _CompletionContext:
     argument_index: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _CommandCandidate:
+    label: str
+    sort_text: str
+    procedure: ProcDecl | None = None
+    imported_name: str | None = None
+    import_target_name: str | None = None
+    builtin_name: str | None = None
+    builtin_package_name: str | None = None
+    builtin_overloads: tuple[BuiltinOverload, ...] = ()
+
+
 def completion_items(
     documents_by_uri: Mapping[str, ManagedDocument],
     *,
     workspace_index: WorkspaceIndex,
     metadata_registry: MetadataRegistry,
-    parser: Parser,
-    extractor: FactExtractor,
+    parser: Parser | None = None,
+    live_text: str | None = None,
     uri: str,
     line: int,
     character: int,
-) -> tuple[types.CompletionItem, ...]:
+) -> CompletionResults:
     document = documents_by_uri.get(uri)
     if document is None:
-        return ()
+        return CompletionResults(items=())
 
-    offset = offset_at_position(document.text, line, character)
-    if offset is None:
-        return ()
+    if live_text is not None and live_text != document.text and parser is not None:
+        context = _live_completion_context(
+            document=document,
+            workspace_index=workspace_index,
+            metadata_registry=metadata_registry,
+            parser=parser,
+            uri=uri,
+            text=live_text,
+            line=line,
+            character=character,
+        )
+        if context is not None:
+            return _completion_results_for_context(
+                documents_by_uri,
+                document=document,
+                workspace_index=workspace_index,
+                metadata_registry=metadata_registry,
+                context=context,
+            )
 
-    prefix_text = document.text[:offset]
-    prefix_facts = _prefix_facts(
-        parser=parser,
-        extractor=extractor,
-        uri=uri,
-        text=prefix_text,
-    )
+    context = cursor_context(document, line=line, character=character)
+    if context is None:
+        return CompletionResults(items=())
     context = _completion_context(
         document=document,
-        prefix_text=prefix_text,
-        prefix_facts=prefix_facts,
-        line=line,
-        character=character,
+        cursor=context,
     )
     if context is None:
-        return ()
+        return CompletionResults(items=())
 
+    return _completion_results_for_context(
+        documents_by_uri,
+        document=document,
+        workspace_index=workspace_index,
+        metadata_registry=metadata_registry,
+        context=context,
+    )
+
+
+def _completion_results_for_context(
+    documents_by_uri: Mapping[str, ManagedDocument],
+    *,
+    document: ManagedDocument,
+    workspace_index: WorkspaceIndex,
+    metadata_registry: MetadataRegistry,
+    context: _CompletionContext,
+) -> CompletionResults:
     if context.kind == 'command':
         return _command_completion_items(
             documents_by_uri,
@@ -82,182 +146,247 @@ def completion_items(
             current_namespace=context.namespace,
         )
     if context.kind == 'argument' and context.command_call is not None:
-        return _argument_completion_items(
-            document=document,
-            workspace_index=workspace_index,
-            metadata_registry=metadata_registry,
-            command_call=context.command_call,
-            argument_index=context.argument_index or 0,
-            prefix=context.prefix,
+        return CompletionResults(
+            items=_argument_completion_items(
+                document=document,
+                workspace_index=workspace_index,
+                metadata_registry=metadata_registry,
+                command_call=context.command_call,
+                argument_index=context.argument_index or 0,
+                prefix=context.prefix,
+            )
         )
     if context.kind == 'package':
-        return _package_completion_items(
-            documents_by_uri,
-            workspace_index=workspace_index,
-            metadata_registry=metadata_registry,
-            prefix=context.prefix,
+        return CompletionResults(
+            items=_package_completion_items(
+                documents_by_uri,
+                workspace_index=workspace_index,
+                metadata_registry=metadata_registry,
+                prefix=context.prefix,
+            )
         )
-    return _variable_completion_items(
-        document=document,
-        prefix=context.prefix,
-        scope_id=context.scope_id,
-    )
-
-
-def _prefix_facts(
-    *,
-    parser: Parser,
-    extractor: FactExtractor,
-    uri: str,
-    text: str,
-) -> DocumentFacts:
-    parse_result = parser.parse_document(path=uri, text=text)
-    return extractor.extract(
-        parse_result,
-        include_parse_result=False,
-        include_lexical_spans=False,
+    return CompletionResults(
+        items=_variable_completion_items(
+            document=document,
+            prefix=context.prefix,
+            scope_id=context.scope_id,
+        )
     )
 
 
 def _completion_context(
     *,
     document: ManagedDocument,
-    prefix_text: str,
-    prefix_facts: DocumentFacts,
-    line: int,
-    character: int,
+    cursor: CursorContext,
 ) -> _CompletionContext | None:
-    variable_prefix = _variable_prefix(prefix_text, prefix_facts)
-    attached_call = _last_attached_command_call(prefix_text, prefix_facts)
-    current_namespace = (
-        attached_call.namespace
-        if attached_call is not None
-        else _namespace_at_position(document.facts, line=line, character=character)
-    )
-
-    if variable_prefix is not None:
+    if cursor.variable_prefix is not None:
         return _CompletionContext(
             kind='variable',
-            prefix=variable_prefix,
-            namespace=current_namespace,
-            scope_id=attached_call.scope_id if attached_call is not None else None,
+            prefix=cursor.variable_prefix,
+            namespace=cursor.namespace,
+            scope_id=cursor.scope_id,
         )
 
-    package_prefix = _package_prefix(prefix_text, attached_call)
-    if package_prefix is not None:
+    attached_call = cursor.attached_command_call
+    if attached_call is not None and attached_call.name == 'package require':
         return _CompletionContext(
             kind='package',
-            prefix=package_prefix,
-            namespace=current_namespace,
+            prefix='' if cursor.argument_prefix is None else cursor.argument_prefix,
+            namespace=cursor.namespace,
         )
 
-    if attached_call is not None and attached_call.name_span.end.offset == len(prefix_text):
+    if cursor.command_name_prefix is not None:
         return _CompletionContext(
             kind='command',
-            prefix=attached_call.name or '',
-            namespace=attached_call.namespace,
+            prefix=cursor.command_name_prefix,
+            namespace=cursor.namespace,
         )
 
-    argument_context = _argument_context(prefix_text, attached_call)
-    if argument_context is not None and attached_call is not None:
-        argument_prefix, argument_index = argument_context
+    if attached_call is not None and cursor.argument_prefix is not None:
         return _CompletionContext(
             kind='argument',
-            prefix=argument_prefix,
-            namespace=attached_call.namespace,
+            prefix=cursor.argument_prefix,
+            namespace=cursor.namespace,
             command_call=attached_call,
-            argument_index=argument_index,
+            argument_index=0 if cursor.argument_index is None else cursor.argument_index,
         )
 
-    if _is_empty_command_position(prefix_text):
+    if is_empty_command_position(document.text, offset=cursor.offset):
         return _CompletionContext(
             kind='command',
             prefix='',
-            namespace=current_namespace,
+            namespace=cursor.namespace,
         )
 
     return None
 
 
-def _variable_prefix(prefix_text: str, prefix_facts: DocumentFacts) -> str | None:
+def _live_completion_context(
+    *,
+    document: ManagedDocument,
+    workspace_index: WorkspaceIndex,
+    metadata_registry: MetadataRegistry,
+    parser: Parser,
+    uri: str,
+    text: str,
+    line: int,
+    character: int,
+) -> _CompletionContext | None:
+    offset = offset_at_position(text, line, character)
+    if offset is None:
+        return None
+
+    namespace = namespace_at_position(document.facts, line=line, character=character)
+    scope_id = scope_id_at_position(document.facts, line=line, character=character)
+    line_start = text.rfind('\n', 0, offset) + 1
+    line_prefix_text = text[line_start:offset]
+
+    variable_prefix = _live_variable_prefix(line_prefix_text)
+    if variable_prefix is not None:
+        return _CompletionContext(
+            kind='variable',
+            prefix=variable_prefix,
+            namespace=namespace,
+            scope_id=scope_id,
+        )
+
+    if is_empty_command_position(text, offset=offset):
+        return _CompletionContext(
+            kind='command',
+            prefix='',
+            namespace=namespace,
+        )
+
+    parse_result = parser.parse_embedded_script(
+        source_id=uri,
+        text=line_prefix_text,
+        start_position=Position(offset=line_start, line=line, character=0),
+    )
+    if not parse_result.script.commands:
+        return None
+
+    command = parse_result.script.commands[-1]
+    live_call = _live_command_call(
+        document=document,
+        workspace_index=workspace_index,
+        metadata_registry=metadata_registry,
+        namespace=namespace,
+        scope_id=scope_id,
+        command=command,
+    )
+    if live_call is None:
+        return None
+
+    command_prefix = command_name_prefix(text, live_call, offset)
+    if command_prefix is not None:
+        return _CompletionContext(
+            kind='command',
+            prefix=command_prefix,
+            namespace=namespace,
+        )
+
+    current_argument_context = argument_context(text, live_call, offset)
+    if live_call.name == 'package require':
+        return _CompletionContext(
+            kind='package',
+            prefix='' if current_argument_context is None else current_argument_context[0],
+            namespace=namespace,
+        )
+
+    if current_argument_context is not None:
+        argument_prefix, argument_index = current_argument_context
+        return _CompletionContext(
+            kind='argument',
+            prefix=argument_prefix,
+            namespace=namespace,
+            command_call=live_call,
+            argument_index=argument_index,
+        )
+
+    return None
+
+
+def _live_variable_prefix(prefix_text: str) -> str | None:
     if prefix_text.endswith('${') or prefix_text.endswith('$'):
         return ''
-
-    for variable_reference in reversed(prefix_facts.variable_references):
-        if variable_reference.span.end.offset == len(prefix_text):
-            return variable_reference.name
 
     open_brace_index = prefix_text.rfind('${')
     if open_brace_index >= 0 and '}' not in prefix_text[open_brace_index + 2 :]:
         return prefix_text[open_brace_index + 2 :]
 
+    dollar_index = prefix_text.rfind('$')
+    if dollar_index < 0:
+        return None
+
+    variable_prefix = prefix_text[dollar_index + 1 :]
+    if not variable_prefix:
+        return None
+    if all(char.isalnum() or char in {'_', ':'} for char in variable_prefix):
+        return variable_prefix
     return None
 
 
-def _package_prefix(prefix_text: str, attached_call: CommandCall | None) -> str | None:
-    if attached_call is None or attached_call.name != 'package require':
-        return None
-
-    if not attached_call.arg_spans:
-        return ''
-
-    last_arg_span = attached_call.arg_spans[-1]
-    if last_arg_span.end.offset == len(prefix_text):
-        argument_text = attached_call.arg_texts[-1]
-        return '' if argument_text is None else argument_text
-    return ''
-
-
-def _last_attached_command_call(
-    prefix_text: str,
-    prefix_facts: DocumentFacts,
+def _live_command_call(
+    *,
+    document: ManagedDocument,
+    workspace_index: WorkspaceIndex,
+    metadata_registry: MetadataRegistry,
+    namespace: str,
+    scope_id: str,
+    command: SyntaxCommand,
 ) -> CommandCall | None:
-    for command_call in reversed(prefix_facts.command_calls):
-        tail_text = prefix_text[command_call.span.end.offset :]
-        if all(char in {' ', '\t'} for char in tail_text):
-            return command_call
-    return None
-
-
-def _argument_context(
-    prefix_text: str,
-    attached_call: CommandCall | None,
-) -> tuple[str, int] | None:
-    if attached_call is None:
+    if not command.words:
         return None
 
-    if attached_call.arg_spans and attached_call.arg_spans[-1].end.offset == len(prefix_text):
-        argument_text = attached_call.arg_texts[-1]
-        return ('' if argument_text is None else argument_text, len(attached_call.arg_spans) - 1)
+    command_name_word = command.words[0]
+    static_name = word_static_text(command_name_word)
+    command_name = normalize_command_name(static_name) if static_name is not None else None
+    name_span = command_name_word.span
+    argument_start = 1
 
-    tail_text = prefix_text[attached_call.span.end.offset :]
-    if tail_text and all(char in {' ', '\t'} for char in tail_text):
-        return ('', len(attached_call.arg_spans))
+    if command_name is not None and len(command.words) > 1:
+        builtin_packages = frozenset(
+            _builtin_completion_packages(
+                document=document,
+                workspace_index=workspace_index,
+                metadata_registry=metadata_registry,
+            )
+        )
+        command_name_parts = [command_name]
+        for index, word in enumerate(command.words[1:], start=1):
+            static_text = word_static_text(word)
+            if static_text is None:
+                break
+            candidate_name = ' '.join((*command_name_parts, static_text))
+            if (
+                builtin_command_for_packages(
+                    candidate_name,
+                    builtin_packages,
+                    metadata_registry=metadata_registry,
+                )
+                is None
+            ):
+                break
+            command_name_parts.append(static_text)
+            name_span = word.content_span
+            argument_start = index + 1
+        command_name = ' '.join(command_name_parts)
 
-    return None
-
-
-def _namespace_at_position(facts: DocumentFacts, *, line: int, character: int) -> str:
-    matches = [
-        namespace
-        for namespace in facts.namespaces
-        if namespace.span.contains(line=line, character=character)
-    ]
-    if not matches:
-        return '::'
-    return min(
-        matches,
-        key=lambda namespace: namespace.span.end.offset - namespace.span.start.offset,
-    ).qualified_name
-
-
-def _is_empty_command_position(prefix_text: str) -> bool:
-    index = len(prefix_text) - 1
-    while index >= 0 and prefix_text[index] in {' ', '\t'}:
-        index -= 1
-    if index < 0:
-        return True
-    return prefix_text[index] in {'\n', ';', '['}
+    argument_words = command.words[argument_start:]
+    return CommandCall(
+        uri=document.uri,
+        name=command_name,
+        arg_texts=tuple(word_static_text(word) for word in argument_words),
+        arg_spans=tuple(word.span for word in argument_words),
+        arg_expanded=tuple(word.expanded for word in argument_words),
+        namespace=namespace,
+        scope_id=scope_id,
+        procedure_symbol_id=None,
+        embedded_language=None,
+        span=command.span,
+        name_span=name_span,
+        dynamic=command_name is None,
+    )
 
 
 def _command_completion_items(
@@ -268,8 +397,8 @@ def _command_completion_items(
     metadata_registry: MetadataRegistry,
     prefix: str,
     current_namespace: str,
-) -> tuple[types.CompletionItem, ...]:
-    items: list[types.CompletionItem] = []
+) -> CompletionResults:
+    candidates: list[_CommandCandidate] = []
     seen: set[tuple[str, str | None]] = set()
 
     for procedure in _iter_procedures(documents_by_uri):
@@ -280,13 +409,9 @@ def _command_completion_items(
         if key in seen:
             continue
         seen.add(key)
-        items.append(
-            types.CompletionItem(
+        candidates.append(
+            _CommandCandidate(
                 label=label,
-                insert_text=label,
-                kind=types.CompletionItemKind.Function,
-                detail=_proc_completion_detail(procedure),
-                documentation=procedure.documentation,
                 sort_text=_command_sort_text(
                     label,
                     rank=_procedure_completion_rank(
@@ -294,6 +419,7 @@ def _command_completion_items(
                         current_namespace=current_namespace,
                     ),
                 ),
+                procedure=procedure,
             )
         )
 
@@ -306,13 +432,12 @@ def _command_completion_items(
         if key in seen:
             continue
         seen.add(key)
-        items.append(
-            types.CompletionItem(
+        candidates.append(
+            _CommandCandidate(
                 label=command_import.imported_name,
-                insert_text=command_import.imported_name,
-                kind=types.CompletionItemKind.Function,
-                detail=f'import {command_import.target_name}',
                 sort_text=_command_sort_text(command_import.imported_name, rank=1),
+                imported_name=command_import.imported_name,
+                import_target_name=command_import.target_name,
             )
         )
 
@@ -333,20 +458,30 @@ def _command_completion_items(
             if key in seen:
                 continue
             seen.add(key)
-            items.append(
-                types.CompletionItem(
+            candidates.append(
+                _CommandCandidate(
                     label=builtin.name,
-                    insert_text=builtin.name,
-                    kind=types.CompletionItemKind.Function,
-                    detail=_builtin_completion_detail(
-                        builtin.name, package_name, builtin.overloads
-                    ),
-                    documentation=_builtin_completion_documentation(builtin.overloads),
                     sort_text=_command_sort_text(builtin.name, rank=2),
+                    builtin_name=builtin.name,
+                    builtin_package_name=package_name,
+                    builtin_overloads=builtin.overloads,
                 )
             )
 
-    return tuple(sorted(items, key=lambda item: (item.sort_text or item.label, item.label)))
+    incomplete = len(candidates) > _MAX_COMMAND_COMPLETION_ITEMS
+    if incomplete:
+        selected_candidates = heapq.nsmallest(
+            _MAX_COMMAND_COMPLETION_ITEMS,
+            candidates,
+            key=_command_candidate_sort_key,
+        )
+    else:
+        selected_candidates = sorted(candidates, key=_command_candidate_sort_key)
+
+    return CompletionResults(
+        items=tuple(_command_completion_item(candidate) for candidate in selected_candidates),
+        is_incomplete=incomplete,
+    )
 
 
 def _argument_completion_items(
@@ -555,6 +690,17 @@ def _builtin_completion_packages(
     workspace_index: WorkspaceIndex,
     metadata_registry: MetadataRegistry,
 ) -> tuple[str, ...]:
+    cache_key = (
+        document.uri,
+        document.version,
+        workspace_index,
+        metadata_registry,
+    )
+    cached_packages = _builtin_completion_package_cache.get(cache_key)
+    if cached_packages is not None:
+        _builtin_completion_package_cache.move_to_end(cache_key)
+        return cached_packages
+
     packages: dict[str, None] = {'Tcl': None}
     source_path = source_id_to_path(document.uri)
     if source_path is None:
@@ -574,7 +720,12 @@ def _builtin_completion_packages(
 
     for package_name in sorted(required_packages):
         packages.setdefault(canonical_builtin_package_name(package_name), None)
-    return tuple(packages)
+
+    builtin_packages = tuple(packages)
+    _builtin_completion_package_cache[cache_key] = builtin_packages
+    while len(_builtin_completion_package_cache) > _BUILTIN_COMPLETION_PACKAGE_CACHE_LIMIT:
+        _builtin_completion_package_cache.popitem(last=False)
+    return builtin_packages
 
 
 def _iter_procedures(
@@ -655,6 +806,46 @@ def _builtin_completion_documentation(overloads: tuple[BuiltinOverload, ...]) ->
 
 def _command_sort_text(label: str, *, rank: int) -> str:
     return f'{rank}:{label.casefold()}'
+
+
+def _command_candidate_sort_key(candidate: _CommandCandidate) -> tuple[str, str]:
+    return (candidate.sort_text, candidate.label)
+
+
+def _command_completion_item(candidate: _CommandCandidate) -> types.CompletionItem:
+    if candidate.procedure is not None:
+        return types.CompletionItem(
+            label=candidate.label,
+            insert_text=candidate.label,
+            kind=types.CompletionItemKind.Function,
+            detail=_proc_completion_detail(candidate.procedure),
+            documentation=candidate.procedure.documentation,
+            sort_text=candidate.sort_text,
+        )
+
+    if candidate.imported_name is not None and candidate.import_target_name is not None:
+        return types.CompletionItem(
+            label=candidate.imported_name,
+            insert_text=candidate.imported_name,
+            kind=types.CompletionItemKind.Function,
+            detail=f'import {candidate.import_target_name}',
+            sort_text=candidate.sort_text,
+        )
+
+    assert candidate.builtin_name is not None
+    assert candidate.builtin_package_name is not None
+    return types.CompletionItem(
+        label=candidate.builtin_name,
+        insert_text=candidate.builtin_name,
+        kind=types.CompletionItemKind.Function,
+        detail=_builtin_completion_detail(
+            candidate.builtin_name,
+            candidate.builtin_package_name,
+            candidate.builtin_overloads,
+        ),
+        documentation=_builtin_completion_documentation(candidate.builtin_overloads),
+        sort_text=candidate.sort_text,
+    )
 
 
 def _builtin_shared_option_specs(builtin: BuiltinCommand) -> tuple[MetadataOption, ...] | None:

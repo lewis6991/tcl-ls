@@ -5,19 +5,16 @@ from dataclasses import dataclass
 
 from lsprotocol import types
 
-from tcl_lsp.analysis import FactExtractor
 from tcl_lsp.analysis.builtins import BuiltinOverload, builtin_commands_by_package
 from tcl_lsp.analysis.model import (
     CommandArity,
     CommandCall,
-    DocumentFacts,
     ProcDecl,
     ResolutionResult,
 )
-from tcl_lsp.common import offset_at_position
+from tcl_lsp.lsp.features.cursor_context import cursor_context
 from tcl_lsp.lsp.state import ManagedDocument
 from tcl_lsp.metadata_paths import MetadataRegistry
-from tcl_lsp.parser import Parser
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,8 +28,6 @@ def signature_help(
     documents_by_uri: Mapping[str, ManagedDocument],
     *,
     metadata_registry: MetadataRegistry,
-    parser: Parser,
-    extractor: FactExtractor,
     uri: str,
     line: int,
     character: int,
@@ -41,21 +36,14 @@ def signature_help(
     if document is None:
         return None
 
-    offset = offset_at_position(document.text, line, character)
-    if offset is None:
+    context = cursor_context(document, line=line, character=character)
+    if context is None:
         return None
 
-    prefix_text = document.text[:offset]
-    prefix_facts = _prefix_facts(
-        parser=parser,
-        extractor=extractor,
-        uri=uri,
-        text=prefix_text,
-    )
-    if _variable_context(prefix_text, prefix_facts):
+    if context.variable_prefix is not None:
         return None
 
-    command_call = _last_attached_command_call(prefix_text, prefix_facts)
+    command_call = context.attached_command_call
     if command_call is None or command_call.name is None:
         return None
 
@@ -77,48 +65,13 @@ def signature_help(
     )
     active_parameter = _active_parameter_index(
         candidates[active_signature],
-        active_argument=_active_argument_index(prefix_text, command_call),
+        active_argument=0 if context.argument_index is None else context.argument_index,
     )
     return types.SignatureHelp(
         signatures=[candidate.info for candidate in candidates],
         active_signature=active_signature,
         active_parameter=active_parameter,
     )
-
-
-def _prefix_facts(
-    *,
-    parser: Parser,
-    extractor: FactExtractor,
-    uri: str,
-    text: str,
-) -> DocumentFacts:
-    parse_result = parser.parse_document(path=uri, text=text)
-    return extractor.extract(
-        parse_result,
-        include_parse_result=False,
-        include_lexical_spans=False,
-    )
-
-
-def _variable_context(prefix_text: str, prefix_facts: DocumentFacts) -> bool:
-    if prefix_text.endswith('${') or prefix_text.endswith('$'):
-        return True
-    return any(
-        variable_reference.span.end.offset == len(prefix_text)
-        for variable_reference in prefix_facts.variable_references
-    )
-
-
-def _last_attached_command_call(
-    prefix_text: str,
-    prefix_facts: DocumentFacts,
-) -> CommandCall | None:
-    for command_call in reversed(prefix_facts.command_calls):
-        tail_text = prefix_text[command_call.span.end.offset :]
-        if all(char in {' ', '\t'} for char in tail_text):
-            return command_call
-    return None
 
 
 def _resolution_for_call(
@@ -234,15 +187,6 @@ def _arity_accepts(arity: CommandArity | None, argument_count: int) -> bool:
     if arity is None:
         return True
     return arity.accepts(argument_count)
-
-
-def _active_argument_index(prefix_text: str, command_call: CommandCall) -> int:
-    if not command_call.arg_spans:
-        return 0
-    tail_text = prefix_text[command_call.span.end.offset :]
-    if tail_text and all(char in {' ', '\t'} for char in tail_text):
-        return len(command_call.arg_spans)
-    return len(command_call.arg_spans) - 1
 
 
 def _active_parameter_index(

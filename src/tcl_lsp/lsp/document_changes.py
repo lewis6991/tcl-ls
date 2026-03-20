@@ -15,6 +15,7 @@ class DocumentChangeWorker:
     _apply_change: ApplyDocumentChange
     _condition: threading.Condition
     _current_document_version: CurrentDocumentVersion
+    _debounce_seconds: float
     _pending_changes: dict[str, int]
     _publish_diagnostics: PublishDiagnostics
     _request_version: int
@@ -27,10 +28,12 @@ class DocumentChangeWorker:
         apply_change: ApplyDocumentChange,
         current_document_version: CurrentDocumentVersion,
         publish_diagnostics: PublishDiagnostics,
+        debounce_seconds: float = 0.15,
     ) -> None:
         self._apply_change = apply_change
         self._condition = threading.Condition()
         self._current_document_version = current_document_version
+        self._debounce_seconds = max(0.0, debounce_seconds)
         self._pending_changes = {}
         self._publish_diagnostics = publish_diagnostics
         self._request_version = 0
@@ -92,8 +95,16 @@ class DocumentChangeWorker:
                     self._condition.wait()
                 if self._stop_requested:
                     return
-                pending_changes = tuple(self._pending_changes.items())
                 request_version = self._request_version
+                if self._debounce_seconds > 0:
+                    while True:
+                        self._condition.wait(timeout=self._debounce_seconds)
+                        if self._stop_requested:
+                            return
+                        if self._request_version == request_version:
+                            break
+                        request_version = self._request_version
+                pending_changes = tuple(self._pending_changes.items())
 
             diagnostics_by_uri: dict[str, tuple[Diagnostic, ...]] = {}
             cancelled = False
