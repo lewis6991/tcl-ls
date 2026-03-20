@@ -89,6 +89,7 @@ def test_language_server_initialize_serializes_protocol_models() -> None:
         'operator',
     ]
     assert legend['tokenModifiers'] == ['declaration', 'defaultLibrary']
+    assert semantic_tokens['full'] == {'delta': True}
     server_info = cast(dict[str, object], result['serverInfo'])
     assert server_info == {'name': 'tcl-ls', 'version': '0.1.0'}
 

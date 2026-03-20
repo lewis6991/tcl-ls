@@ -80,6 +80,13 @@ class _SemanticToken:
     modifier_bits: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class EncodedSemanticTokenEdit:
+    start: int
+    delete_count: int
+    data: tuple[int, ...] | None = None
+
+
 def encode_document_semantic_tokens(
     *,
     text: str,
@@ -121,6 +128,42 @@ def encode_document_semantic_tokens(
             previous_character = character
 
     return tuple(encoded)
+
+
+def diff_encoded_semantic_tokens(
+    *,
+    previous_data: tuple[int, ...],
+    current_data: tuple[int, ...],
+) -> tuple[EncodedSemanticTokenEdit, ...]:
+    if previous_data == current_data:
+        return ()
+
+    shared_prefix_length = 0
+    while (
+        shared_prefix_length < len(previous_data)
+        and shared_prefix_length < len(current_data)
+        and previous_data[shared_prefix_length] == current_data[shared_prefix_length]
+    ):
+        shared_prefix_length += 1
+
+    previous_end = len(previous_data)
+    current_end = len(current_data)
+    while (
+        previous_end > shared_prefix_length
+        and current_end > shared_prefix_length
+        and previous_data[previous_end - 1] == current_data[current_end - 1]
+    ):
+        previous_end -= 1
+        current_end -= 1
+
+    replacement = current_data[shared_prefix_length:current_end]
+    return (
+        EncodedSemanticTokenEdit(
+            start=shared_prefix_length,
+            delete_count=previous_end - shared_prefix_length,
+            data=None if not replacement else replacement,
+        ),
+    )
 
 
 def _collect_semantic_tokens(

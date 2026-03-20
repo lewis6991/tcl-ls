@@ -183,6 +183,29 @@ def _server_document_request(
     return _as_dict(response)
 
 
+def _server_semantic_token_delta_request(
+    server: LanguageServer,
+    *,
+    previous_result_id: str,
+    uri: str = _MAIN_URI,
+    request_id: int = 1,
+) -> dict[str, object]:
+    messages = process_message(
+        server,
+        {
+            'jsonrpc': '2.0',
+            'id': request_id,
+            'method': 'textDocument/semanticTokens/full/delta',
+            'params': {
+                'textDocument': {'uri': uri},
+                'previousResultId': previous_result_id,
+            },
+        },
+    )
+    response = next(message for message in messages if message.get('id') == request_id)
+    return _as_dict(response)
+
+
 def _server_workspace_request(
     server: LanguageServer,
     *,
@@ -244,6 +267,19 @@ def _decode_semantic_tokens(
             }
         )
     return decoded
+
+
+def _apply_semantic_token_edits(
+    data: list[int],
+    edits: list[dict[str, object]],
+) -> list[int]:
+    updated = list(data)
+    for edit in edits:
+        replacement = edit.get('data')
+        updated[
+            cast(int, edit['start']) : cast(int, edit['start']) + cast(int, edit['deleteCount'])
+        ] = [] if replacement is None else cast(list[int], replacement)
+    return updated
 
 
 def _semantic_token(
@@ -1106,7 +1142,7 @@ def test_language_server_initialize_advertises_semantic_tokens() -> None:
         'operator',
     ]
     assert legend['tokenModifiers'] == ['declaration', 'defaultLibrary']
-    assert semantic_tokens['full'] is True
+    assert semantic_tokens['full'] == {'delta': True}
     assert capabilities['renameProvider'] is True
     completion_provider = _as_dict(capabilities['completionProvider'])
     assert completion_provider['triggerCharacters'] == ['$', ':']
@@ -1317,6 +1353,89 @@ def test_language_server_returns_semantic_tokens(server: LanguageServer) -> None
 
     for expected_token in expected_tokens:
         assert expected_token in decoded
+
+
+def test_language_server_returns_semantic_token_deltas(server: LanguageServer) -> None:
+    initial_text = 'proc greet {} {\n    return ok\n}\n'
+    changed_text = '\nproc greet {} {\n    return ok\n}\n'
+
+    def skip_document_change(uri: str, version: int) -> None:
+        del uri, version
+
+    _open_server_document(server, initial_text)
+
+    initial_response = _server_document_request(server, method='textDocument/semanticTokens/full')
+    initial_result = _as_dict(initial_response['result'])
+    initial_data = cast(list[int], initial_result['data'])
+    previous_result_id = cast(str, initial_result['resultId'])
+
+    original_schedule_document_change = server.schedule_document_change
+    try:
+        _override_schedule_document_change(server, skip_document_change)
+        _change_server_document(server, changed_text)
+
+        delta_response = _server_semantic_token_delta_request(
+            server,
+            previous_result_id=previous_result_id,
+        )
+    finally:
+        _override_schedule_document_change(server, original_schedule_document_change)
+
+    delta_result = _as_dict(delta_response['result'])
+    edits = cast(list[dict[str, object]], delta_result['edits'])
+    updated_data = _apply_semantic_token_edits(initial_data, edits)
+
+    latest_response = _server_document_request(
+        server,
+        method='textDocument/semanticTokens/full',
+        request_id=2,
+    )
+    latest_result = _as_dict(latest_response['result'])
+    latest_data = cast(list[int], latest_result['data'])
+
+    assert updated_data == latest_data
+    assert delta_result['resultId'] == latest_result['resultId']
+
+    token_types, token_modifiers = _semantic_tokens_legend(server)
+    decoded = _decode_semantic_tokens(
+        updated_data,
+        token_types=token_types,
+        token_modifiers=token_modifiers,
+    )
+
+    assert _semantic_token(line=1, character=0, length=4, token_type='keyword') in decoded
+    assert (
+        _semantic_token(
+            line=2,
+            character=4,
+            length=6,
+            token_type='keyword',
+        )
+        in decoded
+    )
+
+
+def test_language_server_returns_full_semantic_tokens_when_delta_result_is_unknown(
+    server: LanguageServer,
+) -> None:
+    _open_server_document(server, 'proc greet {} {\n    return ok\n}\n')
+
+    delta_response = _server_semantic_token_delta_request(
+        server,
+        previous_result_id='unknown-result',
+    )
+    delta_result = _as_dict(delta_response['result'])
+
+    full_response = _server_document_request(
+        server,
+        method='textDocument/semanticTokens/full',
+        request_id=2,
+    )
+    full_result = _as_dict(full_response['result'])
+
+    assert delta_result['data'] == full_result['data']
+    assert delta_result['resultId'] == full_result['resultId']
+    assert 'edits' not in delta_result
 
 
 def test_language_server_returns_semantic_tokens_for_embedded_comments_and_if_keywords(

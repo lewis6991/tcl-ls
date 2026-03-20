@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import threading
+from collections import OrderedDict
 from collections.abc import Callable, Iterable
 from concurrent.futures import Future
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -25,6 +27,8 @@ from tcl_lsp.lsp.features.workspace_symbols import workspace_symbols
 from tcl_lsp.lsp.semantic_tokens import (
     SEMANTIC_TOKEN_MODIFIERS,
     SEMANTIC_TOKEN_TYPES,
+    EncodedSemanticTokenEdit,
+    diff_encoded_semantic_tokens,
     encode_document_semantic_tokens,
 )
 from tcl_lsp.lsp.state import (
@@ -52,6 +56,13 @@ _DIAGNOSTIC_SEVERITY_MAP = {
     'information': types.DiagnosticSeverity.Information,
     'hint': types.DiagnosticSeverity.Hint,
 }
+_SEMANTIC_TOKEN_CACHE_LIMIT = 8
+
+
+@dataclass(frozen=True, slots=True)
+class _SemanticTokenResult:
+    version: int
+    data: tuple[int, ...]
 
 
 class LanguageServer(PyglsLanguageServer):
@@ -62,12 +73,14 @@ class LanguageServer(PyglsLanguageServer):
     _library_paths_by_uri: dict[str, tuple[Path, ...]]
     _metadata_registry: MetadataRegistry
     _next_progress_token: int
+    _next_semantic_token_result_id: int
     _next_server_request_id: int
     _open_document_uris: set[str]
     _parser: Parser
     _plugin_paths_by_uri: dict[str, tuple[Path, ...]]
     _resolver: Resolver
     _scanned_package_roots: set[Path]
+    _semantic_token_results_by_uri: dict[str, OrderedDict[str, _SemanticTokenResult]]
     _state_lock: threading.RLock
     _toolkit_lock: threading.RLock
     _workspace_index: WorkspaceIndex
@@ -184,6 +197,7 @@ class LanguageServer(PyglsLanguageServer):
 
     def close_document(self, uri: str) -> None:
         with self._state_lock:
+            self._semantic_token_results_by_uri.pop(uri, None)
             if uri not in self.documents:
                 return
 
@@ -243,6 +257,42 @@ class LanguageServer(PyglsLanguageServer):
             version=version,
         )
 
+    def semantic_tokens(self, uri: str) -> types.SemanticTokens | None:
+        current_result = self._current_semantic_token_result(uri)
+        if current_result is None:
+            return None
+
+        result_id, data = current_result
+        return types.SemanticTokens(data=list(data), result_id=result_id)
+
+    def semantic_token_delta(
+        self,
+        uri: str,
+        previous_result_id: str,
+    ) -> types.SemanticTokens | types.SemanticTokensDelta | None:
+        current_result = self._current_semantic_token_result(uri)
+        if current_result is None:
+            return None
+
+        result_id, data = current_result
+        previous_data = self._semantic_token_data(uri, previous_result_id)
+        if previous_data is None:
+            return types.SemanticTokens(data=list(data), result_id=result_id)
+
+        semantic_edits: tuple[EncodedSemanticTokenEdit, ...] = diff_encoded_semantic_tokens(
+            previous_data=previous_data,
+            current_data=data,
+        )
+        edits = tuple(
+            types.SemanticTokensEdit(
+                start=edit.start,
+                delete_count=edit.delete_count,
+                data=None if edit.data is None else list(edit.data),
+            )
+            for edit in semantic_edits
+        )
+        return types.SemanticTokensDelta(edits=edits, result_id=result_id)
+
     def _workspace_document_state(self, uri: str) -> tuple[str, int] | None:
         try:
             text_document = cast(Any, self.workspace.get_text_document(uri))
@@ -250,6 +300,56 @@ class LanguageServer(PyglsLanguageServer):
             return None
         version = 0 if text_document.version is None else text_document.version
         return cast(str, text_document.source), cast(int, version)
+
+    def _current_semantic_token_result(self, uri: str) -> tuple[str, tuple[int, ...]] | None:
+        document = self.current_managed_document(uri)
+        if document is None:
+            return None
+
+        data = encode_document_semantic_tokens(
+            text=document.text,
+            facts=document.facts,
+            analysis=document.analysis,
+        )
+        result_id = self._remember_semantic_tokens(
+            uri,
+            version=document.version,
+            data=data,
+        )
+        return result_id, data
+
+    def _remember_semantic_tokens(
+        self,
+        uri: str,
+        *,
+        version: int,
+        data: tuple[int, ...],
+    ) -> str:
+        with self._state_lock:
+            cached_results = self._semantic_token_results_by_uri.setdefault(uri, OrderedDict())
+            for cached_result_id, cached_result in cached_results.items():
+                if cached_result.version != version or cached_result.data != data:
+                    continue
+                cached_results.move_to_end(cached_result_id)
+                return cached_result_id
+
+            result_id = f'tcl-ls-semantic/{self._next_semantic_token_result_id}'
+            self._next_semantic_token_result_id += 1
+            cached_results[result_id] = _SemanticTokenResult(version=version, data=data)
+            while len(cached_results) > _SEMANTIC_TOKEN_CACHE_LIMIT:
+                cached_results.popitem(last=False)
+            return result_id
+
+    def _semantic_token_data(self, uri: str, result_id: str) -> tuple[int, ...] | None:
+        with self._state_lock:
+            cached_results = self._semantic_token_results_by_uri.get(uri)
+            if cached_results is None:
+                return None
+            cached_result = cached_results.get(result_id)
+            if cached_result is None:
+                return None
+            cached_results.move_to_end(result_id)
+            return cached_result.data
 
     def _analyze_workspace_document(
         self,
@@ -453,6 +553,8 @@ class LanguageServer(PyglsLanguageServer):
             if extractor is None
             else extractor
         )
+        self._next_semantic_token_result_id = 1
+        self._semantic_token_results_by_uri = {}
         self._workspace_index = WorkspaceIndex() if workspace_index is None else workspace_index
         self._resolver = (
             Resolver(metadata_registry=self._metadata_registry) if resolver is None else resolver
@@ -797,15 +899,18 @@ def semantic_tokens_full(
     server: LanguageServer,
     params: types.SemanticTokensParams,
 ) -> types.SemanticTokens | None:
-    document = server.current_managed_document(params.text_document.uri)
-    if document is None:
-        return None
-    data = encode_document_semantic_tokens(
-        text=document.text,
-        facts=document.facts,
-        analysis=document.analysis,
+    return server.semantic_tokens(params.text_document.uri)
+
+
+@server.feature(types.TEXT_DOCUMENT_SEMANTIC_TOKENS_FULL_DELTA)
+def semantic_tokens_full_delta(
+    server: LanguageServer,
+    params: types.SemanticTokensDeltaParams,
+) -> types.SemanticTokens | types.SemanticTokensDelta | None:
+    return server.semantic_token_delta(
+        params.text_document.uri,
+        params.previous_result_id,
     )
-    return types.SemanticTokens(data=list(data))
 
 
 @server.feature(types.WORKSPACE_SYMBOL)
