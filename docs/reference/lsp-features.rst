@@ -22,18 +22,24 @@ Navigation And Intelligence
 
 The current server supports:
 
+* ``textDocument/declaration``
 * ``textDocument/definition``
+* ``textDocument/implementation``
 * ``textDocument/references``
 * ``textDocument/rename``
+* ``textDocument/prepareRename`` when the client advertises rename prepare
+  support
 * ``textDocument/hover``
 * ``textDocument/documentSymbol``
 * ``workspace/symbol``
 * ``textDocument/documentHighlight``
 * ``textDocument/completion``
 * ``textDocument/signatureHelp``
+* ``textDocument/foldingRange``
+* ``textDocument/documentLink``
 
-Completion is triggered by ``$`` and ``:``. Signature help is triggered by a
-space or tab after the command name and earlier arguments.
+Completion is triggered by ``$``, ``:``, and ``-``. Signature help is triggered
+by a space or tab after the command name and earlier arguments.
 
 Semantic Output
 ---------------
@@ -54,4 +60,3 @@ The current protocol implementation still has some notable limits:
 * automatic workspace discovery is limited; unopened files are indexed
   conservatively through package inference rather than full file watching
 * code actions, formatting, code lens, and inlay hints are not implemented
-

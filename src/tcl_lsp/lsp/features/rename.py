@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 from tcl_lsp.analysis.facts.parsing import is_simple_name
 from tcl_lsp.common import Span
 from tcl_lsp.lsp.features.symbols import symbol_ids_at_position, symbol_kind
 from tcl_lsp.lsp.state import ManagedDocument, RenameEdit
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedRename:
+    span: Span
+    placeholder: str
 
 
 def rename(
@@ -99,6 +106,52 @@ def rename(
     }
 
 
+def prepare_rename(
+    documents_by_uri: Mapping[str, ManagedDocument],
+    *,
+    uri: str,
+    line: int,
+    character: int,
+) -> PreparedRename | None:
+    symbol_id = rename_symbol_id_at_position(
+        documents_by_uri,
+        uri=uri,
+        line=line,
+        character=character,
+    )
+    if symbol_id is None:
+        return None
+
+    target_kind = symbol_kind(documents_by_uri.values(), symbol_id)
+    if target_kind is None:
+        return None
+
+    document = documents_by_uri.get(uri)
+    if document is None:
+        return None
+
+    if target_kind == 'function':
+        occurrence = _command_occurrence_at_position(
+            document=document,
+            symbol_id=symbol_id,
+            line=line,
+            character=character,
+        )
+        if occurrence is None:
+            return None
+        return _prepared_command_rename(*occurrence)
+
+    occurrence = _variable_occurrence_at_position(
+        document=document,
+        symbol_id=symbol_id,
+        line=line,
+        character=character,
+    )
+    if occurrence is None:
+        return None
+    return _prepared_variable_rename(*occurrence)
+
+
 def rename_symbol_id_at_position(
     documents_by_uri: Mapping[str, ManagedDocument],
     *,
@@ -172,3 +225,124 @@ def rename_variable_name_body(text: str, new_name: str) -> str:
     if separator:
         return f'{prefix}{separator}{new_name}{suffix}'
     return new_name + suffix
+
+
+def _command_occurrence_at_position(
+    *,
+    document: ManagedDocument,
+    symbol_id: str,
+    line: int,
+    character: int,
+) -> tuple[Span, str] | None:
+    for procedure in document.facts.procedures:
+        if procedure.symbol_id != symbol_id or not procedure.name_span.contains(line, character):
+            continue
+        return (
+            procedure.name_span,
+            document.text[procedure.name_span.start.offset : procedure.name_span.end.offset],
+        )
+
+    for resolved_reference in document.analysis.resolved_references:
+        if (
+            resolved_reference.symbol_id != symbol_id
+            or resolved_reference.reference.kind != 'command'
+        ):
+            continue
+        span = resolved_reference.reference.span
+        if not span.contains(line, character):
+            continue
+        return (span, document.text[span.start.offset : span.end.offset])
+
+    return None
+
+
+def _variable_occurrence_at_position(
+    *,
+    document: ManagedDocument,
+    symbol_id: str,
+    line: int,
+    character: int,
+) -> tuple[Span, str] | None:
+    for binding in document.facts.variable_bindings:
+        if binding.symbol_id != symbol_id or not binding.span.contains(line, character):
+            continue
+        return (
+            binding.span,
+            document.text[binding.span.start.offset : binding.span.end.offset],
+        )
+
+    for resolved_reference in document.analysis.resolved_references:
+        if (
+            resolved_reference.symbol_id != symbol_id
+            or resolved_reference.reference.kind != 'variable'
+        ):
+            continue
+        span = resolved_reference.reference.span
+        if not span.contains(line, character):
+            continue
+        return (span, document.text[span.start.offset : span.end.offset])
+
+    return None
+
+
+def _prepared_command_rename(span: Span, text: str) -> PreparedRename | None:
+    prefix_length = 0
+    content = text
+    if text.startswith('{') and text.endswith('}'):
+        prefix_length = 1
+        content = text[1:-1]
+    elif text.startswith('"') and text.endswith('"'):
+        prefix_length = 1
+        content = text[1:-1]
+
+    _, _, tail = content.rpartition('::')
+    if not tail:
+        return None
+
+    tail_start = len(content) - len(tail)
+    return PreparedRename(
+        span=_subspan(span, text, prefix_length + tail_start, prefix_length + len(content)),
+        placeholder=tail,
+    )
+
+
+def _prepared_variable_rename(span: Span, text: str) -> PreparedRename | None:
+    prefix_length = 0
+    content = text
+    if text.startswith('${') and text.endswith('}'):
+        prefix_length = 2
+        content = text[2:-1]
+    elif text.startswith('$'):
+        prefix_length = 1
+        content = text[1:]
+    elif text.startswith('{') and text.endswith('}'):
+        prefix_length = 1
+        content = text[1:-1]
+    elif text.startswith('"') and text.endswith('"'):
+        prefix_length = 1
+        content = text[1:-1]
+
+    name_body = content
+    open_paren = content.find('(')
+    if open_paren > 0 and content.endswith(')'):
+        name_body = content[:open_paren]
+
+    _, _, tail = name_body.rpartition('::')
+    if not tail:
+        return None
+
+    tail_start = len(name_body) - len(tail)
+    return PreparedRename(
+        span=_subspan(span, text, prefix_length + tail_start, prefix_length + len(name_body)),
+        placeholder=tail,
+    )
+
+
+def _subspan(span: Span, text: str, start_index: int, end_index: int) -> Span:
+    if start_index == 0 and end_index == len(text):
+        return span
+
+    return Span(
+        start=span.start.advance(text[:start_index]),
+        end=span.start.advance(text[:end_index]),
+    )

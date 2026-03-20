@@ -405,6 +405,50 @@ def _write_sample_plugin_bundle(metadata_root: Path) -> Path:
     return plugin_path
 
 
+def _write_declaration_plugin_bundle(metadata_root: Path) -> Path:
+    metadata_root.mkdir(parents=True, exist_ok=True)
+    plugin_path = metadata_root / 'declaration.tcl'
+    plugin_path.write_text(
+        'namespace eval ::tcl_lsp::plugins::sample {}\n'
+        'proc ::tcl_lsp::plugins::sample::declaration {words info} {\n'
+        '    if {[llength $words] < 3} {\n'
+        '        return {}\n'
+        '    }\n'
+        '    return [list [list procedure [dict create \\\n'
+        '        name-index 1 \\\n'
+        '        params-word-index 2 \\\n'
+        '        params [::tcl_lsp::plugins::sample::parameterNames [lindex $words 2]] \\\n'
+        '    ]]]\n'
+        '}\n'
+        'proc ::tcl_lsp::plugins::sample::parameterNames {parameter_list} {\n'
+        '    set names {}\n'
+        '    if {[catch {\n'
+        '        foreach arg_def $parameter_list {\n'
+        '            set name [lindex $arg_def 0]\n'
+        '            if {$name eq ""} {\n'
+        '                continue\n'
+        '            }\n'
+        '            lappend names $name\n'
+        '        }\n'
+        '    }]} {\n'
+        '        return {}\n'
+        '    }\n'
+        '    return $names\n'
+        '}\n',
+        encoding='utf-8',
+    )
+    (metadata_root / 'declaration.meta.tcl').write_text(
+        '# Project metadata loaded from project-local plugin configuration.\n'
+        'meta module Tcl\n'
+        '# Declare a procedure without an implementation body.\n'
+        'meta command dsl::declare {name params} {\n'
+        '    plugin declaration.tcl ::tcl_lsp::plugins::sample::declaration\n'
+        '}\n',
+        encoding='utf-8',
+    )
+    return plugin_path
+
+
 def test_language_service_does_not_resolve_unrelated_open_documents(
     service: LanguageService,
 ) -> None:
@@ -1143,6 +1187,11 @@ def test_language_server_initialize_advertises_semantic_tokens() -> None:
     ]
     assert legend['tokenModifiers'] == ['declaration', 'defaultLibrary']
     assert semantic_tokens['full'] == {'delta': True}
+    assert capabilities['declarationProvider'] is True
+    assert capabilities['implementationProvider'] is True
+    document_link_provider = _as_dict(capabilities['documentLinkProvider'])
+    assert document_link_provider == {'resolveProvider': False}
+    assert capabilities['foldingRangeProvider'] is True
     assert capabilities['renameProvider'] is True
     completion_provider = _as_dict(capabilities['completionProvider'])
     assert completion_provider['triggerCharacters'] == ['$', ':', '-']
@@ -1160,6 +1209,155 @@ def test_language_server_returns_command_completion_items(server: LanguageServer
     greet_item = next(item for item in items if item['label'] == 'greet')
 
     assert greet_item['detail'] == 'proc ::greet()'
+
+
+def test_language_server_prepares_function_rename_for_qualified_names(
+    server: LanguageServer,
+) -> None:
+    _open_server_document(server, 'proc ::app::greet {} {return ok}\n::app::greet\n')
+
+    response = _server_position_request(
+        server,
+        method='textDocument/prepareRename',
+        line=1,
+        character=8,
+    )
+
+    assert response['result'] == {
+        'range': {
+            'start': {'line': 1, 'character': 7},
+            'end': {'line': 1, 'character': 12},
+        },
+        'placeholder': 'greet',
+    }
+
+
+def test_language_server_prepares_variable_rename_for_qualified_variables(
+    server: LanguageServer,
+) -> None:
+    _open_server_document(server, 'set ::app::result 1\nputs $::app::result\n')
+
+    response = _server_position_request(
+        server,
+        method='textDocument/prepareRename',
+        line=1,
+        character=15,
+    )
+
+    assert response['result'] == {
+        'range': {
+            'start': {'line': 1, 'character': 13},
+            'end': {'line': 1, 'character': 19},
+        },
+        'placeholder': 'result',
+    }
+
+
+def test_language_server_returns_declaration_and_implementation_locations(
+    server: LanguageServer,
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / 'workspace'
+    plugin_root = project_root / '.tcl-ls'
+    _write_sample_plugin_bundle(plugin_root)
+    _write_declaration_plugin_bundle(plugin_root)
+    project_root.mkdir(exist_ok=True)
+    (project_root / 'tcllsrc.tcl').write_text('plugin-path .tcl-ls\n', encoding='utf-8')
+
+    declaration_path = project_root / 'decl.tcl'
+    declaration_path.write_text('dsl::declare greet {{name}}\n', encoding='utf-8')
+    implementation_path = project_root / 'impl.tcl'
+    implementation_path.write_text(
+        'dsl::define greet {{name}} {puts $name}\n',
+        encoding='utf-8',
+    )
+    main_path = project_root / 'main.tcl'
+    source_text = (
+        'source [file join [file dirname [info script]] decl.tcl]\n'
+        'source [file join [file dirname [info script]] impl.tcl]\n'
+        'greet World\n'
+    )
+    main_path.write_text(source_text, encoding='utf-8')
+
+    _open_server_document(server, source_text, uri=main_path.as_uri())
+
+    declaration_response = _server_position_request(
+        server,
+        method='textDocument/declaration',
+        uri=main_path.as_uri(),
+        line=2,
+        character=1,
+    )
+    declaration_result = cast(list[dict[str, object]], declaration_response['result'])
+    assert {location['uri'] for location in declaration_result} == {
+        declaration_path.as_uri(),
+        implementation_path.as_uri(),
+    }
+
+    implementation_response = _server_position_request(
+        server,
+        method='textDocument/implementation',
+        uri=main_path.as_uri(),
+        line=2,
+        character=1,
+    )
+    implementation_result = cast(list[dict[str, object]], implementation_response['result'])
+    assert implementation_result == [
+        {
+            'uri': implementation_path.as_uri(),
+            'range': {
+                'start': {'line': 0, 'character': 12},
+                'end': {'line': 0, 'character': 17},
+            },
+        }
+    ]
+
+
+def test_language_server_returns_folding_ranges(server: LanguageServer) -> None:
+    _open_server_document(
+        server,
+        'namespace eval app {\n    proc greet {name} {\n        puts $name\n    }\n}\n',
+    )
+
+    response = _server_document_request(server, method='textDocument/foldingRange')
+    result = cast(list[dict[str, object]], response['result'])
+
+    assert {(item['startLine'], item['endLine']) for item in result} == {(0, 4), (1, 3)}
+
+
+def test_language_server_returns_document_links_for_sources_and_packages(
+    server: LanguageServer,
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / 'workspace'
+    project_root.mkdir()
+    helper_path = project_root / 'helper.inc'
+    helper_path.write_text('proc greet {} {return ok}\n', encoding='utf-8')
+
+    library_root = tmp_path / 'tcllib'
+    package_root = _write_sample_library_root(library_root)
+    package_source_path = package_root / 'samplelib.tcl'
+
+    (project_root / 'tcllsrc.tcl').write_text('lib-path ../tcllib\n', encoding='utf-8')
+    main_path = project_root / 'main.tcl'
+    source_text = (
+        'source [file join [file dirname [info script]] helper.inc]\npackage require samplelib\n'
+    )
+    main_path.write_text(source_text, encoding='utf-8')
+
+    _open_server_document(server, source_text, uri=main_path.as_uri())
+
+    response = _server_document_request(
+        server,
+        method='textDocument/documentLink',
+        uri=main_path.as_uri(),
+    )
+    result = cast(list[dict[str, object]], response['result'])
+
+    assert {link['target'] for link in result} == {
+        helper_path.as_uri(),
+        package_source_path.as_uri(),
+    }
 
 
 def test_language_server_returns_absolute_plugin_metadata_completion_items(

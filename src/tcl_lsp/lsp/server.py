@@ -18,10 +18,12 @@ from tcl_lsp.analysis.metadata_effects import dependency_required_packages
 from tcl_lsp.common import Diagnostic, lsp_range
 from tcl_lsp.lsp.document_changes import DocumentChangeWorker
 from tcl_lsp.lsp.features.completion import CompletionResults, completion_items
+from tcl_lsp.lsp.features.document_links import document_links
+from tcl_lsp.lsp.features.folding import folding_ranges
 from tcl_lsp.lsp.features.highlights import document_highlights
 from tcl_lsp.lsp.features.hover import hover
-from tcl_lsp.lsp.features.navigation import definition, references
-from tcl_lsp.lsp.features.rename import rename
+from tcl_lsp.lsp.features.navigation import declaration, definition, implementation, references
+from tcl_lsp.lsp.features.rename import prepare_rename, rename
 from tcl_lsp.lsp.features.signature_help import signature_help
 from tcl_lsp.lsp.features.workspace_symbols import workspace_symbols
 from tcl_lsp.lsp.semantic_tokens import (
@@ -743,6 +745,39 @@ def definition_request(
     return list(locations) or None
 
 
+@server.feature(types.TEXT_DOCUMENT_DECLARATION)
+def declaration_request(
+    server: LanguageServer,
+    params: types.DeclarationParams,
+) -> list[types.Location] | None:
+    snapshot = server.analysis_snapshot()
+    locations = declaration(
+        snapshot.documents,
+        workspace_index=snapshot.workspace_index,
+        metadata_registry=snapshot.metadata_registry,
+        uri=params.text_document.uri,
+        line=params.position.line,
+        character=params.position.character,
+    )
+    return list(locations) or None
+
+
+@server.feature(types.TEXT_DOCUMENT_IMPLEMENTATION)
+def implementation_request(
+    server: LanguageServer,
+    params: types.ImplementationParams,
+) -> list[types.Location] | None:
+    snapshot = server.analysis_snapshot()
+    locations = implementation(
+        snapshot.documents,
+        metadata_registry=snapshot.metadata_registry,
+        uri=params.text_document.uri,
+        line=params.position.line,
+        character=params.position.character,
+    )
+    return list(locations) or None
+
+
 @server.feature(types.TEXT_DOCUMENT_REFERENCES)
 def references_request(
     server: LanguageServer,
@@ -760,7 +795,7 @@ def references_request(
     return list(locations)
 
 
-@server.feature(types.TEXT_DOCUMENT_RENAME)
+@server.feature(types.TEXT_DOCUMENT_RENAME, types.RenameOptions(prepare_provider=True))
 def rename_request(
     server: LanguageServer, params: types.RenameParams
 ) -> types.WorkspaceEdit | None:
@@ -786,6 +821,26 @@ def rename_request(
             ]
             for uri, uri_edits in edits.items()
         }
+    )
+
+
+@server.feature(types.TEXT_DOCUMENT_PREPARE_RENAME)
+def prepare_rename_request(
+    ls: LanguageServer,
+    params: types.PrepareRenameParams,
+) -> types.PrepareRenameResult | None:
+    prepared = prepare_rename(
+        ls.analysis_snapshot().documents,
+        uri=params.text_document.uri,
+        line=params.position.line,
+        character=params.position.character,
+    )
+    if prepared is None:
+        return None
+
+    return types.PrepareRenamePlaceholder(
+        range=lsp_range(prepared.span),
+        placeholder=prepared.placeholder,
     )
 
 
@@ -891,6 +946,29 @@ def document_symbols(
     if document is None:
         return []
     return list(document.analysis.document_symbols)
+
+
+@server.feature(types.TEXT_DOCUMENT_FOLDING_RANGE)
+def folding_range_request(
+    server: LanguageServer,
+    params: types.FoldingRangeParams,
+) -> list[types.FoldingRange]:
+    document = server.analysis_snapshot().documents.get(params.text_document.uri)
+    if document is None:
+        return []
+    return list(folding_ranges(document))
+
+
+@server.feature(types.TEXT_DOCUMENT_DOCUMENT_LINK)
+def document_link_request(
+    server: LanguageServer,
+    params: types.DocumentLinkParams,
+) -> list[types.DocumentLink]:
+    snapshot = server.analysis_snapshot()
+    document = snapshot.documents.get(params.text_document.uri)
+    if document is None:
+        return []
+    return list(document_links(document, workspace_index=snapshot.workspace_index))
 
 
 @server.feature(

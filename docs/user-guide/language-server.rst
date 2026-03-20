@@ -40,6 +40,8 @@ The current server supports:
 
 * diagnostics on open, change, and close
 * go to definition
+* go to declaration
+* go to implementation
 * find references
 * rename
 * hover
@@ -49,6 +51,8 @@ The current server supports:
 * signature help
 * semantic tokens
 * document highlights
+* folding ranges
+* document links for ``source`` directives and uniquely resolved package sources
 
 Current Limits
 --------------
@@ -62,4 +66,3 @@ The server is usable, but it is still an early implementation:
 * code actions, formatting, code lens, and inlay hints are not implemented yet
 * no editor plugin package ships in this repository; clients need manual LSP
   configuration
-

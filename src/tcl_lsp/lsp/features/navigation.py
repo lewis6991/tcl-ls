@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from lsprotocol import types
 
 from tcl_lsp.analysis import WorkspaceIndex
+from tcl_lsp.analysis.model import DefinitionTarget
 from tcl_lsp.common import lsp_location
 from tcl_lsp.lsp.features.symbols import (
     definitions_for_command_import,
@@ -53,6 +54,78 @@ def definition(
         symbol_ids=symbol_ids,
     )
     return tuple(definition.location for definition in definitions)
+
+
+def declaration(
+    documents_by_uri: Mapping[str, ManagedDocument],
+    *,
+    workspace_index: WorkspaceIndex,
+    metadata_registry: MetadataRegistry,
+    uri: str,
+    line: int,
+    character: int,
+) -> tuple[types.Location, ...]:
+    package_locations = package_definition_locations(
+        documents_by_uri,
+        workspace_index=workspace_index,
+        uri=uri,
+        line=line,
+        character=character,
+    )
+    if package_locations:
+        return package_locations
+
+    command_import_locations = command_import_definition_locations(
+        documents_by_uri,
+        metadata_registry=metadata_registry,
+        uri=uri,
+        line=line,
+        character=character,
+    )
+    if command_import_locations:
+        return command_import_locations
+
+    symbol_ids = symbol_ids_at_position(documents_by_uri, uri=uri, line=line, character=character)
+    if not symbol_ids:
+        return ()
+
+    definitions = definitions_for_symbols(
+        documents_by_uri.values(),
+        metadata_registry=metadata_registry,
+        symbol_ids=symbol_ids,
+    )
+    procedure_locations = _procedure_locations_for_definitions(
+        documents_by_uri,
+        definitions=definitions,
+        implementations_only=False,
+    )
+    if procedure_locations:
+        return procedure_locations
+    return tuple(definition.location for definition in definitions)
+
+
+def implementation(
+    documents_by_uri: Mapping[str, ManagedDocument],
+    *,
+    metadata_registry: MetadataRegistry,
+    uri: str,
+    line: int,
+    character: int,
+) -> tuple[types.Location, ...]:
+    symbol_ids = symbol_ids_at_position(documents_by_uri, uri=uri, line=line, character=character)
+    if not symbol_ids:
+        return ()
+
+    definitions = definitions_for_symbols(
+        documents_by_uri.values(),
+        metadata_registry=metadata_registry,
+        symbol_ids=symbol_ids,
+    )
+    return _procedure_locations_for_definitions(
+        documents_by_uri,
+        definitions=definitions,
+        implementations_only=True,
+    )
 
 
 def references(
@@ -163,3 +236,27 @@ def deduplicate_locations(locations: list[types.Location]) -> tuple[types.Locati
         )
         deduplicated.setdefault(key, location)
     return tuple(deduplicated.values())
+
+
+def _procedure_locations_for_definitions(
+    documents_by_uri: Mapping[str, ManagedDocument],
+    *,
+    definitions: tuple[DefinitionTarget, ...],
+    implementations_only: bool,
+) -> tuple[types.Location, ...]:
+    qualified_names = {
+        definition.name
+        for definition in definitions
+        if definition.kind == 'function' and not definition.symbol_id.startswith('builtin::')
+    }
+    if not qualified_names:
+        return ()
+
+    locations = [
+        lsp_location(proc.uri, proc.name_span)
+        for document in documents_by_uri.values()
+        for proc in document.facts.procedures
+        if proc.qualified_name in qualified_names
+        and (not implementations_only or proc.body_span is not None)
+    ]
+    return deduplicate_locations(locations)

@@ -111,10 +111,15 @@ This repository contains an early but working bootstrap of a Tcl language server
   - [x] `textDocument/didOpen`
   - [x] `textDocument/didChange`
   - [x] `textDocument/didClose`
+  - [x] `textDocument/declaration`
   - [x] `textDocument/definition`
+  - [x] `textDocument/implementation`
   - [x] `textDocument/references`
+  - [x] `textDocument/prepareRename`
   - [x] `textDocument/hover`
+  - [x] `textDocument/documentLink`
   - [x] `textDocument/documentSymbol`
+  - [x] `textDocument/foldingRange`
   - [x] `textDocument/semanticTokens/full`
 - [x] Diagnostics are published on open/change/close
 - [x] Full-document sync model
@@ -127,6 +132,8 @@ This repository contains an early but working bootstrap of a Tcl language server
 - [ ] formatting
 - [x] semantic tokens
 - [x] document highlights
+- [x] document links
+- [x] folding ranges
 - [x] workspace symbols
 - [ ] code lens
 - [ ] inlay hints

@@ -63,7 +63,9 @@ def test_language_server_initialize_serializes_protocol_models() -> None:
     result = response['result']
     assert isinstance(result, dict)
     capabilities = cast(dict[str, object], result['capabilities'])
+    assert capabilities['declarationProvider'] is True
     assert capabilities['definitionProvider'] is True
+    assert capabilities['implementationProvider'] is True
     assert capabilities['referencesProvider'] is True
     assert capabilities['hoverProvider'] is True
     completion_provider = cast(dict[str, object], capabilities['completionProvider'])
@@ -71,7 +73,10 @@ def test_language_server_initialize_serializes_protocol_models() -> None:
     signature_help_provider = cast(dict[str, object], capabilities['signatureHelpProvider'])
     assert signature_help_provider['triggerCharacters'] == [' ', '\t']
     assert capabilities['documentHighlightProvider'] is True
+    document_link_provider = cast(dict[str, object], capabilities['documentLinkProvider'])
+    assert document_link_provider == {'resolveProvider': False}
     assert capabilities['documentSymbolProvider'] is True
+    assert capabilities['foldingRangeProvider'] is True
     assert capabilities['renameProvider'] is True
     workspace_symbol_provider = cast(dict[str, object], capabilities['workspaceSymbolProvider'])
     assert workspace_symbol_provider == {'resolveProvider': False}
@@ -92,6 +97,32 @@ def test_language_server_initialize_serializes_protocol_models() -> None:
     assert semantic_tokens['full'] == {'delta': True}
     server_info = cast(dict[str, object], result['serverInfo'])
     assert server_info == {'name': 'tcl-ls', 'version': '0.1.0'}
+
+
+def test_language_server_initialize_advertises_prepare_rename_when_supported() -> None:
+    server = _fresh_server()
+    responses = process_message(
+        server,
+        {
+            'jsonrpc': '2.0',
+            'id': 1,
+            'method': 'initialize',
+            'params': {
+                'capabilities': {
+                    'textDocument': {
+                        'rename': {
+                            'prepareSupport': True,
+                        }
+                    }
+                }
+            },
+        },
+    )
+
+    result = cast(dict[str, object], responses[0]['result'])
+    capabilities = cast(dict[str, object], result['capabilities'])
+    rename_provider = cast(dict[str, object], capabilities['renameProvider'])
+    assert rename_provider == {'prepareProvider': True}
 
 
 def test_process_message_handles_protocol_errors(
