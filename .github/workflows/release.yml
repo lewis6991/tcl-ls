@@ -1,0 +1,63 @@
+name: Prerelease
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - CHANGELOG.md
+      - .release-please-manifest.json
+      - pyproject.toml
+      - src/tcl_lsp/__init__.py
+      - editors/vscode/package.json
+      - editors/vscode/package-lock.json
+  workflow_dispatch:
+
+concurrency:
+  group: prerelease-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+
+      - name: Resolve prerelease version
+        id: release
+        run: |
+          release_version=$(python scripts/release_version.py compute \
+            --channel prerelease \
+            --run-number "${{ github.run_number }}")
+
+          echo "tag=v$release_version" >> "$GITHUB_OUTPUT"
+          echo "version=$release_version" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: prepare
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release-assets.yml
+    with:
+      release_version: ${{ needs.prepare.outputs.version }}
+      release_channel: prerelease
+      release_tag: ${{ needs.prepare.outputs.tag }}
+      checkout_ref: ${{ github.sha }}
+      stamp_version: true
+      create_release: true
+    secrets:
+      VSCE_PAT: ${{ secrets.VSCE_PAT }}

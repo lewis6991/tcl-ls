@@ -9,6 +9,7 @@ teaching the analyzer about project-specific commands or libraries.
    :maxdepth: 1
 
    language-server
+   neovim
+   vscode
    checker
    configuration
-

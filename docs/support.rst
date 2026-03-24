@@ -42,7 +42,8 @@ If editor features are missing entirely:
 
 * make sure the client launches ``tcl-ls`` over stdio
 * make sure the file is opened with a Tcl filetype
-* remember that no editor plugin package ships with this repository yet
+* remember that the repository only ships a Neovim config and a VS Code
+  extension; other editors still need manual LSP wiring
 
 Setting Expectations
 --------------------
@@ -52,4 +53,3 @@ Some gaps are expected today rather than immediate bugs:
 * dynamic Tcl patterns such as ``eval`` and ``uplevel`` are not modeled fully
 * analysis intentionally prefers false negatives over noisy false positives
 * many higher-level Tcl ecosystems still need more bundled metadata coverage
-

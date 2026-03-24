@@ -14,3 +14,7 @@ build/
 dist/
 *.egg-info/
 docs/_build/
+
+editors/vscode/node_modules/
+editors/vscode/server/
+editors/vscode/*.vsix

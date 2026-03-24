@@ -16,8 +16,15 @@ Point your LSP client at one of these commands:
 In practice, editor setups usually also want:
 
 * Tcl filetypes such as ``.tcl`` and ``.tm``
-* a project root marker such as ``tcllsrc.tcl``, ``pkgIndex.tcl``, or ``.git``
+* a project root marker such as ``tcllsrc.tcl`` or ``pkgIndex.tcl``
 * stdio transport instead of TCP
+
+If your project tree has neither marker, configure the workspace root in your
+editor or add a ``tcllsrc.tcl`` file for shared project settings.
+
+The repository also includes a Neovim 0.11+ config under ``editors/nvim`` and
+a VS Code extension under ``editors/vscode``. See :doc:`neovim` or
+:doc:`vscode` for those workflows.
 
 Workspace Behavior
 ------------------
@@ -64,5 +71,5 @@ The server is usable, but it is still an early implementation:
 * unopened files are discovered opportunistically rather than through full
   workspace scanning
 * code actions, formatting, code lens, and inlay hints are not implemented yet
-* no editor plugin package ships in this repository; clients need manual LSP
-  configuration
+* the repository ships a Neovim 0.11+ config and a VS Code extension; other
+  editors still need manual LSP configuration

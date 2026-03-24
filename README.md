@@ -17,6 +17,11 @@ The rendered site is written to `docs/_build/html/index.html` and covers
 getting started, editor and checker workflows, metadata authoring, support,
 and development notes.
 
+Editor-specific helpers shipped in this repository:
+
+* `editors/vscode` for the VS Code extension
+* `editors/nvim` for the Neovim 0.11+ built-in LSP config
+
 ## Maintenance
 
 Refresh builtin subcommand metadata with:

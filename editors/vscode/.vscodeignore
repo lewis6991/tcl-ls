@@ -1,0 +1,14 @@
+.gitignore
+.npmrc
+.vscodeignore
+scripts/**
+test/**
+package-lock.json
+*.vsix
+node_modules/**/.github/**
+node_modules/**/docs/**
+node_modules/**/test/**
+node_modules/**/tests/**
+node_modules/**/src/**
+node_modules/**/tsconfig.json
+node_modules/**/tsconfig.*.json

@@ -46,6 +46,11 @@ Start the language server on stdio for an editor to manage:
 
    uv run tcl-ls
 
+The repository also includes editor-specific setup under ``editors/``:
+
+* a Neovim 0.11+ config under ``editors/nvim``; see :doc:`user-guide/neovim`
+* a VS Code extension under ``editors/vscode``; see :doc:`user-guide/vscode`
+
 Print the bundled metadata helper path:
 
 .. code-block:: sh
@@ -71,4 +76,3 @@ Where To Go Next
 * Read :doc:`meta` if you need custom command metadata or Tcl-side helper
   integration.
 * Read :doc:`reference/index` for the current CLI and LSP surface area.
-

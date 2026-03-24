@@ -1,0 +1,99 @@
+{
+  "name": "tcl-ls-vscode",
+  "displayName": "tcl-ls-vscode",
+  "description": "VS Code extension for the tcl-ls language server.",
+  "version": "0.1.0",
+  "private": true,
+  "publisher": "lewis6991",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lewis6991/tcl-ls.git"
+  },
+  "homepage": "https://github.com/lewis6991/tcl-ls#readme",
+  "bugs": {
+    "url": "https://github.com/lewis6991/tcl-ls/issues"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "tcl",
+    "language server",
+    "lsp"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "activationEvents": [
+    "onLanguage:tcl"
+  ],
+  "main": "./src/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "tcl",
+        "aliases": [
+          "Tcl",
+          "tcl"
+        ],
+        "extensions": [
+          ".tcl",
+          ".tm",
+          ".test"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "tcl-ls.restartServer",
+        "title": "tcl-ls: Restart Language Server"
+      }
+    ],
+    "configuration": {
+      "title": "tcl-ls-vscode",
+      "properties": {
+        "tcl-ls.server.command": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Command used to start the language server. Prefer the executable name here and pass the rest through `tcl-ls.server.args`. If `tcl-ls.server.args` is empty, a command line such as `uv run tcl-ls` is also accepted. Quote any path that contains spaces."
+        },
+        "tcl-ls.server.args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Arguments passed to `tcl-ls.server.command`."
+        },
+        "tcl-ls.server.repoRoot": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Repository root for local `tcl-ls` development. When `tcl-ls.server.command` is empty and this is set, the extension starts `/path/to/repo/.venv/bin/tcl-ls` from that checkout."
+        },
+        "tcl-ls.server.cwd": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Working directory used when starting the language server. Relative paths are resolved against the first workspace folder."
+        },
+        "tcl-ls.server.restartOnProjectFileChanges": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Restart the language server when `tcllsrc.tcl`, `pkgIndex.tcl`, or `*.meta.tcl` files are created, changed, or deleted."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "check": "node --check src/command-line.js && node --check src/extension.js && npm run test",
+    "package:vsix": "npm exec --package @vscode/vsce -- vsce package"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  }
+}

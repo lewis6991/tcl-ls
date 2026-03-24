@@ -1,0 +1,251 @@
+name: Release Assets
+
+on:
+  workflow_call:
+    inputs:
+      release_version:
+        description: Version to stamp into built artifacts.
+        required: true
+        type: string
+      release_channel:
+        description: Release channel for packaging and marketplace publication.
+        required: true
+        type: string
+      release_tag:
+        description: Git tag to publish assets against.
+        required: true
+        type: string
+      checkout_ref:
+        description: Git ref to build from.
+        required: true
+        type: string
+      stamp_version:
+        description: Stamp versioned files in the build workspace before packaging.
+        required: false
+        default: false
+        type: boolean
+      create_release:
+        description: Create or update the GitHub release before uploading assets.
+        required: false
+        default: false
+        type: boolean
+    secrets:
+      VSCE_PAT:
+        required: false
+
+jobs:
+  build_assets:
+    name: Build assets (${{ matrix.release_platform }})
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            release_platform: linux-x64
+            archive_extension: tar.gz
+            executable_name: tcl-ls
+            vscode_target: linux-x64
+          - runner: macos-14
+            release_platform: macos-arm64
+            archive_extension: tar.gz
+            executable_name: tcl-ls
+            vscode_target: darwin-arm64
+          - runner: windows-latest
+            release_platform: windows-x64
+            archive_extension: zip
+            executable_name: tcl-ls.exe
+            vscode_target: win32-x64
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.checkout_ref }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+
+      - name: Install uv
+        run: python -m pip install uv
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+
+      - name: Stamp release version
+        if: ${{ inputs.stamp_version }}
+        run: python scripts/release_version.py stamp "${{ inputs.release_version }}"
+
+      - name: Install project dependencies
+        run: uv sync
+
+      - name: Install extension dependencies
+        working-directory: editors/vscode
+        run: npm ci
+
+      - name: Validate extension entrypoint
+        working-directory: editors/vscode
+        run: npm run check
+
+      - name: Build tcl-ls
+        env:
+          PYINSTALLER_CONFIG_DIR: ${{ runner.temp }}/pyinstaller
+        run: |
+          uv run pyinstaller \
+            --noconfirm \
+            --clean \
+            --distpath build/release \
+            --workpath build/pyinstaller \
+            tcl-ls.spec
+
+      - name: Smoke test frozen tcl-ls
+        run: |
+          "build/release/tcl-ls/${{ matrix.executable_name }}" < /dev/null
+
+      - name: Archive server build
+        run: |
+          archive_name="tcl-ls-${{ inputs.release_version }}-${{ matrix.release_platform }}"
+
+          python scripts/package_release_asset.py \
+            --source build/release/tcl-ls \
+            --output "dist/${archive_name}.${{ matrix.archive_extension }}" \
+            --root-name "$archive_name" \
+            --include LICENSE \
+            --include README.md
+
+      - name: Stage bundled server for VS Code
+        run: |
+          python editors/vscode/scripts/stage_vscode_server.py \
+            --source build/release/tcl-ls \
+            --destination editors/vscode/server
+
+      - name: Build VS Code extension
+        working-directory: editors/vscode
+        env:
+          RELEASE_CHANNEL: ${{ inputs.release_channel }}
+        run: |
+          vsix_path="$GITHUB_WORKSPACE/dist/tcl-ls-vscode-${{ inputs.release_version }}@${{ matrix.vscode_target }}.vsix"
+          package_args=(--target "${{ matrix.vscode_target }}" -o "$vsix_path")
+
+          if [ "$RELEASE_CHANNEL" = "prerelease" ]; then
+            package_args+=(--pre-release)
+          fi
+
+          npm exec --package @vscode/vsce -- vsce package "${package_args[@]}"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-${{ matrix.release_platform }}
+          path: dist/*
+
+  publish:
+    name: Publish artifacts
+    needs: build_assets
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    permissions:
+      contents: write
+    env:
+      VSCE_PAT: ${{ secrets.VSCE_PAT }}
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - uses: actions/checkout@v6
+        if: ${{ inputs.create_release }}
+        with:
+          ref: ${{ inputs.checkout_ref }}
+
+      - uses: actions/setup-python@v6
+        if: ${{ inputs.create_release }}
+        with:
+          python-version: '3.14'
+
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_CHANNEL: ${{ inputs.release_channel }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          if [ "${{ inputs.create_release }}" = "true" ]; then
+            source_commit_date=$(git show -s --format=%cI HEAD)
+            source_sha=$(git rev-parse HEAD)
+            release_files=(
+              pyproject.toml
+              src/tcl_lsp/__init__.py
+              editors/vscode/package.json
+              editors/vscode/package-lock.json
+            )
+
+            python scripts/release_version.py stamp "$RELEASE_VERSION"
+
+            if git diff --quiet -- "${release_files[@]}"; then
+              release_commit="$source_sha"
+            else
+              git config user.name 'github-actions[bot]'
+              git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+              git add "${release_files[@]}"
+              GIT_AUTHOR_DATE="$source_commit_date" \
+              GIT_COMMITTER_DATE="$source_commit_date" \
+                git commit -m "Release ${RELEASE_VERSION}"
+              release_commit=$(git rev-parse HEAD)
+            fi
+
+            git tag -f "$RELEASE_TAG" "$release_commit"
+            git push origin "refs/tags/$RELEASE_TAG" --force
+
+            title="tcl-ls ${RELEASE_VERSION}"
+            if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+              edit_args=(--title "$title")
+
+              if [ "$RELEASE_CHANNEL" = "prerelease" ]; then
+                edit_args+=(--prerelease)
+              fi
+
+              gh release edit "$RELEASE_TAG" "${edit_args[@]}"
+            else
+              create_args=(--title "$title" --generate-notes)
+
+              if [ "$RELEASE_CHANNEL" = "prerelease" ]; then
+                create_args+=(--prerelease --latest=false)
+              fi
+
+              gh release create "$RELEASE_TAG" "${create_args[@]}"
+            fi
+          fi
+
+          mapfile -t assets < <(find release-assets -type f | sort)
+          gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+
+      # Temporarily disabled until the release workflow is validated end to end.
+      # - uses: actions/setup-node@v4
+      #   if: env.VSCE_PAT != ''
+      #   with:
+      #     node-version: '22'
+      #
+      # - name: Publish VS Code extension to Visual Studio Marketplace
+      #   if: env.VSCE_PAT != ''
+      #   env:
+      #     RELEASE_CHANNEL: ${{ inputs.release_channel }}
+      #   run: |
+      #     mapfile -t vsix_files < <(find release-assets -type f -name '*.vsix' | sort)
+      #     publish_args=(--skip-duplicate -p "$VSCE_PAT" --packagePath "${vsix_files[@]}")
+      #
+      #     if [ "$RELEASE_CHANNEL" = "prerelease" ]; then
+      #       publish_args+=(--pre-release)
+      #     fi
+      #
+      #     npm exec --package @vscode/vsce -- vsce publish "${publish_args[@]}"

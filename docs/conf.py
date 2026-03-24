@@ -5,7 +5,12 @@ author = 'tcl-ls contributors'
 copyright = '2026, tcl-ls contributors'
 release = '0.1.0'
 
-extensions: list[str] = []
+extensions = ['myst_parser']
+
+source_suffix = {
+    '.rst': 'restructuredtext',
+    '.md': 'markdown',
+}
 
 templates_path: list[str] = []
 exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
