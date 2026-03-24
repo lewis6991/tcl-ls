@@ -159,10 +159,6 @@ jobs:
       VSCE_PAT: ${{ secrets.VSCE_PAT }}
 
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: release-assets
-
       - uses: actions/checkout@v6
         if: ${{ inputs.create_release }}
         with:
@@ -173,6 +169,10 @@ jobs:
         with:
           python-version: '3.14'
 
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/release-assets
+
       - name: Create or update GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -180,6 +180,8 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
           RELEASE_VERSION: ${{ inputs.release_version }}
         run: |
+          release_assets_dir="${RUNNER_TEMP}/release-assets"
+
           if [ "${{ inputs.create_release }}" = "true" ]; then
             source_commit_date=$(git show -s --format=%cI HEAD)
             source_sha=$(git rev-parse HEAD)
@@ -227,7 +229,7 @@ jobs:
             fi
           fi
 
-          mapfile -t assets < <(find release-assets -type f | sort)
+          mapfile -t assets < <(find "$release_assets_dir" -type f | sort)
           gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
 
       # Temporarily disabled until the release workflow is validated end to end.
@@ -241,7 +243,7 @@ jobs:
       #   env:
       #     RELEASE_CHANNEL: ${{ inputs.release_channel }}
       #   run: |
-      #     mapfile -t vsix_files < <(find release-assets -type f -name '*.vsix' | sort)
+      #     mapfile -t vsix_files < <(find "$RUNNER_TEMP/release-assets" -type f -name '*.vsix' | sort)
       #     publish_args=(--skip-duplicate -p "$VSCE_PAT" --packagePath "${vsix_files[@]}")
       #
       #     if [ "$RELEASE_CHANNEL" = "prerelease" ]; then
