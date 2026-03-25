@@ -90,7 +90,8 @@ pyinstaller-tcl-ls:
 
 .PHONY: pyinstaller-tcl-ls-smoke
 pyinstaller-tcl-ls-smoke: pyinstaller-tcl-ls
-	"$(TCL_LS_FROZEN_DIR)/$(PYINSTALLER_EXECUTABLE)" < /dev/null
+	uv run python scripts/smoke_pyinstaller_lsp.py \
+		"$(TCL_LS_FROZEN_DIR)/$(PYINSTALLER_EXECUTABLE)"
 
 .PHONY: pyinstaller-tcl-ls-archive
 pyinstaller-tcl-ls-archive: pyinstaller-tcl-ls
