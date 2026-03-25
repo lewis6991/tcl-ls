@@ -19,11 +19,6 @@ on:
         description: Git ref to build from.
         required: true
         type: string
-      stamp_version:
-        description: Stamp versioned files in the build workspace before packaging.
-        required: false
-        default: false
-        type: boolean
       create_release:
         description: Create or update the GitHub release before uploading assets.
         required: false
@@ -78,10 +73,6 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: editors/vscode/package-lock.json
-
-      - name: Stamp release version
-        if: ${{ inputs.stamp_version }}
-        run: python scripts/release_version.py stamp "${{ inputs.release_version }}"
 
       - name: Install project dependencies
         run: uv sync
@@ -160,12 +151,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
-        if: ${{ inputs.create_release }}
         with:
           ref: ${{ inputs.checkout_ref }}
 
       - uses: actions/setup-python@v6
-        if: ${{ inputs.create_release && inputs.stamp_version }}
         with:
           python-version: '3.14'
 
@@ -176,67 +165,19 @@ jobs:
       - name: Create or update GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_CHANNEL: ${{ inputs.release_channel }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          RELEASE_VERSION: ${{ inputs.release_version }}
         run: |
-          release_assets_dir="${RUNNER_TEMP}/release-assets"
-          is_prerelease=false
-          if [ "$RELEASE_CHANNEL" != "stable" ]; then
-            is_prerelease=true
-          fi
+          publish_args=(
+            --assets-dir "${{ runner.temp }}/release-assets"
+            --release-channel "${{ inputs.release_channel }}"
+            --release-tag "${{ inputs.release_tag }}"
+            --release-version "${{ inputs.release_version }}"
+          )
 
           if [ "${{ inputs.create_release }}" = "true" ]; then
-            source_sha=$(git rev-parse HEAD)
-            release_commit="$source_sha"
-
-            if [ "${{ inputs.stamp_version }}" = "true" ]; then
-              source_commit_date=$(git show -s --format=%cI HEAD)
-              release_files=(
-                pyproject.toml
-                src/tcl_lsp/__init__.py
-                editors/vscode/package.json
-                editors/vscode/package-lock.json
-              )
-
-              python scripts/release_version.py stamp "$RELEASE_VERSION"
-
-              if ! git diff --quiet -- "${release_files[@]}"; then
-                git config user.name 'github-actions[bot]'
-                git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-                git add "${release_files[@]}"
-                GIT_AUTHOR_DATE="$source_commit_date" \
-                GIT_COMMITTER_DATE="$source_commit_date" \
-                  git commit -m "Release ${RELEASE_VERSION}"
-                release_commit=$(git rev-parse HEAD)
-              fi
-            fi
-
-            git tag -f "$RELEASE_TAG" "$release_commit"
-            git push origin "refs/tags/$RELEASE_TAG" --force
-
-            title="tcl-ls ${RELEASE_VERSION}"
-            if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-              edit_args=(--title "$title")
-
-              if [ "$is_prerelease" = "true" ]; then
-                edit_args+=(--prerelease)
-              fi
-
-              gh release edit "$RELEASE_TAG" "${edit_args[@]}"
-            else
-              create_args=(--title "$title" --generate-notes)
-
-              if [ "$is_prerelease" = "true" ]; then
-                create_args+=(--prerelease --latest=false)
-              fi
-
-              gh release create "$RELEASE_TAG" "${create_args[@]}"
-            fi
+            publish_args+=(--create-release)
           fi
 
-          mapfile -t assets < <(find "$release_assets_dir" -type f | sort)
-          gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+          python scripts/publish_release.py "${publish_args[@]}"
 
       # Temporarily disabled until the release workflow is validated end to end.
       # - uses: actions/setup-node@v4
