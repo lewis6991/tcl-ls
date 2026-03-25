@@ -4,11 +4,11 @@ on:
   workflow_call:
     inputs:
       release_version:
-        description: Version to stamp into built artifacts.
+        description: Version or label to use in built artifact names.
         required: true
         type: string
       release_channel:
-        description: Release channel for packaging and marketplace publication.
+        description: Release channel for packaging and GitHub release handling.
         required: true
         type: string
       release_tag:
@@ -134,7 +134,7 @@ jobs:
           vsix_path="$GITHUB_WORKSPACE/dist/tcl-ls-vscode-${{ inputs.release_version }}@${{ matrix.vscode_target }}.vsix"
           package_args=(--target "${{ matrix.vscode_target }}" -o "$vsix_path")
 
-          if [ "$RELEASE_CHANNEL" = "prerelease" ]; then
+          if [ "$RELEASE_CHANNEL" != "stable" ]; then
             package_args+=(--pre-release)
           fi
 
@@ -165,7 +165,7 @@ jobs:
           ref: ${{ inputs.checkout_ref }}
 
       - uses: actions/setup-python@v6
-        if: ${{ inputs.create_release }}
+        if: ${{ inputs.create_release && inputs.stamp_version }}
         with:
           python-version: '3.14'
 
@@ -181,29 +181,35 @@ jobs:
           RELEASE_VERSION: ${{ inputs.release_version }}
         run: |
           release_assets_dir="${RUNNER_TEMP}/release-assets"
+          is_prerelease=false
+          if [ "$RELEASE_CHANNEL" != "stable" ]; then
+            is_prerelease=true
+          fi
 
           if [ "${{ inputs.create_release }}" = "true" ]; then
-            source_commit_date=$(git show -s --format=%cI HEAD)
             source_sha=$(git rev-parse HEAD)
-            release_files=(
-              pyproject.toml
-              src/tcl_lsp/__init__.py
-              editors/vscode/package.json
-              editors/vscode/package-lock.json
-            )
+            release_commit="$source_sha"
 
-            python scripts/release_version.py stamp "$RELEASE_VERSION"
+            if [ "${{ inputs.stamp_version }}" = "true" ]; then
+              source_commit_date=$(git show -s --format=%cI HEAD)
+              release_files=(
+                pyproject.toml
+                src/tcl_lsp/__init__.py
+                editors/vscode/package.json
+                editors/vscode/package-lock.json
+              )
 
-            if git diff --quiet -- "${release_files[@]}"; then
-              release_commit="$source_sha"
-            else
-              git config user.name 'github-actions[bot]'
-              git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-              git add "${release_files[@]}"
-              GIT_AUTHOR_DATE="$source_commit_date" \
-              GIT_COMMITTER_DATE="$source_commit_date" \
-                git commit -m "Release ${RELEASE_VERSION}"
-              release_commit=$(git rev-parse HEAD)
+              python scripts/release_version.py stamp "$RELEASE_VERSION"
+
+              if ! git diff --quiet -- "${release_files[@]}"; then
+                git config user.name 'github-actions[bot]'
+                git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+                git add "${release_files[@]}"
+                GIT_AUTHOR_DATE="$source_commit_date" \
+                GIT_COMMITTER_DATE="$source_commit_date" \
+                  git commit -m "Release ${RELEASE_VERSION}"
+                release_commit=$(git rev-parse HEAD)
+              fi
             fi
 
             git tag -f "$RELEASE_TAG" "$release_commit"
@@ -213,7 +219,7 @@ jobs:
             if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
               edit_args=(--title "$title")
 
-              if [ "$RELEASE_CHANNEL" = "prerelease" ]; then
+              if [ "$is_prerelease" = "true" ]; then
                 edit_args+=(--prerelease)
               fi
 
@@ -221,7 +227,7 @@ jobs:
             else
               create_args=(--title "$title" --generate-notes)
 
-              if [ "$RELEASE_CHANNEL" = "prerelease" ]; then
+              if [ "$is_prerelease" = "true" ]; then
                 create_args+=(--prerelease --latest=false)
               fi
 
@@ -246,7 +252,7 @@ jobs:
       #     mapfile -t vsix_files < <(find "$RUNNER_TEMP/release-assets" -type f -name '*.vsix' | sort)
       #     publish_args=(--skip-duplicate -p "$VSCE_PAT" --packagePath "${vsix_files[@]}")
       #
-      #     if [ "$RELEASE_CHANNEL" = "prerelease" ]; then
+      #     if [ "$RELEASE_CHANNEL" != "stable" ]; then
       #       publish_args+=(--pre-release)
       #     fi
       #
