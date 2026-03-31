@@ -49,7 +49,7 @@ vsix: clean-staged-server
 
 .PHONY: bundled-vsix
 bundled-vsix:
-	$(MAKE) -C "$(ROOT_DIR)" pyinstaller-tcl-ls
+	$(MAKE) -C "$(ROOT_DIR)" pyinstaller-tcl-ls-smoke
 	$(MAKE) stage-server
 	$(MAKE) package-vsix
 

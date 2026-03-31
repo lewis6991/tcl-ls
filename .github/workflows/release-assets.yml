@@ -98,7 +98,8 @@ jobs:
 
       - name: Smoke test frozen tcl-ls
         run: |
-          "build/release/tcl-ls/${{ matrix.executable_name }}" < /dev/null
+          uv run python scripts/smoke_pyinstaller_lsp.py \
+            "build/release/tcl-ls/${{ matrix.executable_name }}"
 
       - name: Archive server build
         run: |

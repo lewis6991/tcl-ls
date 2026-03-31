@@ -35,11 +35,31 @@ Useful one-off commands:
 
    uv run pytest tests/lsp/test_lsp.py
    uv run tcl-check path/to/project
+   uv build
    make check-tcllib
    make generate-builtins
+   make pyinstaller-tcl-ls-smoke
 
 ``make test`` clones ``tcllib`` into ``.cache/`` on first use so integration
 tests can run against a realistic package tree.
+
+Packaging And Release Validation
+--------------------------------
+
+The Python package and frozen server builds are part of the normal maintenance
+surface:
+
+* ``uv build`` writes the source distribution and wheel under ``dist/``
+* ``uvx twine check dist/*.whl dist/*.tar.gz`` validates the built package
+  metadata before upload
+* ``make pyinstaller-tcl-ls-smoke`` builds the frozen server and validates a
+  real LSP initialize/shutdown/exit handshake
+* GitHub release workflows build packaged server archives and bundled VS Code
+  extensions for Linux, macOS, and Windows
+
+Before a release, verify that the package metadata in ``pyproject.toml``,
+install instructions in ``README.md`` / ``docs/``, and release notes in
+``CHANGELOG.md`` are all current.
 
 Current Scope
 -------------
@@ -69,4 +89,3 @@ Documentation is part of the normal quality bar:
 
 The more detailed engineering backlog and implementation notes still live in
 ``STATUS.md``.
-

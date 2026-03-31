@@ -94,7 +94,7 @@ pyinstaller-tcl-ls-smoke: pyinstaller-tcl-ls
 		"$(TCL_LS_FROZEN_DIR)/$(PYINSTALLER_EXECUTABLE)"
 
 .PHONY: pyinstaller-tcl-ls-archive
-pyinstaller-tcl-ls-archive: pyinstaller-tcl-ls
+pyinstaller-tcl-ls-archive: pyinstaller-tcl-ls-smoke
 	$(PYTHON) scripts/package_release_asset.py \
 		--source "$(TCL_LS_FROZEN_DIR)" \
 		--output "$(DIST_DIR)/tcl-ls-$(RELEASE_VERSION)-$(RELEASE_PLATFORM).$(ARCHIVE_EXTENSION)" \

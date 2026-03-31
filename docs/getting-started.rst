@@ -15,6 +15,33 @@ Prerequisites
 * ``tclsh`` if you want to run ``tcl-meta``
 * an editor with LSP support if you want interactive language-server features
 
+Install From PyPI
+-----------------
+
+For normal usage, install ``tcl-ls`` from PyPI:
+
+.. code-block:: sh
+
+   python -m pip install tcl-ls
+
+This installs three CLI entry points:
+
+* ``tcl-ls`` for the language server
+* ``tcl-check`` for batch diagnostics
+* ``tcl-meta`` for metadata-helper workflows
+
+Install From GitHub Releases
+----------------------------
+
+If you want prebuilt packaged assets instead of a Python installation, download
+them from the `GitHub Releases <https://github.com/lewis6991/tcl-ls/releases>`_
+page.
+
+Release assets currently include:
+
+* packaged frozen server archives for Linux, macOS, and Windows
+* bundled VS Code extension packages
+
 Install From A Checkout
 -----------------------
 
@@ -38,24 +65,27 @@ Check a project tree from the terminal:
 
 .. code-block:: sh
 
-   uv run tcl-check path/to/project
+   tcl-check path/to/project
 
 Start the language server on stdio for an editor to manage:
 
 .. code-block:: sh
 
-   uv run tcl-ls
-
-The repository also includes editor-specific setup under ``editors/``:
-
-* a Neovim 0.11+ config under ``editors/nvim``; see :doc:`user-guide/neovim`
-* a VS Code extension under ``editors/vscode``; see :doc:`user-guide/vscode`
+   tcl-ls
 
 Print the bundled metadata helper path:
 
 .. code-block:: sh
 
-   uv run tcl-meta helper-path
+   tcl-meta helper-path
+
+When working from a checkout instead of an installed package, prefix those
+commands with ``uv run``.
+
+The repository also includes editor-specific setup under ``editors/``:
+
+* a Neovim 0.11+ config under ``editors/nvim``; see :doc:`user-guide/neovim`
+* a VS Code extension under ``editors/vscode``; see :doc:`user-guide/vscode`
 
 Local Documentation Build
 -------------------------

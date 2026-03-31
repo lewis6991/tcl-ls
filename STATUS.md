@@ -2,14 +2,17 @@
 
 ## Current State
 
-This repository contains an early but working bootstrap of a Tcl language server implemented in typed Python.
+This repository contains an early but working alpha Tcl language server
+implemented in typed Python.
 
 - Project tooling is set up with `uv`, `pyproject.toml`, `ruff`, `basedpyright`, and `pytest`.
+- Python source and wheel distributions build with CLI entry points for `tcl-ls`, `tcl-check`, and `tcl-meta`.
+- GitHub Actions run tests on pushes and pull requests, and release workflows build packaged assets.
 - The codebase is split into three components:
   - `parser`
   - `analysis`
   - `lsp`
-- Structured data is modeled with dataclasses and Pydantic protocol models at the LSP boundary.
+- Structured data is modeled with dataclasses and protocol models at the LSP boundary.
 
 ## Status
 
@@ -115,12 +118,18 @@ This repository contains an early but working bootstrap of a Tcl language server
   - [x] `textDocument/definition`
   - [x] `textDocument/implementation`
   - [x] `textDocument/references`
+  - [x] `textDocument/rename`
   - [x] `textDocument/prepareRename`
+  - [x] `textDocument/completion`
   - [x] `textDocument/hover`
+  - [x] `textDocument/signatureHelp`
+  - [x] `textDocument/documentHighlight`
   - [x] `textDocument/documentLink`
   - [x] `textDocument/documentSymbol`
   - [x] `textDocument/foldingRange`
   - [x] `textDocument/semanticTokens/full`
+  - [x] `textDocument/semanticTokens/full/delta`
+  - [x] `workspace/symbol`
 - [x] Diagnostics are published on open/change/close
 - [x] Full-document sync model
 - [x] In-memory document store and reanalysis of currently managed/open documents on updates
@@ -137,13 +146,21 @@ This repository contains an early but working bootstrap of a Tcl language server
 - [x] workspace symbols
 - [ ] code lens
 - [ ] inlay hints
-- [ ] LSP position handling does not yet account for UTF-16 code-unit semantics or negotiate a `positionEncoding`
+- [ ] LSP position conversions still operate on Python character indices and are not fully validated for UTF-16 edge cases
 - [ ] No incremental parsing or incremental semantic analysis
 - [ ] No incremental text sync support
 - [ ] No file watching or full automatic workspace discovery; unopened files are only indexed opportunistically through local package inference
 - [ ] No persistent cache/database on disk
-- [ ] No Neovim/VS Code plugin packaging in this repository
-- [ ] No CI configuration has been added yet
+
+### Packaging and Release Engineering
+
+- [x] Python source and wheel builds via `uv build`
+- [x] CLI entry points for `tcl-ls`, `tcl-check`, and `tcl-meta`
+- [x] Local packaged-server smoke test validates a real LSP initialize / shutdown / exit round trip
+- [x] GitHub Actions CI runs tests on pushes and pull requests
+- [x] GitHub Actions release workflows build frozen server archives and bundled VS Code assets for Linux, macOS, and Windows
+- [x] The repository ships a VS Code extension and a Neovim 0.11+ helper config
+- [ ] PyPI publishing automation is not configured yet
 
 ### Tests
 
@@ -169,6 +186,7 @@ Right now the project is a solid typed bootstrap for a Tcl LSP:
 - syntax parsing works for the tested core forms
 - semantic analysis works for a small, statically analyzable Tcl subset plus conservative local package inference via `pkgIndex.tcl`
 - navigation features work for that subset
-- the server can speak enough LSP to be used experimentally in an editor
+- the server can speak enough LSP to be used in an editor
+- the project can be built and distributed as an alpha Python package
 
 It is not yet a full Tcl language server, and the biggest missing areas are broader Tcl semantics, dynamic-language handling beyond conservative fallbacks, and additional editor features beyond the MVP navigation surface.

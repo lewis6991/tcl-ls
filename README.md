@@ -1,6 +1,40 @@
 # tcl-ls
 
-A language server for Tcl
+A Tcl language server, checker, and metadata toolkit implemented in typed
+Python.
+
+## Install
+
+`tcl-ls` currently targets Python 3.14 or newer.
+
+Install from PyPI with:
+
+```sh
+python3 -m pip install tcl-ls
+```
+
+You can also download packaged server archives and editor assets from the
+[GitHub Releases](https://github.com/lewis6991/tcl-ls/releases) page.
+
+This installs three command-line entry points:
+
+* `tcl-ls` for the stdio language server
+* `tcl-check` for batch diagnostics
+* `tcl-meta` for Tcl metadata-helper workflows
+
+For local development from a checkout, sync the environment once and prefer
+`uv run ...` for commands you do not want to install globally:
+
+```sh
+uv sync
+```
+
+## Current Scope
+
+This is an alpha release aimed at early adopters. The server is already useful
+for diagnostics, navigation, completion, rename, signature help, semantic
+tokens, and metadata-assisted checking, but it still analyzes Tcl
+conservatively and does not try to model the full dynamic runtime.
 
 ## Documentation
 
@@ -55,7 +89,7 @@ The optional body is declarative analysis metadata. Current annotations are:
 Install the package first so the CLI entry points are available:
 
 ```sh
-python3 -m pip install .
+python3 -m pip install tcl-ls
 ```
 
 Analyze a Tcl file or project tree with:
