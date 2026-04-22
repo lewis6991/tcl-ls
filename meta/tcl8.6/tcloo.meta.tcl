@@ -5,46 +5,37 @@ meta module TclOO
 # Create or introspect Tcl classes via the TclOO class ensemble.
 meta command oo::class {subcommand args} {
     # Create a new TclOO class, optionally evaluating a definition script.
-    subcommand create {className ?definitionScript?} {
-        context tcloo-definition {
-            body 2
-            owner 1
-        }
+    command create {className ?definitionScript?} {
+        enter tcloo-definition body 2 owner 1
     }
 }
 
 # Define or introspect a class using TclOO keywords and scripts.
 meta command oo::define {className args} {
-    context tcloo-definition {
-        body 2..
-        owner 1
-    }
+    enter tcloo-definition body 2.. owner 1
 }
 
 # Define or introspect an object using TclOO keywords and scripts.
 meta command oo::objdefine {objectName args} {
-    context tcloo-definition {
-        body 2..
-        owner 1
-    }
+    enter tcloo-definition body 2.. owner 1
 }
 
-meta context tcloo-definition {
+meta language tcloo-definition {
     command method {name args body} {
         procedure {
-            name 1
-            params 2
-            body 3
-            context tcloo-method
+            name select 1
+            params select 2
+            body select 3
+            language tcloo-method
         }
     }
 
     command constructor {args body} {
         procedure {
             name -
-            params 1
-            body 2
-            context tcloo-method
+            params select 1
+            body select 2
+            language tcloo-method
         }
     }
 
@@ -52,8 +43,8 @@ meta context tcloo-definition {
         procedure {
             name -
             params -
-            body 1
-            context tcloo-method
+            body select 1
+            language tcloo-method
         }
     }
 
@@ -68,9 +59,9 @@ meta context tcloo-definition {
     command variable {name args}
 }
 
-meta context tcloo-method {
+meta language tcloo-method {
     command my {methodName args} {
-        subcommand variable {name args} {
+        command variable {name args} {
             bind 1.. variable
             ref 1..
         }

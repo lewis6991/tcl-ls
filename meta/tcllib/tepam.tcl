@@ -21,12 +21,12 @@ proc ::tcl_lsp::plugins::tepam::statementWords {words info} {
         return {}
     }
 
-    return [list [list procedure [dict create \
-        name-index 1 \
-        params-word-index 2 \
-        params [::tcl_lsp::plugins::tepam::parameterNames $attributes] \
-        body-index 3 \
-    ]]]
+    return [list [list procedure [format {
+        name select 2
+        params literal %s
+        _params-source select 3
+        body select 4
+    } [list [::tcl_lsp::plugins::tepam::parameterNames $attributes]]]]]
 }
 
 proc ::tcl_lsp::plugins::tepam::parameterNames {attributes} {

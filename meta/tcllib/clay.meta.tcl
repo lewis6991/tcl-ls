@@ -4,20 +4,14 @@ meta module clay
 
 # Define a Clay class or object with a declarative body script.
 meta command clay::define {target body} {
-    context clay-definition {
-        body 2
-        owner 1
-    }
+    enter clay-definition body 2 owner 1
 }
 
 # Create a Clay class, optionally evaluating a definition script.
 meta command clay::class {subcommand args} {
     # Create a Clay class and optionally run a definition body.
-    subcommand create {className ?definitionScript?} {
-        context clay-definition {
-            body 2
-            owner 1
-        }
+    command create {className ?definitionScript?} {
+        enter clay-definition body 2 owner 1
     }
 }
 
@@ -27,7 +21,7 @@ meta command clay::tree::dictmerge {varname args}
 # Merge dictionary tree values and return the combined result.
 meta command clay::tree::merge {args}
 
-meta context clay-definition {
+meta language clay-definition {
     # Clay inherits the standard TclOO definition commands.
     command method {name args body}
     command constructor {args body}

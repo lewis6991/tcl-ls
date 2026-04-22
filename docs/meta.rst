@@ -52,16 +52,16 @@ Supported Annotations
 Common annotations:
 
 * ``option`` describes flag, value, and ``--`` handling
-* ``subcommand`` declares nested command names
+* nested ``command`` declarations add child command names
 * ``bind`` marks arguments that introduce variable bindings
 * ``ref`` marks arguments that reference variables
-* ``script-body`` reparses selected arguments as Tcl bodies
+* ``enter tcl body ...`` reparses selected arguments as Tcl bodies
 * ``source`` records sourced files relative to the call site or procedure file
 * ``package`` records required packages
 
 Advanced annotations:
 
-* ``context`` defines a named command-body context
+* ``language`` defines a named embedded command language
 * ``procedure`` describes commands that declare procedures or methods
 * ``plugin`` links a metadata entry to a Tcl-side plugin procedure
 

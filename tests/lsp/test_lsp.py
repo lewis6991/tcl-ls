@@ -369,12 +369,12 @@ def _write_sample_plugin_bundle(metadata_root: Path) -> Path:
         '    if {[llength $words] < 4} {\n'
         '        return {}\n'
         '    }\n'
-        '    return [list [list procedure [dict create \\\n'
-        '        name-index 1 \\\n'
-        '        params-word-index 2 \\\n'
-        '        params [::tcl_lsp::plugins::sample::parameterNames [lindex $words 2]] \\\n'
-        '        body-index 3 \\\n'
-        '    ]]]\n'
+        '    return [list [list procedure [format {\n'
+        '        name select 2\n'
+        '        params literal %s\n'
+        '        _params-source select 3\n'
+        '        body select 4\n'
+        '    } [list [::tcl_lsp::plugins::sample::parameterNames [lindex $words 2]]]]]]\n'
         '}\n'
         'proc ::tcl_lsp::plugins::sample::parameterNames {parameter_list} {\n'
         '    set names {}\n'
@@ -414,11 +414,11 @@ def _write_declaration_plugin_bundle(metadata_root: Path) -> Path:
         '    if {[llength $words] < 3} {\n'
         '        return {}\n'
         '    }\n'
-        '    return [list [list procedure [dict create \\\n'
-        '        name-index 1 \\\n'
-        '        params-word-index 2 \\\n'
-        '        params [::tcl_lsp::plugins::sample::parameterNames [lindex $words 2]] \\\n'
-        '    ]]]\n'
+        '    return [list [list procedure [format {\n'
+        '        name select 2\n'
+        '        params literal %s\n'
+        '        _params-source select 3\n'
+        '    } [list [::tcl_lsp::plugins::sample::parameterNames [lindex $words 2]]]]]]\n'
         '}\n'
         'proc ::tcl_lsp::plugins::sample::parameterNames {parameter_list} {\n'
         '    set names {}\n'
@@ -2484,6 +2484,7 @@ def test_language_server_hover_formats_meta_builtin_command(server: LanguageServ
     hover_value = _hover_markdown_value(server, line=0, character=1)
     assert hover_value.startswith('```tcl\nmeta {subcommand args}\n```\n\n')
     assert 'Top-level declarations:' in hover_value
+    assert 'meta language languageName {' in hover_value
     assert 'structured documentation instead of executable behavior' in hover_value.replace(
         '\n', ' '
     )

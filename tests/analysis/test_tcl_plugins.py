@@ -14,13 +14,50 @@ def test_tcl_plugin_host_returns_procedure_effect(tmp_path: Path) -> None:
         'simple.tcl',
         'namespace eval ::test {}\n'
         'proc ::test::emit {words info} {\n'
-        '    return [list [list procedure [dict create \\\n'
-        '        name-index 1 \\\n'
-        '        params-word-index 2 \\\n'
-        '        params {left right} \\\n'
-        '        body-index 3 \\\n'
-        '        context sample \\\n'
-        '    ]]]\n'
+        '    return [list [list procedure [format {\n'
+        '        name select 2\n'
+        '        params literal %s\n'
+        '        _params-source select 3\n'
+        '        body select 4\n'
+        '        language sample\n'
+        '    } [list {left right}]]]]\n'
+        '}\n',
+    )
+    host = TclPluginHost()
+
+    try:
+        effects = host.call_plugin(
+            plugin,
+            words=('tepam::procedure', 'demo', 'attrs', 'body'),
+            info={'metadata-command': 'tepam::procedure'},
+        )
+    finally:
+        host.close()
+
+    assert effects == (
+        PluginProcedureEffect(
+            name_word_index=1,
+            parameter_word_index=2,
+            parameter_names=('left', 'right'),
+            body_word_index=3,
+            body_context='sample',
+        ),
+    )
+
+
+def test_tcl_plugin_host_returns_structured_procedure_effect(tmp_path: Path) -> None:
+    plugin = _plugin(
+        tmp_path,
+        'structured.tcl',
+        'namespace eval ::test {}\n'
+        'proc ::test::emit {words info} {\n'
+        '    return [list [list procedure {\n'
+        '        name select 2\n'
+        '        params literal {left right}\n'
+        '        _params-source select 3\n'
+        '        body select 4\n'
+        '        language sample\n'
+        '    }]]\n'
         '}\n',
     )
     host = TclPluginHost()
@@ -51,11 +88,11 @@ def test_tcl_plugin_host_returns_declaration_effect(tmp_path: Path) -> None:
         'declaration.tcl',
         'namespace eval ::test {}\n'
         'proc ::test::emit {words info} {\n'
-        '    return [list [list procedure [dict create \\\n'
-        '        name-index 1 \\\n'
-        '        params-word-index 2 \\\n'
-        '        params {left right} \\\n'
-        '    ]]]\n'
+        '    return [list [list procedure [format {\n'
+        '        name select 2\n'
+        '        params literal %s\n'
+        '        _params-source select 3\n'
+        '    } [list {left right}]]]]\n'
         '}\n',
     )
     host = TclPluginHost()
@@ -123,12 +160,12 @@ def test_tcl_plugin_host_resets_state_between_calls(tmp_path: Path) -> None:
         'proc ::test::emit {words info} {\n'
         '    variable ::test::count\n'
         '    incr count\n'
-        '    return [list [list procedure [dict create \\\n'
-        '        name-index 1 \\\n'
-        '        params-word-index 2 \\\n'
-        '        params [list $count] \\\n'
-        '        body-index 3 \\\n'
-        '    ]]]\n'
+        '    return [list [list procedure [format {\n'
+        '        name select 2\n'
+        '        params literal %s\n'
+        '        _params-source select 3\n'
+        '        body select 4\n'
+        '    } [list [list $count]]]]]\n'
         '}\n',
     )
     host = TclPluginHost()

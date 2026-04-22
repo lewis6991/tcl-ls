@@ -16,6 +16,8 @@ from tcl_lsp.analysis.facts.parsing import ListItem, split_tcl_list
 from tcl_lsp.analysis.metadata_commands import MetadataPlugin
 from tcl_lsp.common import Position
 from tcl_lsp.metadata_paths import bundled_metadata_dir
+from tcl_lsp.parser import Parser, word_static_text
+from tcl_lsp.parser.model import Command
 
 try:
     import resource
@@ -33,11 +35,12 @@ _STREAM_CLOSED = object()
 
 @dataclass(frozen=True, slots=True)
 class PluginProcedureEffect:
-    name_word_index: int
-    parameter_word_index: int | None
-    parameter_names: tuple[str, ...]
+    name_word_index: int | None
     body_word_index: int | None
     body_context: str | None
+    name_literal: str | None = None
+    parameter_word_index: int | None = None
+    parameter_names: tuple[str, ...] | None = None
 
 
 type PluginEffect = PluginProcedureEffect
@@ -271,7 +274,7 @@ def parse_plugin_effects(text: str) -> tuple[PluginEffect, ...]:
     for effect_item in split_tcl_list(text, _ZERO_POSITION):
         effect_words = split_tcl_list(effect_item.text, effect_item.content_start)
         if len(effect_words) != 2:
-            raise RuntimeError('Tcl plugin effects must be `effectName { key value ... }` entries.')
+            raise RuntimeError('Tcl plugin effects must be `effectName { ... }` entries.')
 
         effect_name = effect_words[0].text
         if effect_name == 'procedure':
@@ -283,55 +286,141 @@ def parse_plugin_effects(text: str) -> tuple[PluginEffect, ...]:
 
 
 def _parse_plugin_procedure_effect(config_item: ListItem) -> PluginProcedureEffect:
-    config_items = split_tcl_list(config_item.text, config_item.content_start)
-    if len(config_items) % 2 != 0:
-        raise RuntimeError('Procedure plugin effects must use `key value` pairs.')
+    parse_result = Parser().parse_document(path='plugin:procedure', text=config_item.text)
+    if parse_result.diagnostics:
+        message = '; '.join(diagnostic.message for diagnostic in parse_result.diagnostics)
+        raise RuntimeError(f'Invalid procedure plugin effect: {message}')
 
-    values: dict[str, ListItem] = {}
-    for index in range(0, len(config_items), 2):
-        key = config_items[index].text
-        if key in values:
-            raise RuntimeError(f'Procedure plugin effects may only declare one `{key}` setting.')
-        values[key] = config_items[index + 1]
+    name_word_index: int | None = None
+    name_literal: str | None = None
+    parameter_word_index: int | None = None
+    parameter_names: tuple[str, ...] | None = None
+    body_word_index: int | None = None
+    body_context: str | None = None
+    params_declared = False
 
-    try:
-        name_index_item = values['name-index']
-        params_item = values['params']
-    except KeyError as error:
-        missing_key = error.args[0]
-        raise RuntimeError(f'Procedure plugin effects must declare `{missing_key}`.') from error
+    for command in parse_result.script.commands:
+        command_words = _plugin_command_words(command)
+        nested_name = command_words[0]
+        if nested_name == 'name':
+            if name_word_index is not None or name_literal is not None:
+                raise RuntimeError('Procedure plugin effects may only declare one `name` setting.')
+            name_word_index, name_literal = _parse_plugin_procedure_value(
+                command_words[1:],
+                key='name',
+                allow_literal=True,
+                allow_none=False,
+            )
+            continue
+        if nested_name == 'params':
+            if params_declared:
+                raise RuntimeError(
+                    'Procedure plugin effects may only declare one `params` setting.'
+                )
+            params_declared = True
+            parameter_index, parameter_literal = _parse_plugin_procedure_value(
+                command_words[1:],
+                key='params',
+                allow_literal=True,
+                allow_none=False,
+            )
+            if parameter_literal is not None:
+                parameter_names = tuple(
+                    item.text for item in split_tcl_list(parameter_literal, _ZERO_POSITION)
+                )
+            else:
+                parameter_word_index = parameter_index
+            continue
+        if nested_name == '_params-source':
+            if len(command_words) != 3 or command_words[1] != 'select':
+                raise RuntimeError('Procedure plugin effects must use `_params-source select N`.')
+            parameter_word_index = _parse_positive_word_index(
+                command_words[2], key='_params-source'
+            )
+            continue
+        if nested_name == 'body':
+            if body_word_index is not None:
+                raise RuntimeError('Procedure plugin effects may only declare one `body` setting.')
+            body_word_index, body_literal = _parse_plugin_procedure_value(
+                command_words[1:],
+                key='body',
+                allow_literal=False,
+                allow_none=False,
+            )
+            if body_literal is not None:
+                raise RuntimeError('Procedure plugin effects must use `body select N`.')
+            continue
+        if nested_name == 'language':
+            if body_context is not None:
+                raise RuntimeError(
+                    'Procedure plugin effects may only declare one `language` setting.'
+                )
+            if len(command_words) != 2:
+                raise RuntimeError('Procedure plugin effects must use `language name`.')
+            body_context = command_words[1]
+            continue
+        raise RuntimeError(f'Unknown Tcl plugin procedure setting `{nested_name}`.')
 
-    body_index_item = values.get('body-index')
-    parameter_word_item = values.get('params-word-index')
-    context_item = values.get('context')
-    parameter_names = tuple(
-        item.text for item in split_tcl_list(params_item.text, params_item.content_start)
-    )
+    if name_word_index is None and name_literal is None:
+        raise RuntimeError('Procedure plugin effects must declare `name`.')
+    if not params_declared:
+        raise RuntimeError('Procedure plugin effects must declare `params`.')
+
     return PluginProcedureEffect(
-        name_word_index=_parse_non_negative_int(name_index_item.text, key='name-index'),
-        parameter_word_index=(
-            _parse_non_negative_int(parameter_word_item.text, key='params-word-index')
-            if parameter_word_item is not None
-            else None
-        ),
+        name_word_index=name_word_index,
+        name_literal=name_literal,
+        parameter_word_index=parameter_word_index,
         parameter_names=parameter_names,
-        body_word_index=(
-            _parse_non_negative_int(body_index_item.text, key='body-index')
-            if body_index_item is not None
-            else None
-        ),
-        body_context=context_item.text if context_item is not None else None,
+        body_word_index=body_word_index,
+        body_context=body_context,
     )
 
 
-def _parse_non_negative_int(text: str, *, key: str) -> int:
+def _plugin_command_words(command: Command) -> list[str]:
+    words: list[str] = []
+    for word in command.words:
+        static_text = word_static_text(word)
+        if static_text is None:
+            raise RuntimeError('Procedure plugin effects must be fully static.')
+        words.append(static_text)
+    return words
+
+
+def _parse_plugin_procedure_value(
+    words: list[str] | tuple[str, ...],
+    *,
+    key: str,
+    allow_literal: bool,
+    allow_none: bool,
+) -> tuple[int | None, str | None]:
+    if len(words) == 1 and words[0] == '-':
+        if not allow_none:
+            raise RuntimeError(f'Procedure plugin effects do not support `{key} -`.')
+        return None, None
+
+    if len(words) >= 2 and words[0] == 'select':
+        if len(words) != 2:
+            raise RuntimeError(f'Procedure plugin effects must use `{key} select N`.')
+        return _parse_positive_word_index(words[1], key=key), None
+
+    if allow_literal and len(words) == 2 and words[0] == 'literal':
+        return None, words[1]
+
+    literal_fragment = '|literal value' if allow_literal else ''
+    none_fragment = '|-' if allow_none else ''
+    raise RuntimeError(
+        f'Procedure plugin effects must use `{key} select N{literal_fragment}{none_fragment}`.'
+    )
+
+
+def _parse_positive_word_index(text: str, *, key: str) -> int:
     try:
         value = int(text)
     except ValueError as error:
         raise RuntimeError(f'Plugin effect `{key}` values must be integers.') from error
-    if value < 0:
-        raise RuntimeError(f'Plugin effect `{key}` values must be non-negative.')
-    return value
+    if value <= 0:
+        raise RuntimeError(f'Plugin effect `{key}` values must be positive.')
+    return value - 1
 
 
 def _encode_line(text: str) -> str:

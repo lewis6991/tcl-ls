@@ -8,9 +8,9 @@ from tcl_lsp.analysis.facts import FactExtractor
 from tcl_lsp.analysis.index import WorkspaceIndex
 from tcl_lsp.analysis.metadata_commands import (
     MetadataCommand,
+    MetadataContext,
     MetadataOption,
     MetadataPackage,
-    MetadataScriptBody,
     MetadataSelector,
     MetadataSource,
     SourceBase,
@@ -123,7 +123,7 @@ def _metadata_command_effects(
         if metadata_command.context_name is not None:
             continue
         if not any(
-            isinstance(annotation, (MetadataPackage, MetadataScriptBody, MetadataSource))
+            isinstance(annotation, (MetadataPackage, MetadataContext, MetadataSource))
             for annotation in metadata_command.annotations
         ):
             continue
@@ -186,10 +186,10 @@ class _DependencyScanner:
             return
 
         for annotation in metadata_command.annotations:
-            if isinstance(annotation, MetadataScriptBody):
+            if isinstance(annotation, MetadataContext) and annotation.context_name == 'tcl':
                 script_texts = _selected_argument_texts(
                     command_call,
-                    selector=annotation.selector,
+                    selector=annotation.body_selector,
                     options=metadata_command.options,
                 )
                 if script_texts is None:
@@ -302,6 +302,6 @@ def _effect_base_directory(
     call_source_path: Path,
     procedure_path: Path,
 ) -> Path:
-    if base == 'call-source-directory':
+    if base == 'caller':
         return call_source_path.parent
     return procedure_path.parent.parent

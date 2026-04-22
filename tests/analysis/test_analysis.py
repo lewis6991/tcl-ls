@@ -2253,7 +2253,7 @@ def test_analysis_treats_meta_command_as_builtin() -> None:
     )
     hover = hover_by_offset[meta_command_call.name_span.start.offset]
     assert hover.startswith(
-        'builtin command meta command {name signature ? annotationBody ?}\n\n'
+        'builtin command meta command {name shape ? body ?}\n\n'
         'Declare metadata for a command or command prefix.'
     )
     assert 'command or command prefix' in hover.replace('\n', ' ').lower()

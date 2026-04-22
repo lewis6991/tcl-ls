@@ -69,7 +69,7 @@ from tcl_lsp.analysis.metadata_commands import (
     MetadataPlugin,
     MetadataProcedure,
     MetadataRef,
-    MetadataScriptBody,
+    MetadataSelector,
     select_argument_indices,
 )
 from tcl_lsp.analysis.model import (
@@ -477,6 +477,7 @@ class _FactCollector:
             self._collect_metadata_procedure(
                 command,
                 context,
+                metadata_command=metadata_command,
                 command_name=metadata_command.name,
                 prefix_word_count=prefix_word_count,
                 procedure=annotation,
@@ -508,6 +509,7 @@ class _FactCollector:
             self._collect_embedded_procedure(
                 command,
                 context,
+                metadata_command=matched.metadata_command,
                 command_name=matched.metadata_command.name,
                 prefix_word_count=matched.prefix_word_count,
                 procedure=annotation,
@@ -558,6 +560,7 @@ class _FactCollector:
         command: Command,
         context: _ExtractionContext,
         *,
+        metadata_command: MetadataCommand,
         command_name: str,
         prefix_word_count: int,
         procedure: MetadataProcedure,
@@ -565,6 +568,7 @@ class _FactCollector:
         argument_words = command.words[prefix_word_count:]
         procedure_name, selection_span = self._procedure_name(
             command,
+            metadata_command=metadata_command,
             command_name=command_name,
             prefix_word_count=prefix_word_count,
             argument_words=argument_words,
@@ -573,16 +577,27 @@ class _FactCollector:
         if procedure_name is None or selection_span is None:
             return
 
-        parameter_items = self._procedure_parameter_items(argument_words, procedure)
+        parameter_items = self._procedure_parameter_items(
+            argument_words,
+            metadata_command=metadata_command,
+            procedure=procedure,
+            fallback_start=selection_span.start,
+        )
         if parameter_items is None:
             return
 
-        if procedure.body_index >= len(argument_words):
-            return
-        body_word = argument_words[procedure.body_index]
-        body = self._embedded_script_text(body_word)
-        if body is None:
-            return
+        body_word: Word | None = None
+        if procedure.body_selector is not None:
+            body_index = self._procedure_selected_argument_index(
+                argument_words,
+                metadata_command=metadata_command,
+                selector=procedure.body_selector,
+            )
+            if body_index is None:
+                return
+            body_word = argument_words[body_index]
+            if self._embedded_script_text(body_word) is None:
+                return
 
         qualified_name = qualify_name(procedure_name, context.namespace)
         proc_id = proc_symbol_id(context.uri, qualified_name, selection_span.start.offset)
@@ -601,9 +616,12 @@ class _FactCollector:
             ),
             arity=proc_parameter_arity(parameter_items),
             documentation=command_documentation(command),
-            body_span=body_span(body_word),
+            body_span=body_span(body_word) if body_word is not None else None,
         )
         self._procedures.append(proc_decl)
+
+        if body_word is None:
+            return
 
         body_context = _ExtractionContext(
             uri=proc_decl.uri,
@@ -623,13 +641,17 @@ class _FactCollector:
         context: _ExtractionContext,
         effect: PluginProcedureEffect,
     ) -> None:
-        if effect.name_word_index >= len(command.words):
-            return
-
-        name_word = command.words[effect.name_word_index]
-        procedure_name = word_static_text(name_word)
-        if procedure_name is None:
-            return
+        if effect.name_literal is not None:
+            procedure_name = effect.name_literal
+            name_span = command.words[0].content_span
+        else:
+            if effect.name_word_index is None or effect.name_word_index >= len(command.words):
+                return
+            name_word = command.words[effect.name_word_index]
+            procedure_name = word_static_text(name_word)
+            if procedure_name is None:
+                return
+            name_span = name_word.content_span
 
         body_word: Word | None = None
         if effect.body_word_index is not None:
@@ -640,7 +662,37 @@ class _FactCollector:
                 return
 
         qualified_name = qualify_name(procedure_name, context.namespace)
-        proc_id = proc_symbol_id(context.uri, qualified_name, name_word.content_span.start.offset)
+        proc_id = proc_symbol_id(context.uri, qualified_name, name_span.start.offset)
+        if effect.parameter_names is not None:
+            parameters = self._parameter_decls_from_plugin_names(
+                effect.parameter_names,
+                source_span=(
+                    command.words[effect.parameter_word_index].content_span
+                    if effect.parameter_word_index is not None
+                    and effect.parameter_word_index < len(command.words)
+                    else name_span
+                ),
+                uri=context.uri,
+                proc_symbol_id=proc_id,
+            )
+            arity = None
+        elif effect.parameter_word_index is not None:
+            if effect.parameter_word_index >= len(command.words):
+                return
+            parameter_word = command.words[effect.parameter_word_index]
+            static_text = self._static_list_text(parameter_word)
+            if static_text is None:
+                return
+            parameter_items = tuple(split_tcl_list(static_text, parameter_word.content_span.start))
+            parameters = self._parameter_decls_from_items(
+                parameter_items,
+                uri=context.uri,
+                proc_symbol_id=proc_id,
+            )
+            arity = proc_parameter_arity(parameter_items)
+        else:
+            return
+
         proc_decl = ProcDecl(
             symbol_id=proc_id,
             uri=context.uri,
@@ -648,19 +700,9 @@ class _FactCollector:
             qualified_name=qualified_name,
             namespace=namespace_for_name(qualified_name),
             span=command.span,
-            name_span=name_word.content_span,
-            parameters=self._parameter_decls_from_plugin_names(
-                effect.parameter_names,
-                source_span=(
-                    command.words[effect.parameter_word_index].content_span
-                    if effect.parameter_word_index is not None
-                    and effect.parameter_word_index < len(command.words)
-                    else name_word.content_span
-                ),
-                uri=context.uri,
-                proc_symbol_id=proc_id,
-            ),
-            arity=None,
+            name_span=name_span,
+            parameters=parameters,
+            arity=arity,
             documentation=command_documentation(command),
             body_span=body_span(body_word) if body_word is not None else None,
         )
@@ -694,14 +736,26 @@ class _FactCollector:
         if entry is None:
             return False
 
-        entry_context = self._embedded_language_context(entry, parent_context=context)
         handled = False
         if entry.script_word_index is not None and entry.script_word_index < len(command.words):
-            self._collect_script_body_word(command.words[entry.script_word_index], entry_context)
+            selected_word = command.words[entry.script_word_index]
+            entry_context = self._embedded_language_context(
+                entry,
+                parent_context=context,
+                command=command,
+                selected_word=selected_word,
+            )
+            self._collect_script_body_word(selected_word, entry_context)
             handled = True
         if entry.inline_command_start_index is not None and entry.inline_command_start_index < len(
             command.words
         ):
+            entry_context = self._embedded_language_context(
+                entry,
+                parent_context=context,
+                command=command,
+                selected_word=command.words[entry.inline_command_start_index],
+            )
             self._collect_inline_embedded_command(
                 command.words[entry.inline_command_start_index :],
                 entry_context,
@@ -714,7 +768,19 @@ class _FactCollector:
         entry: EmbeddedLanguageEntry,
         *,
         parent_context: _ExtractionContext,
+        command: Command,
+        selected_word: Word,
     ) -> _ExtractionContext:
+        next_flow_state = parent_context.flow_state
+        if entry.language == 'tcl':
+            next_flow_state = script_body_flow_state(
+                parent_context.flow_state,
+                metadata_command_name=normalize_command_name(
+                    word_static_text(command.words[0]) or ''
+                ),
+                argument_words=command.words[1:],
+                selected_word=selected_word,
+            )
         return _ExtractionContext(
             uri=parent_context.uri,
             namespace=entry.namespace,
@@ -722,7 +788,7 @@ class _FactCollector:
             procedure_symbol_id=parent_context.procedure_symbol_id,
             embedded_language=entry.language,
             embedded_owner_name=entry.owner_name,
-            flow_state=parent_context.flow_state,
+            flow_state=next_flow_state,
         )
 
     def _collect_inline_embedded_command(
@@ -754,6 +820,7 @@ class _FactCollector:
         command: Command,
         context: _ExtractionContext,
         *,
+        metadata_command: MetadataCommand,
         command_name: str,
         prefix_word_count: int,
         procedure: MetadataProcedure,
@@ -765,6 +832,7 @@ class _FactCollector:
         argument_words = command.words[prefix_word_count:]
         procedure_name, selection_span = self._procedure_name(
             command,
+            metadata_command=metadata_command,
             command_name=command_name,
             prefix_word_count=prefix_word_count,
             argument_words=argument_words,
@@ -773,16 +841,27 @@ class _FactCollector:
         if procedure_name is None or selection_span is None:
             return
 
-        parameter_items = self._procedure_parameter_items(argument_words, procedure)
+        parameter_items = self._procedure_parameter_items(
+            argument_words,
+            metadata_command=metadata_command,
+            procedure=procedure,
+            fallback_start=selection_span.start,
+        )
         if parameter_items is None:
             return
 
-        if procedure.body_index >= len(argument_words):
-            return
-        body_word = argument_words[procedure.body_index]
-        body = self._embedded_script_text(body_word)
-        if body is None:
-            return
+        body_word: Word | None = None
+        if procedure.body_selector is not None:
+            body_index = self._procedure_selected_argument_index(
+                argument_words,
+                metadata_command=metadata_command,
+                selector=procedure.body_selector,
+            )
+            if body_index is None:
+                return
+            body_word = argument_words[body_index]
+            if self._embedded_script_text(body_word) is None:
+                return
 
         qualified_name = self._embedded_procedure_qualified_name(
             owner_name=owner_name,
@@ -806,9 +885,12 @@ class _FactCollector:
             ),
             arity=proc_parameter_arity(parameter_items),
             documentation=command_documentation(command),
-            body_span=body_span(body_word),
+            body_span=body_span(body_word) if body_word is not None else None,
         )
         self._procedures.append(proc_decl)
+
+        if body_word is None:
+            return
 
         body_context = _ExtractionContext(
             uri=proc_decl.uri,
@@ -834,7 +916,7 @@ class _FactCollector:
         argument_texts = tuple(word_static_text(word) for word in argument_words)
         handled = False
         for annotation in metadata_command.annotations:
-            if not isinstance(annotation, (MetadataBind, MetadataRef, MetadataScriptBody)):
+            if not isinstance(annotation, (MetadataBind, MetadataRef)):
                 continue
             selected_words = self._selected_metadata_argument_words(
                 argument_words=argument_words,
@@ -855,63 +937,41 @@ class _FactCollector:
                     self._record_simple_binding_word(selected_word, context, kind=binding_kind)
                 continue
 
-            if isinstance(annotation, MetadataRef):
-                for selected_word in selected_words:
-                    if annotation.selector.list_mode:
-                        self._record_list_reference_word(selected_word, context)
-                        continue
-                    self._record_simple_reference_word(selected_word, context)
-                continue
-
             for selected_word in selected_words:
-                self._collect_script_body_word(
-                    selected_word,
-                    self._metadata_script_body_context(
-                        command,
-                        context,
-                        metadata_command=metadata_command,
-                        prefix_word_count=prefix_word_count,
-                        selected_word=selected_word,
-                    ),
-                )
+                if annotation.selector.list_mode:
+                    self._record_list_reference_word(selected_word, context)
+                    continue
+                self._record_simple_reference_word(selected_word, context)
 
         return handled
-
-    def _metadata_script_body_context(
-        self,
-        command: Command,
-        context: _ExtractionContext,
-        *,
-        metadata_command: MetadataCommand,
-        prefix_word_count: int,
-        selected_word: Word,
-    ) -> _ExtractionContext:
-        argument_words = command.words[prefix_word_count:]
-        next_flow_state = script_body_flow_state(
-            context.flow_state,
-            metadata_command_name=metadata_command.name,
-            argument_words=argument_words,
-            selected_word=selected_word,
-        )
-        return self._context_with_flow_state(context, next_flow_state)
 
     def _procedure_name(
         self,
         command: Command,
         *,
+        metadata_command: MetadataCommand,
         command_name: str,
         prefix_word_count: int,
         argument_words: tuple[Word, ...],
         procedure: MetadataProcedure,
     ) -> tuple[str | None, Span | None]:
-        if procedure.member_name_index is None:
+        if procedure.member_name_selector is None and procedure.member_name_literal is None:
             return command_name.rsplit(' ', maxsplit=1)[-1], command.words[
                 prefix_word_count - 1
             ].content_span
 
-        if procedure.member_name_index >= len(argument_words):
+        if procedure.member_name_literal is not None:
+            return procedure.member_name_literal, command.words[prefix_word_count - 1].content_span
+
+        assert procedure.member_name_selector is not None
+        name_index = self._procedure_selected_argument_index(
+            argument_words,
+            metadata_command=metadata_command,
+            selector=procedure.member_name_selector,
+        )
+        if name_index is None:
             return None, None
-        name_word = argument_words[procedure.member_name_index]
+        name_word = argument_words[name_index]
         name = word_static_text(name_word)
         if name is None:
             return None, None
@@ -920,18 +980,52 @@ class _FactCollector:
     def _procedure_parameter_items(
         self,
         argument_words: tuple[Word, ...],
+        *,
+        metadata_command: MetadataCommand,
         procedure: MetadataProcedure,
+        fallback_start: Position,
     ) -> tuple[ListItem, ...] | None:
-        if procedure.parameter_index is None:
+        if procedure.parameter_literal is not None:
+            return tuple(split_tcl_list(procedure.parameter_literal, fallback_start))
+
+        if procedure.parameter_selector is None:
             return ()
-        if procedure.parameter_index >= len(argument_words):
+
+        parameter_index = self._procedure_selected_argument_index(
+            argument_words,
+            metadata_command=metadata_command,
+            selector=procedure.parameter_selector,
+        )
+        if parameter_index is None:
             return None
 
-        parameter_word = argument_words[procedure.parameter_index]
+        parameter_word = argument_words[parameter_index]
         static_text = self._static_list_text(parameter_word)
         if static_text is None:
             return None
         return tuple(split_tcl_list(static_text, parameter_word.content_span.start))
+
+    def _procedure_selected_argument_index(
+        self,
+        argument_words: tuple[Word, ...],
+        *,
+        metadata_command: MetadataCommand,
+        selector: MetadataSelector,
+    ) -> int | None:
+        argument_texts = tuple(word_static_text(word) for word in argument_words)
+        argument_expanded = tuple(word.expanded for word in argument_words)
+        indices = select_argument_indices(
+            selector,
+            argument_texts,
+            metadata_command.options,
+            argument_expanded,
+        )
+        if indices is None or len(indices) != 1:
+            return None
+        index = indices[0]
+        if index >= len(argument_words):
+            return None
+        return index
 
     def _embedded_procedure_qualified_name(
         self,
@@ -941,7 +1035,7 @@ class _FactCollector:
         procedure: MetadataProcedure,
         procedure_name: str,
     ) -> str:
-        if procedure.member_name_index is None:
+        if procedure.member_name_selector is None and procedure.member_name_literal is None:
             return f'{owner_name} {command_name}'
         return f'{owner_name} {command_name} {procedure_name}'
 
@@ -1062,7 +1156,7 @@ class _FactCollector:
         argument_words: tuple[Word, ...],
         argument_texts: tuple[str | None, ...],
         metadata_command: MetadataCommand,
-        annotation: MetadataBind | MetadataRef | MetadataScriptBody,
+        annotation: MetadataBind | MetadataRef,
     ) -> tuple[Word, ...] | None:
         selected_indices = select_argument_indices(
             annotation.selector,

@@ -12,10 +12,11 @@ from tcl_lsp.analysis.builtins import (
 from tcl_lsp.analysis.metadata_commands import (
     MetadataBind,
     MetadataContext,
+    MetadataPackage,
     MetadataPlugin,
     MetadataProcedure,
-    MetadataScriptBody,
     MetadataSelector,
+    MetadataSource,
     load_metadata_commands,
     select_argument_indices,
 )
@@ -162,7 +163,7 @@ def test_core_metadata_parses_foreach_loop_selectors() -> None:
     body_annotation = next(
         annotation
         for annotation in foreach_command.annotations
-        if isinstance(annotation, MetadataScriptBody)
+        if isinstance(annotation, MetadataContext)
     )
 
     assert bind_annotation.selector.list_mode is True
@@ -170,14 +171,17 @@ def test_core_metadata_parses_foreach_loop_selectors() -> None:
     assert bind_annotation.selector.start_index == 0
     assert bind_annotation.selector.end_index == 1
     assert bind_annotation.selector.end_from_end is True
+    assert body_annotation.context_name == 'tcl'
+    assert body_annotation.owner_selector is None
+    assert body_annotation.body_selector.start_from_end is True
     assert select_argument_indices(
         bind_annotation.selector,
         ('item', 'left', 'weight', 'right', 'body'),
         (),
     ) == (0, 2)
-    assert body_annotation.selector.start_from_end is True
+    assert body_annotation.body_selector.start_from_end is True
     assert select_argument_indices(
-        body_annotation.selector,
+        body_annotation.body_selector,
         ('item', 'left', 'weight', 'right', 'body'),
         (),
     ) == (4,)
@@ -197,23 +201,33 @@ def test_builtin_metadata_exposes_nested_and_derived_subcommands() -> None:
 def test_core_metadata_models_meta_as_ensemble() -> None:
     meta_builtin = builtin_command('meta')
     meta_command_builtin = builtin_command('meta command')
-    meta_context_builtin = builtin_command('meta context')
+    meta_language_builtin = builtin_command('meta language')
     meta_module_builtin = builtin_command('meta module')
 
     assert meta_builtin is not None
     assert meta_command_builtin is not None
-    assert meta_context_builtin is not None
+    assert meta_language_builtin is not None
     assert meta_module_builtin is not None
     assert meta_builtin.metadata_path_name == 'meta.meta.tcl'
     assert meta_command_builtin.metadata_path_name == 'meta.meta.tcl'
-    assert meta_context_builtin.metadata_path_name == 'meta.meta.tcl'
+    assert meta_language_builtin.metadata_path_name == 'meta.meta.tcl'
     assert meta_module_builtin.metadata_path_name == 'meta.meta.tcl'
 
-    assert meta_builtin.overloads[0].subcommands == ('module', 'command', 'context')
+    assert meta_builtin.overloads[0].subcommands == ('module', 'command', 'language')
 
-    assert meta_command_builtin.overloads[0].arity is not None
-    assert meta_command_builtin.overloads[0].arity.accepts(2) is True
-    assert meta_command_builtin.overloads[0].arity.accepts(3) is True
+    assert tuple(overload.signature for overload in meta_command_builtin.overloads) == (
+        'meta command {name shape}',
+        'meta command {name shape body}',
+        'meta command {name variants body}',
+    )
+    assert any(
+        overload.arity is not None and overload.arity.accepts(2)
+        for overload in meta_command_builtin.overloads
+    )
+    assert any(
+        overload.arity is not None and overload.arity.accepts(3)
+        for overload in meta_command_builtin.overloads
+    )
     assert meta_module_builtin.overloads[0].arity is not None
     assert meta_module_builtin.overloads[0].arity.accepts(1) is True
 
@@ -283,6 +297,7 @@ def test_tcloo_metadata_parses_embedded_context_annotations() -> None:
         if isinstance(annotation, MetadataContext)
     )
     assert context_annotation.context_name == 'tcloo-definition'
+    assert context_annotation.owner_selector is not None
     assert context_annotation.owner_selector.start_index == 0
     assert context_annotation.body_selector.start_index == 1
     assert context_annotation.body_selector.all_remaining is True
@@ -297,9 +312,12 @@ def test_tcloo_metadata_parses_embedded_context_annotations() -> None:
         for annotation in method_command.annotations
         if isinstance(annotation, MetadataProcedure)
     )
-    assert procedure_annotation.member_name_index == 0
-    assert procedure_annotation.parameter_index == 1
-    assert procedure_annotation.body_index == 2
+    assert procedure_annotation.member_name_selector is not None
+    assert procedure_annotation.member_name_selector.start_index == 0
+    assert procedure_annotation.parameter_selector is not None
+    assert procedure_annotation.parameter_selector.start_index == 1
+    assert procedure_annotation.body_selector is not None
+    assert procedure_annotation.body_selector.start_index == 2
     assert procedure_annotation.body_context == 'tcloo-method'
 
 
@@ -349,7 +367,7 @@ def test_metadata_rejects_spaced_top_level_command_names(tmp_path: Path) -> None
 def test_metadata_rejects_spaced_context_command_names(tmp_path: Path) -> None:
     metadata_path = tmp_path / 'bad_context.meta.tcl'
     metadata_path.write_text(
-        'meta context sample {\n    command {my variable} {name args}\n}\n',
+        'meta language sample {\n    command {my variable} {name args}\n}\n',
         encoding='utf-8',
     )
 
@@ -383,3 +401,206 @@ def test_metadata_rejects_bind_without_inferable_kind(tmp_path: Path) -> None:
         match='requires an explicit binding kind',
     ):
         load_metadata_commands(metadata_path)
+
+
+def test_metadata_parses_language_entries_and_enter_annotations(tmp_path: Path) -> None:
+    metadata_path = tmp_path / 'sample.meta.tcl'
+    metadata_path.write_text(
+        'meta language sample {\n'
+        '    command step {body} {\n'
+        '        bind 1 set\n'
+        '    }\n'
+        '}\n'
+        'meta command run {body} {\n'
+        '    enter sample body 1\n'
+        '}\n',
+        encoding='utf-8',
+    )
+
+    commands = load_metadata_commands(metadata_path)
+    run_command = next(command for command in commands if command.name == 'run')
+    enter_annotation = next(
+        annotation
+        for annotation in run_command.annotations
+        if isinstance(annotation, MetadataContext)
+    )
+    language_command = next(
+        command
+        for command in commands
+        if command.context_name == 'sample' and command.name == 'step'
+    )
+
+    assert enter_annotation.context_name == 'sample'
+    assert enter_annotation.owner_selector is None
+    assert enter_annotation.body_selector.start_index == 0
+    assert language_command.signature == 'body'
+
+
+def test_metadata_treats_form_as_regular_shape_without_variants(tmp_path: Path) -> None:
+    metadata_path = tmp_path / 'single.meta.tcl'
+    metadata_path.write_text(
+        'meta command demo {form args} {\n    bind 1 set\n}\n',
+        encoding='utf-8',
+    )
+
+    command = load_metadata_commands(metadata_path)[0]
+
+    assert command.name == 'demo'
+    assert command.signature == 'form args'
+
+
+def test_metadata_parses_variant_containers(tmp_path: Path) -> None:
+    metadata_path = tmp_path / 'forms.meta.tcl'
+    metadata_path.write_text(
+        'meta command after variants {\n'
+        '    form {ms}\n'
+        '    form {ms script args} {\n'
+        '        bind 2 set\n'
+        '    }\n'
+        '}\n',
+        encoding='utf-8',
+    )
+
+    commands = tuple(
+        command for command in load_metadata_commands(metadata_path) if command.name == 'after'
+    )
+
+    assert tuple(command.signature for command in commands) == ('ms', 'ms script args')
+    bind_annotation = next(
+        annotation for annotation in commands[1].annotations if isinstance(annotation, MetadataBind)
+    )
+    assert bind_annotation.selector.start_index == 1
+
+
+def test_metadata_parses_nested_command_declarations(tmp_path: Path) -> None:
+    metadata_path = tmp_path / 'nested.meta.tcl'
+    metadata_path.write_text(
+        'meta command array {subcommand args} {\n'
+        '    command get {arrayName ?pattern?}\n'
+        '    command set {arrayName list}\n'
+        '}\n',
+        encoding='utf-8',
+    )
+
+    commands = {command.name: command for command in load_metadata_commands(metadata_path)}
+
+    assert commands['array get'].signature == 'arrayName ?pattern?'
+    assert commands['array set'].signature == 'arrayName list'
+
+
+def test_metadata_parses_nested_command_variants(tmp_path: Path) -> None:
+    metadata_path = tmp_path / 'nested_variants.meta.tcl'
+    metadata_path.write_text(
+        'meta command package {subcommand args} {\n'
+        '    command require variants {\n'
+        '        form {package ?requirement...?}\n'
+        '        form {-exact package version}\n'
+        '    }\n'
+        '}\n',
+        encoding='utf-8',
+    )
+
+    commands = tuple(
+        command
+        for command in load_metadata_commands(metadata_path)
+        if command.name == 'package require'
+    )
+
+    assert tuple(command.signature for command in commands) == (
+        'package ?requirement...?',
+        '-exact package version',
+    )
+
+
+def test_metadata_rejects_legacy_subcommand_declarations(tmp_path: Path) -> None:
+    metadata_path = tmp_path / 'legacy.meta.tcl'
+    metadata_path.write_text(
+        'meta command array {subcommand args} {\n    subcommand get {arrayName ?pattern?}\n}\n',
+        encoding='utf-8',
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match='Unknown metadata command annotation `subcommand`',
+    ):
+        load_metadata_commands(metadata_path)
+
+
+def test_metadata_parses_new_package_and_source_syntax(tmp_path: Path) -> None:
+    metadata_path = tmp_path / 'deps.meta.tcl'
+    metadata_path.write_text(
+        'meta command use-tcloo {args} {\n'
+        '    package literal TclOO\n'
+        '}\n'
+        'meta command use-dynamic {name} {\n'
+        '    package select 1\n'
+        '}\n'
+        'meta command load-local {path} {\n'
+        '    source 1 caller\n'
+        '}\n'
+        'meta command load-relative {path} {\n'
+        '    source 1 definition\n'
+        '}\n',
+        encoding='utf-8',
+    )
+
+    commands = {command.name: command for command in load_metadata_commands(metadata_path)}
+
+    fixed_package = next(
+        annotation
+        for annotation in commands['use-tcloo'].annotations
+        if isinstance(annotation, MetadataPackage)
+    )
+    dynamic_package = next(
+        annotation
+        for annotation in commands['use-dynamic'].annotations
+        if isinstance(annotation, MetadataPackage)
+    )
+    caller_source = next(
+        annotation
+        for annotation in commands['load-local'].annotations
+        if isinstance(annotation, MetadataSource)
+    )
+    definition_source = next(
+        annotation
+        for annotation in commands['load-relative'].annotations
+        if isinstance(annotation, MetadataSource)
+    )
+
+    assert fixed_package.literal_package == 'TclOO'
+    assert fixed_package.selector is None
+    assert dynamic_package.selector is not None
+    assert dynamic_package.literal_package is None
+    assert caller_source.base == 'caller'
+    assert definition_source.base == 'definition'
+
+
+def test_metadata_parses_tagged_procedure_fields(tmp_path: Path) -> None:
+    metadata_path = tmp_path / 'procedure.meta.tcl'
+    metadata_path.write_text(
+        'meta command demo {name params body} {\n'
+        '    procedure {\n'
+        '        name select 1\n'
+        '        params literal {left right}\n'
+        '        body select 3\n'
+        '        language sample\n'
+        '    }\n'
+        '}\n',
+        encoding='utf-8',
+    )
+
+    command = load_metadata_commands(metadata_path)[0]
+    procedure = next(
+        annotation
+        for annotation in command.annotations
+        if isinstance(annotation, MetadataProcedure)
+    )
+
+    assert procedure.member_name_selector is not None
+    assert procedure.member_name_selector.start_index == 0
+    assert procedure.member_name_literal is None
+    assert procedure.parameter_selector is None
+    assert procedure.parameter_literal == 'left right'
+    assert procedure.body_selector is not None
+    assert procedure.body_selector.start_index == 2
+    assert procedure.body_context == 'sample'

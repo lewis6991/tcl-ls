@@ -2,34 +2,48 @@
 #
 # Metadata files use the `meta` ensemble for structured declarations instead of
 # executable behavior and conventionally use the `.meta.tcl` suffix.
+#
+# This comment block describes the current metadata syntax.
 meta module Tcl
 #
 # Top-level declarations:
 #   meta module name
-#   meta command name {signature} ? { annotation ... } ?
-#   meta context contextName {
-#       command name {signature} ? { annotation ... } ?
+#   meta command name {shape} ? { clause ... } ?
+#   meta command name variants {
+#       form {shape} ? { clause ... } ?
+#       command name {shape} ? { clause ... } ?
+#       command name variants { ... }
+#   }
+#   meta language languageName {
+#       command name {shape} ? { clause ... } ?
+#       command name variants {
+#           form {shape} ? { clause ... } ?
+#           command name {shape} ? { clause ... } ?
+#           command name variants { ... }
+#       }
 #   }
 #
 # `name` is a single command word. Nested command words must be declared with
-# `subcommand`.
+# `command`.
 #
-# Signatures use Tcl command syntax with optional arguments written literally.
+# `shape` is the structural form of one callable command shape. It is not
+# display-only text. Single-form commands may elide `form`; commands that use
+# explicit `form` entries should use `variants`.
 #
-# Annotation bodies:
-#   annotationBody is a static Tcl command list, usually written as a braced
-#   block. Each nested command in the block is one annotation.
+# Clause bodies:
+#   A command body is a static Tcl command list, usually written as a braced
+#   block. Each nested command in the block is one sibling clause.
 #
 #   Example:
 #       meta command regexp {args} {
 #           option -all
 #           option -start value
 #           option -- stop
-#           bind after-options 3..
+#           bind after-options 3.. regexp
 #       }
 #
 # Selector syntax:
-#   Selectors point at arguments in the declared signature using positive
+#   Selectors point at arguments in the declared shape using positive
 #   1-based positions.
 #
 #   1               the first argument
@@ -54,9 +68,10 @@ meta module Tcl
 # option -- stop
 #   Declare `--` as the end of option parsing for this command.
 #
-# subcommand name {signature} ? { annotation ... } ?
-#   Declare a subcommand using the same shape as `meta command`. The declared
-#   name also contributes to the parent's subcommand set.
+# command name {signature} ? { annotation ... } ?
+# command name variants { ... }
+#   Declare a nested command using the same shape as `meta command`. The
+#   declared name also contributes to the parent's command tree.
 #
 # bind selector ?kind?
 #   Treat the selected argument as the name of a variable binding introduced by
@@ -66,80 +81,59 @@ meta module Tcl
 # ref selector
 #   Treat the selected argument as the name of a variable reference.
 #
-# script-body selector
-#   Treat the selected argument as an embedded Tcl script and analyze it.
-#
-# source selector call-source-directory|proc-source-parent
-#   Treat the selected argument as a source path. The final token picks the
-#   base directory used to resolve that path.
-#
-# package name|selector
-#   Record a package dependency. Use a literal package name for fixed
-#   dependencies or a selector when the package name comes from an argument.
-#
-# context context-name {
-#     body selector
-#     owner selector
-# }
+# enter language body selector ? owner selector ?
 #   Enter the named embedded command language for the selected body argument or
-#   arguments. `owner` names the entity that owns the context instance, which
-#   lets nested procedure-like declarations get stable qualified names and a
-#   namespace anchor.
+#   arguments. `owner` is optional. Use `enter tcl body ...` for Tcl bodies.
 #
-# procedure {
-#     name index|-
-#     params index|-
-#     body index
-#     context body-context
-# }
-#   Describe a procedure-like command declaration. `name` selects the declared
-#   member name, or `-` when the command has no separate member name. `params`
-#   selects the formal Tcl argument list, or `-` when there is none.
-#   `body` selects the script body. `context` is optional and sets the embedded
-#   language used when analyzing that body.
+# source selector caller
+# source selector definition
+#   Treat the selected arguments as paths that should be resolved and loaded as
+#   source dependencies. `caller` resolves relative to the file containing the
+#   call site. `definition` resolves relative to the helper definition.
 #
-# plugin scriptPath procName
-#   Invoke a Tcl plugin hook for matching command instances. `scriptPath` is
-#   resolved relative to the metadata file that declares it. The plugin proc is
-#   called as `procName words info`, where `words` is the command words as
-#   static strings when available and `info` is a dict with context like
-#   `metadata-command`, `namespace`, `prefix-word-count`, `static-flags`, and
-#   `expanded-flags`.
+# package literal packageName
+# package select selector
+#   Treat the command as requiring a package. The fixed literal case stays
+#   terse, while `select` reads the package name from an argument.
 #
-#   Plugins run inside a fresh safe Tcl interpreter for each call. They do not
-#   share state with other plugin invocations, and file, package, interpreter,
-#   and channel commands are not available there.
+# procedure { ... }
+#   Declare a procedure-like command shape using tagged field values:
+#       name select selector | literal value | -
+#       params select selector | literal {name ...} | -
+#       body select selector
+#       language name
+#       _params-source select selector
 #
-#   The proc returns a Tcl list of effects. The supported effect format is:
-#       procedure {
-#           name-index N
-#           params-word-index N
-#           params {name ...}
-#           body-index N
-#           # `body-index` may be omitted for declaration-only procedures.
-#           context body-context
-#       }
+# plugin script commandPrefix
+#   Run a Tcl plugin to produce dynamic metadata effects. Plugin procedure
+#   effects should use the same `select`/`literal` field vocabulary as the
+#   declarative `procedure` annotation.
 #
-# A command can use multiple annotations in one body when needed.
+# A command can use multiple clauses in one body when needed.
 #
 # Declare metadata for Tcl language entities.
 # Tcl-ls treats this as structured documentation instead of executable
 # behavior. `meta` is an ensemble whose subcommands describe command metadata
-# and embedded command contexts.
+# and embedded command languages.
 meta command meta {subcommand args} {
     # Declare the builtin package or module represented by this metadata file.
     # Files with a `meta module` declaration are indexed as bundled package
     # metadata.
-    subcommand module {name}
+    command module {name}
 
     # Declare metadata for a command or command prefix.
-    # Use `meta command name {signature}` for plain declarations, or add an
-    # annotation body to describe options, bindings, nested script bodies,
-    # package loading, or embedded command contexts.
-    subcommand command {name signature ? annotationBody ?}
+    # Use `meta command name {shape}` for single-form commands, or
+    # `meta command name variants { ... }` for explicit `form` and nested
+    # `command` declarations.
+    command command variants {
+        form {name shape}
+        form {name shape body}
+        form {name variants body}
+    }
 
     # Declare an embedded command language and the commands valid within it.
-    # The body contains `command name {signature}` entries that are only valid
-    # while a matching `context` annotation is active.
-    subcommand context {name body}
+    # The body contains `command name {shape}` or
+    # `command name variants { ... }` entries that are only valid while a
+    # matching `enter` clause is active.
+    command language {name body}
 }

@@ -5,7 +5,7 @@
 #
 # The helper introspects the current Tcl environment, diffs its command set
 # against a plain child `tclsh`, and writes generic `meta command` /
-# `subcommand` declarations for the newly introduced command roots.
+# `command` declarations for the newly introduced command roots.
 
 namespace eval ::tcl_meta {
     variable script_path [file normalize [info script]]
@@ -247,11 +247,11 @@ namespace eval ::tcl_meta {
         set segment [lindex [split $path] end]
         set children [lookup_subcommands $subcommand_map $path]
         if {[llength $children] == 0} {
-            puts $ch "${indent}subcommand [list $segment] {args}"
+            puts $ch "${indent}command [list $segment] {args}"
             return
         }
 
-        puts $ch "${indent}subcommand [list $segment] {subcommand args} {"
+        puts $ch "${indent}command [list $segment] {subcommand args} {"
         foreach child $children {
             emit_subcommand $ch $subcommand_map "$path $child" "    $indent"
         }

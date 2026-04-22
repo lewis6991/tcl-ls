@@ -143,7 +143,7 @@ def test_bundled_tcl_helper_uses_proc_signature_when_subcommands_are_discovered(
     assert metadata == (
         _METADATA_HEADER
         + 'meta command widget {mode args} {\n'
-        + '    subcommand cget {args}\n'
-        + '    subcommand configure {args}\n'
+        + '    command cget {args}\n'
+        + '    command configure {args}\n'
         + '}\n'
     )

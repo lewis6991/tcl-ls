@@ -18,7 +18,7 @@ def _load_generator() -> ModuleType:
     return module
 
 
-def test_update_metadata_inserts_generated_subcommand_blocks() -> None:
+def test_update_metadata_inserts_generated_command_blocks() -> None:
     generator = _load_generator()
     source_text = (
         '# Tcl builtin command metadata for tcl-ls.\n'
@@ -45,9 +45,9 @@ def test_update_metadata_inserts_generated_subcommand_blocks() -> None:
 
     assert 'meta command dict {subcommand args} {' in updated
     assert '    # @generated begin subcommands for dict (Tcl 8.6)' in updated
-    assert '    subcommand get {dictionaryValue ? key ... ?}' in updated
-    assert '    subcommand filter {dictionaryValue filterType arg ?arg ...?} {' in updated
-    assert '        subcommand key {dictionaryValue ?globPattern ...?}' in updated
+    assert '    command get {dictionaryValue ? key ... ?}' in updated
+    assert '    command filter {dictionaryValue filterType arg ?arg ...?} {' in updated
+    assert '        command key {dictionaryValue ?globPattern ...?}' in updated
     assert '    # @generated end subcommands for dict' in updated
     assert 'meta command {dict get} {dictionaryValue ? key ... ?}' not in updated
     assert generator.update_metadata(updated, docs_by_command, version_label='8.6') == updated

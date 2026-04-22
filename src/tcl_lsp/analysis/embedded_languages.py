@@ -22,7 +22,7 @@ type EmbeddedLanguageName = str
 @dataclass(frozen=True, slots=True)
 class EmbeddedLanguageEntry:
     language: EmbeddedLanguageName
-    owner_name: str
+    owner_name: str | None
     namespace: str
     script_word_index: int | None
     inline_command_start_index: int | None
@@ -148,24 +148,28 @@ def match_embedded_language_entry(
         if not isinstance(annotation, MetadataContext):
             continue
 
-        owner_indices = select_argument_indices(
-            annotation.owner_selector,
-            argument_texts,
-            metadata_command.options,
-            argument_expanded,
-        )
-        if owner_indices is None or len(owner_indices) != 1:
-            continue
-        owner_index = owner_indices[0]
-        if owner_index >= len(argument_words):
-            continue
+        owner_name: str | None = None
+        owner_namespace = current_namespace
+        if annotation.owner_selector is not None:
+            owner_indices = select_argument_indices(
+                annotation.owner_selector,
+                argument_texts,
+                metadata_command.options,
+                argument_expanded,
+            )
+            if owner_indices is None or len(owner_indices) != 1:
+                continue
+            owner_index = owner_indices[0]
+            if owner_index >= len(argument_words):
+                continue
 
-        owner_name = _static_owner_name(
-            argument_words[owner_index],
-            current_namespace=current_namespace,
-        )
-        if owner_name is None:
-            continue
+            owner_name = _static_owner_name(
+                argument_words[owner_index],
+                current_namespace=current_namespace,
+            )
+            if owner_name is None:
+                continue
+            owner_namespace = namespace_for_name(owner_name)
 
         body_indices = select_argument_indices(
             annotation.body_selector,
@@ -182,7 +186,7 @@ def match_embedded_language_entry(
             return EmbeddedLanguageEntry(
                 language=annotation.context_name,
                 owner_name=owner_name,
-                namespace=namespace_for_name(owner_name),
+                namespace=owner_namespace,
                 script_word_index=matched.prefix_word_count + body_indices[0],
                 inline_command_start_index=None,
             )
@@ -190,7 +194,7 @@ def match_embedded_language_entry(
         return EmbeddedLanguageEntry(
             language=annotation.context_name,
             owner_name=owner_name,
-            namespace=namespace_for_name(owner_name),
+            namespace=owner_namespace,
             script_word_index=None,
             inline_command_start_index=matched.prefix_word_count + body_indices[0],
         )

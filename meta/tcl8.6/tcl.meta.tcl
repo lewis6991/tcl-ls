@@ -1,39 +1,41 @@
 # Tcl builtin command metadata for tcl-ls.
 # This file is parsed as Tcl source so builtin docs live in leading comment blocks.
-# Duplicate command entries intentionally model different builtin overloads and variations.
+# Commands with multiple builtin variants use explicit `variants` blocks.
 # The metadata format itself is declared in meta/meta.meta.tcl.
-# Generated subcommand sections are maintained by scripts/generate_builtin_commands.py.
+# Generated command sections are maintained by scripts/generate_builtin_commands.py.
 # Descriptions are adapted from the Tcl 8.6 command manual.
 meta module Tcl
 
-# Execute a command after a time delay.
-# Pause for the given number of milliseconds and then return. While the
-# interpreter is waiting, the application does not respond to events.
-meta command after {ms}
+meta command after variants {
+    # Execute a command after a time delay.
+    # Pause for the given number of milliseconds and then return. While the
+    # interpreter is waiting, the application does not respond to events.
+    form {ms}
 
-# Schedule a script to run after a time delay.
-# Queue the concatenated script as a one-shot timer callback and return an
-# identifier. The callback runs later at global level and can be cancelled
-# with after cancel.
-meta command after {ms script args}
+    # Schedule a script to run after a time delay.
+    # Queue the concatenated script as a one-shot timer callback and return an
+    # identifier. The callback runs later at global level and can be cancelled
+    # with after cancel.
+    form {ms script args}
 
-# Schedule a script to run when the event loop is idle.
-# Queue the concatenated script as a one-shot idle callback and return an
-# identifier. The callback runs the next time the event loop is entered and no
-# other events are ready.
-meta command after {idle script args}
+    # Schedule a script to run when the event loop is idle.
+    # Queue the concatenated script as a one-shot idle callback and return an
+    # identifier. The callback runs the next time the event loop is entered and no
+    # other events are ready.
+    form {idle script args}
 
-# Cancel a previously scheduled after handler.
-# Cancel a pending timer or idle callback by handler id or by the script
-# string that was scheduled. If the handler already ran or no match exists,
-# this form has no effect.
-meta command after {cancel idOrScript}
+    # Cancel a previously scheduled after handler.
+    # Cancel a pending timer or idle callback by handler id or by the script
+    # string that was scheduled. If the handler already ran or no match exists,
+    # this form has no effect.
+    form {cancel idOrScript}
 
-# Return information about scheduled after handlers.
-# Without an id, return the identifiers for pending after handlers. With an
-# id, return the associated script and whether the handler is an idle or timer
-# callback.
-meta command after {info {id {}}}
+    # Return information about scheduled after handlers.
+    # Without an id, return the identifiers for pending after handlers. With an
+    # id, return the associated script and whether the handler is an idle or timer
+    # callback.
+    form {info {id {}}}
+}
 
 # Append to variable.
 # Append all of the value arguments to the current value of variable varName.
@@ -58,47 +60,47 @@ meta command array {subcommand args} {
 
     # Returns 1 if there are any more elements left to be processed in an
     # array search, 0 if all elements have already been returned.
-    subcommand anymore {arrayName searchId}
+    command anymore {arrayName searchId}
 
     # This command terminates an array search and destroys all the state
     # associated with that search.
-    subcommand donesearch {arrayName searchId}
+    command donesearch {arrayName searchId}
 
     # Returns 1 if arrayName is an array variable, 0 if there is no variable
     # by that name or if it is a scalar variable.
-    subcommand exists {arrayName}
+    command exists {arrayName}
 
     # Returns a list containing pairs of elements.
-    subcommand get {arrayName ? pattern ?}
+    command get {arrayName ? pattern ?}
 
     # Returns a list containing the names of all of the elements in the array
     # that match pattern.
-    subcommand names {arrayName ? mode ? ? pattern ?}
+    command names {arrayName ? mode ? ? pattern ?}
 
     # Returns the name of the next element in arrayName, or an empty string if
     # all elements of arrayName have already been returned in this search.
-    subcommand nextelement {arrayName searchId}
+    command nextelement {arrayName searchId}
 
     # Sets the values of one or more elements in arrayName. list must have a
     # form like that returned by array get, consisting of an even number of
     # elements.
-    subcommand set {arrayName list}
+    command set {arrayName list}
 
     # Returns a decimal string giving the number of elements in the array.
-    subcommand size {arrayName}
+    command size {arrayName}
 
     # This command initializes an element-by-element search through the array
     # given by arrayName, such that invocations of the array nextelement
     # command will return the names of the individual elements in the array.
-    subcommand startsearch {arrayName}
+    command startsearch {arrayName}
 
     # Returns statistics about the distribution of data within the hashtable
     # that represents the array.
-    subcommand statistics {arrayName}
+    command statistics {arrayName}
 
     # Unsets all of the elements in the array that match pattern (using the
     # matching rules of string match).
-    subcommand unset {arrayName ? pattern ?}
+    command unset {arrayName ? pattern ?}
 
     # @generated end subcommands for array
 }
@@ -136,36 +138,36 @@ meta command binary {subcommand args} {
     # @generated begin subcommands for binary (Tcl 8.6)
 
     # Convert encoded text to binary data using the specified format.
-    subcommand decode {format ?-option value ...? data} {
+    command decode {format ?-option value ...? data} {
 
         # Decode base64 text into binary data.
-        subcommand base64 {data ?-strict?}
+        command base64 {data ?-strict?}
 
         # Decode hexadecimal text into binary data.
-        subcommand hex {data ?-strict?}
+        command hex {data ?-strict?}
 
         # Decode uuencoded text into binary data.
-        subcommand uuencode {data ?-strict?}
+        command uuencode {data ?-strict?}
     }
 
     # Convert binary data to an encoded string using the specified format.
-    subcommand encode {format ?-option value ...? data} {
+    command encode {format ?-option value ...? data} {
 
         # Encode binary data as base64 text.
-        subcommand base64 {data ?-maxlen length? ?-wrapchar character?}
+        command base64 {data ?-maxlen length? ?-wrapchar character?}
 
         # Encode binary data as hexadecimal text.
-        subcommand hex {data}
+        command hex {data}
 
         # Encode binary data as uuencoded text.
-        subcommand uuencode {data ?-maxlen length? ?-wrapchar character?}
+        command uuencode {data ?-maxlen length? ?-wrapchar character?}
     }
 
     # Generate a binary string from the values described by formatString.
-    subcommand format {formatString ?arg arg ...?}
+    command format {formatString ?arg arg ...?}
 
     # Parse fields from a binary string into Tcl variables.
-    subcommand scan {string formatString ?varName varName ...?}
+    command scan {string formatString ?varName varName ...?}
 
     # @generated end subcommands for binary
 }
@@ -198,43 +200,43 @@ meta command chan {subcommand channelId args} {
     # This tests whether the last input operation on the channel called
     # channelId failed because it would have otherwise caused the process to
     # block, and returns 1 if that was the case.
-    subcommand blocked {channelId}
+    command blocked {channelId}
 
     # Close and destroy the channel called channelId.
-    subcommand close {channelId ? direction ?}
+    command close {channelId ? direction ?}
 
     # Query or set the configuration options of the channel named channelId.
-    subcommand configure {channelId ? optionName ? ? value ? ? optionName value ?...}
+    command configure {channelId ? optionName ? ? value ? ? optionName value ?...}
 
     # Copy data from the channel inputChan, which must have been opened for
     # reading, to the channel outputChan, which must have been opened for
     # writing.
-    subcommand copy {inputChan outputChan ? -size size ? ? -command callback ?}
+    command copy {inputChan outputChan ? -size size ? ? -command callback ?}
 
     # This subcommand creates a new script level channel using the command
     # prefix cmdPrefix as its handler.
-    subcommand create {mode cmdPrefix}
+    command create {mode cmdPrefix}
 
     # Test whether the last input operation on the channel called channelId
     # failed because the end of the data stream was reached, returning 1 if
     # end-of-file was reached, and 0 otherwise.
-    subcommand eof {channelId}
+    command eof {channelId}
 
     # Arrange for the Tcl script script to be installed as a file event
     # handler to be called whenever the channel called channelId enters the
     # state described by event (which must be either readable or writable);
     # only one such handler may be installed per event per channel at a time.
-    subcommand event {channelId event ? script ?}
+    command event {channelId event ? script ?}
 
     # Ensures that all pending output for the channel called channelId is
     # written.
-    subcommand flush {channelId}
+    command flush {channelId}
 
     # Reads the next line from the channel called channelId.
-    subcommand gets {channelId ? varName ?}
+    command gets {channelId ? varName ?}
 
     # Produces a list of all channel names.
-    subcommand names {? pattern ?}
+    command names {? pattern ?}
 
     # Depending on whether mode is input or output, returns the number of
     # bytes of input or output (respectively) currently buffered internally
@@ -242,59 +244,59 @@ meta command chan {subcommand channelId args} {
     # application-specific limits on input line lengths to avoid a potential
     # denial-of-service attack where a hostile user crafts an extremely long
     # line that exceeds the available memory to buffer it).
-    subcommand pending {mode channelId}
+    command pending {mode channelId}
 
     # Creates a standalone pipe whose read- and write-side channels are
     # returned as a 2-element list, the first element being the read side and
     # the second the write side.
-    subcommand pipe "{}"
+    command pipe "{}"
 
     # Removes the topmost transformation from the channel channelId, if there
     # is any.
-    subcommand pop {channelId}
+    command pop {channelId}
 
     # This subcommand is used by command handlers specified with chan create.
-    subcommand postevent {channelId eventSpec}
+    command postevent {channelId eventSpec}
 
     # Adds a new transformation on top of the channel channelId.
-    subcommand push {channelId cmdPrefix}
+    command push {channelId cmdPrefix}
 
     # Writes string to the channel named channelId followed by a newline
     # character.
-    subcommand puts {? -nonewline ? ? channelId ? string}
+    command puts {? -nonewline ? ? channelId ? string}
 
     # In the first form, the result will be the next numChars characters read
     # from the channel named channelId; if numChars is omitted, all characters
     # up to the point when the channel would signal a failure (whether an end-
     # of-file, blocked or other error condition) are read.
-    subcommand read {channelId ? numChars ?}
+    command read {channelId ? numChars ?}
 
     # In the first form, the result will be the next numChars characters read
     # from the channel named channelId; if numChars is omitted, all characters
     # up to the point when the channel would signal a failure (whether an end-
     # of-file, blocked or other error condition) are read.
-    subcommand read {? -nonewline ? channelId}
+    command read {? -nonewline ? channelId}
 
     # In this form chan read blocks until numChars have been received from the
     # serial port.
-    subcommand read {channelId numChars}
+    command read {channelId numChars}
 
     # In this form chan read blocks until the reception of the end-of-file
     # character, see chan configure -eofchar.
-    subcommand read {channelId}
+    command read {channelId}
 
     # Sets the current access position within the underlying data stream for
     # the channel named channelId to be offset bytes relative to origin.
-    subcommand seek {channelId offset ? origin ?}
+    command seek {channelId offset ? origin ?}
 
     # Returns a number giving the current access position within the
     # underlying data stream for the channel named channelId.
-    subcommand tell {channelId}
+    command tell {channelId}
 
     # Sets the byte length of the underlying data stream for the channel named
     # channelId to be length (or to the current byte offset within the
     # underlying data stream if length is omitted).
-    subcommand truncate {channelId ? length ?}
+    command truncate {channelId ? length ?}
 
     # @generated end subcommands for chan
 }
@@ -307,28 +309,28 @@ meta command clock {subcommand args} {
 
     # Adds a (possibly negative) offset to a time that is expressed as an
     # integer number of seconds.
-    subcommand add {timeVal ? count unit... ? ? -option value ?}
+    command add {timeVal ? count unit... ? ? -option value ?}
 
     # If no -option argument is supplied, returns a high-resolution time value
     # as a system-dependent integer value.
-    subcommand clicks {? -option ?}
+    command clicks {? -option ?}
 
     # Formats a time that is expressed as an integer number of seconds into a
     # format intended for consumption by users or external programs.
-    subcommand format {timeVal ? -option value ...?}
+    command format {timeVal ? -option value ...?}
 
     # Returns the current time as an integer number of microseconds.
-    subcommand microseconds "{}"
+    command microseconds "{}"
 
     # Returns the current time as an integer number of milliseconds.
-    subcommand milliseconds "{}"
+    command milliseconds "{}"
 
     # Scans a time that is expressed as a character string and produces an
     # integer number of seconds.
-    subcommand scan {inputString ? -option value ...?}
+    command scan {inputString ? -option value ...?}
 
     # Returns the current time as an integer number of seconds.
-    subcommand seconds "{}"
+    command seconds "{}"
 
     # @generated end subcommands for clock
 }
@@ -366,37 +368,37 @@ meta command dict {subcommand args} {
     # This appends the given string (or strings) to the value that the given
     # key maps to in the dictionary value contained in the given variable,
     # writing the resulting dictionary value back to that variable.
-    subcommand append {dictionaryVariable key ? string ... ?}
+    command append {dictionaryVariable key ? string ... ?}
 
     # Return a new dictionary that contains each of the key/value mappings
     # listed as arguments (keys and values alternating, with each key being
     # followed by its associated value.)
-    subcommand create {? key value ... ?}
+    command create {? key value ... ?}
 
     # This returns a boolean value indicating whether the given key (or path
     # of keys through a set of nested dictionaries) exists in the given
     # dictionary value.
-    subcommand exists {dictionaryValue key ? key ... ?}
+    command exists {dictionaryValue key ? key ... ?}
 
     # This takes a dictionary value and returns a new dictionary that contains
     # just those key/value pairs that match the specified filter type (which
     # may be abbreviated.)
-    subcommand filter {dictionaryValue filterType arg ? arg ... ?} {
+    command filter {dictionaryValue filterType arg ? arg ... ?} {
 
         # The key rule only matches those key/value pairs whose keys match any
         # of the given patterns (in the style of string match.)
-        subcommand key {dictionaryValue ?globPattern ...?}
+        command key {dictionaryValue ?globPattern ...?}
 
         # The script rule tests for matching by assigning the key to the
         # keyVariable and the value to the valueVariable, and then evaluating
         # the given script which should result in a boolean value (with the
         # key/value pair only being included in the result of the dict filter
         # when a true value is returned.)
-        subcommand script "dictionaryValue {keyVariable valueVariable} script"
+        command script "dictionaryValue {keyVariable valueVariable} script"
 
         # The value rule only matches those key/value pairs whose values match
         # any of the given patterns (in the style of string match.)
-        subcommand value {dictionaryValue ?globPattern ...?}
+        command value {dictionaryValue ?globPattern ...?}
     }
 
     # This command takes three arguments, the first a two-element list of
@@ -404,76 +406,76 @@ meta command dict {subcommand args} {
     # the dictionary), the second the dictionary value to iterate across, and
     # the third a script to be evaluated for each mapping with the key and
     # value variables set appropriately (in the manner of foreach.)
-    subcommand for "{ keyVariable valueVariable } dictionaryValue body" {
+    command for "{ keyVariable valueVariable } dictionaryValue body" {
         bind list 1 foreach
-        script-body 3
+        enter tcl body 3
     }
 
     # Given a dictionary value (first argument) and a key (second argument),
     # this will retrieve the value for that key.
-    subcommand get {dictionaryValue ? key ... ?}
+    command get {dictionaryValue ? key ... ?}
 
     # This adds the given increment value (an integer that defaults to 1 if
     # not specified) to the value that the given key maps to in the dictionary
     # value contained in the given variable, writing the resulting dictionary
     # value back to that variable.
-    subcommand incr {dictionaryVariable key ? increment ?}
+    command incr {dictionaryVariable key ? increment ?}
 
     # This returns information (intended for display to people) about the
     # given dictionary though the format of this data is dependent on the
     # implementation of the dictionary.
-    subcommand info {dictionaryValue}
+    command info {dictionaryValue}
 
     # Return a list of all keys in the given dictionary value.
-    subcommand keys {dictionaryValue ? globPattern ?}
+    command keys {dictionaryValue ? globPattern ?}
 
     # This appends the given items to the list value that the given key maps
     # to in the dictionary value contained in the given variable, writing the
     # resulting dictionary value back to that variable.
-    subcommand lappend {dictionaryVariable key ? value ... ?}
+    command lappend {dictionaryVariable key ? value ... ?}
 
     # This command applies a transformation to each element of a dictionary,
     # returning a new dictionary.
-    subcommand map "{ keyVariable valueVariable } dictionaryValue body"
+    command map "{ keyVariable valueVariable } dictionaryValue body"
 
     # Return a dictionary that contains the contents of each of the
     # dictionaryValue arguments.
-    subcommand merge {? dictionaryValue ... ?}
+    command merge {? dictionaryValue ... ?}
 
     # Return a new dictionary that is a copy of an old one passed in as first
     # argument except without mappings for each of the keys listed.
-    subcommand remove {dictionaryValue ? key ... ?}
+    command remove {dictionaryValue ? key ... ?}
 
     # Return a new dictionary that is a copy of an old one passed in as first
     # argument except with some values different or some extra key/value pairs
     # added.
-    subcommand replace {dictionaryValue ? key value ... ?}
+    command replace {dictionaryValue ? key value ... ?}
 
     # This operation takes the name of a variable containing a dictionary
     # value and places an updated dictionary value in that variable containing
     # a mapping from the given key to the given value.
-    subcommand set {dictionaryVariable key ? key ... ? value}
+    command set {dictionaryVariable key ? key ... ? value}
 
     # Return the number of key/value mappings in the given dictionary value.
-    subcommand size {dictionaryValue}
+    command size {dictionaryValue}
 
     # This operation (the companion to dict set) takes the name of a variable
     # containing a dictionary value and places an updated dictionary value in
     # that variable that does not contain a mapping for the given key.
-    subcommand unset {dictionaryVariable key ? key ... ?}
+    command unset {dictionaryVariable key ? key ... ?}
 
     # Execute the Tcl script in body with the value for each key (as found by
     # reading the dictionary value in dictionaryVariable) mapped to the
     # variable varName.
-    subcommand update {dictionaryVariable key varName ? key varName ... ? body}
+    command update {dictionaryVariable key varName ? key varName ... ? body}
 
     # Return a list of all values in the given dictionary value.
-    subcommand values {dictionaryValue ? globPattern ?}
+    command values {dictionaryValue ? globPattern ?}
 
     # Execute the Tcl script in body with the value for each key in
     # dictionaryVariable mapped (in a manner similarly to dict update) to a
     # variable with the same name.
-    subcommand with {dictionaryVariable ? key ... ? body}
+    command with {dictionaryVariable ? key ... ? body}
 
     # @generated end subcommands for dict
 }
@@ -482,21 +484,21 @@ meta command encoding {subcommand args} {
     # @generated begin subcommands for encoding (Tcl 8.6)
 
     # Convert data to Unicode from the specified encoding.
-    subcommand convertfrom {? encoding ? data}
+    command convertfrom {? encoding ? data}
 
     # Convert string from Unicode to the specified encoding.
-    subcommand convertto {? encoding ? string}
+    command convertto {? encoding ? string}
 
     # Tcl can load encoding data files from the file system that describe
     # additional encodings for it to work with.
-    subcommand dirs {? directoryList ?}
+    command dirs {? directoryList ?}
 
     # Returns a list containing the names of all of the encodings that are
     # currently available.
-    subcommand names "{}"
+    command names "{}"
 
     # Set the system encoding to encoding.
-    subcommand system {? encoding ?}
+    command system {? encoding ?}
 
     # @generated end subcommands for encoding
 }
@@ -564,148 +566,148 @@ meta command file {subcommand args} {
 
     # Returns a decimal string giving the time at which file name was last
     # accessed.
-    subcommand atime {name ? time ?}
+    command atime {name ? time ?}
 
     # This subcommand returns or sets platform-specific values associated with
     # a file.
-    subcommand attributes {name}
+    command attributes {name}
 
     # This subcommand returns or sets platform-specific values associated with
     # a file.
-    subcommand attributes {name ? option ?}
+    command attributes {name ? option ?}
 
     # This subcommand returns or sets platform-specific values associated with
     # a file.
-    subcommand attributes {name ? option value option value... ?}
+    command attributes {name ? option value option value... ?}
 
     # If pattern is not specified, returns a list of names of all registered
     # open channels in this interpreter.
-    subcommand channels {? pattern ?}
+    command channels {? pattern ?}
 
     # The first form makes a copy of the file or directory source under the
     # pathname target.
-    subcommand copy {? -force ? ? -- ? source target}
+    command copy {? -force ? ? -- ? source target}
 
     # The first form makes a copy of the file or directory source under the
     # pathname target.
-    subcommand copy {? -force ? ? -- ? source ? source ...? targetDir}
+    command copy {? -force ? ? -- ? source ? source ...? targetDir}
 
     # Removes the file or directory specified by each pathname argument.
-    subcommand delete {? -force ? ? -- ? ? pathname ... ?}
+    command delete {? -force ? ? -- ? ? pathname ... ?}
 
     # Returns a name comprised of all of the path components in name excluding
     # the last element.
-    subcommand dirname {name}
+    command dirname {name}
 
     # Returns 1 if file name is executable by the current user, 0 otherwise.
-    subcommand executable {name}
+    command executable {name}
 
     # Returns 1 if file name exists and the current user has search privileges
     # for the directories leading to it, 0 otherwise.
-    subcommand exists {name}
+    command exists {name}
 
     # Returns all of the characters in name after and including the last dot
     # in the last element of name.
-    subcommand extension {name}
+    command extension {name}
 
     # Returns 1 if file name is a directory, 0 otherwise.
-    subcommand isdirectory {name}
+    command isdirectory {name}
 
     # Returns 1 if file name is a regular file, 0 otherwise.
-    subcommand isfile {name}
+    command isfile {name}
 
     # Takes one or more file names and combines them, using the correct path
     # separator for the current platform.
-    subcommand join {name ? name ... ?}
+    command join {name ? name ... ?}
 
     # If only one argument is given, that argument is assumed to be linkName,
     # and this command returns the value of the link given by linkName (i.e.
     # the name of the file it points to).
-    subcommand link {? -linktype ? linkName ? target ?}
+    command link {? -linktype ? linkName ? target ?}
 
     # Same as stat option (see below) except uses the lstat kernel call
     # instead of stat.
-    subcommand lstat {name varName}
+    command lstat {name varName}
 
     # Creates each directory specified.
-    subcommand mkdir {? dir ...?}
+    command mkdir {? dir ...?}
 
     # Returns a decimal string giving the time at which file name was last
     # modified.
-    subcommand mtime {name ? time ?}
+    command mtime {name ? time ?}
 
     # Returns the platform-specific name of the file.
-    subcommand nativename {name}
+    command nativename {name}
 
     # Returns a unique normalized path representation for the file-system
     # object (file, directory, link, etc), whose string value can be used as a
     # unique identifier for it.
-    subcommand normalize {name}
+    command normalize {name}
 
     # Returns 1 if file name is owned by the current user, 0 otherwise.
-    subcommand owned {name}
+    command owned {name}
 
     # Returns one of absolute, relative, volumerelative.
-    subcommand pathtype {name}
+    command pathtype {name}
 
     # Returns 1 if file name is readable by the current user, 0 otherwise.
-    subcommand readable {name}
+    command readable {name}
 
     # Returns the value of the symbolic link given by name (i.e. the name of
     # the file it points to).
-    subcommand readlink {name}
+    command readlink {name}
 
     # The first form takes the file or directory specified by pathname source
     # and renames it to target, moving the file if the pathname target
     # specifies a name in a different directory.
-    subcommand rename {? -force ? ? -- ? source target}
+    command rename {? -force ? ? -- ? source target}
 
     # The first form takes the file or directory specified by pathname source
     # and renames it to target, moving the file if the pathname target
     # specifies a name in a different directory.
-    subcommand rename {? -force ? ? -- ? source ? source ...? targetDir}
+    command rename {? -force ? ? -- ? source ? source ...? targetDir}
 
     # Returns all of the characters in name up to but not including the last
     # "." character in the last component of name.
-    subcommand rootname {name}
+    command rootname {name}
 
     # If no argument is given, returns the character which is used to separate
     # path segments for native files on this platform.
-    subcommand separator {? name ?}
+    command separator {? name ?}
 
     # Returns a decimal string giving the size of file name in bytes.
-    subcommand size {name}
+    command size {name}
 
     # Returns a list whose elements are the path components in name.
-    subcommand split {name}
+    command split {name}
 
     # Invokes the stat kernel call on name, and uses the variable given by
     # varName to hold information returned from the kernel call.
-    subcommand stat {name varName}
+    command stat {name varName}
 
     # Returns a list of one or two elements, the first of which is the name of
     # the filesystem to use for the file, and the second, if given, an
     # arbitrary string representing the filesystem-specific nature or type of
     # the location within that filesystem.
-    subcommand system {name}
+    command system {name}
 
     # Returns all of the characters in the last filesystem component of name.
-    subcommand tail {name}
+    command tail {name}
 
     # Creates a temporary file and returns a read-write channel opened on that
     # file.
-    subcommand tempfile {? nameVar ? ? template ?}
+    command tempfile {? nameVar ? ? template ?}
 
     # Returns a string giving the type of file name, which will be one of
     # file, directory, characterSpecial, blockSpecial, fifo, link, or socket.
-    subcommand type {name}
+    command type {name}
 
     # Returns the absolute paths to the volumes mounted on the system, as a
     # proper Tcl list.
-    subcommand volumes "{}"
+    command volumes "{}"
 
     # Returns 1 if file name is writable by the current user, 0 otherwise.
-    subcommand writable {name}
+    command writable {name}
 
     # @generated end subcommands for file
 }
@@ -733,7 +735,7 @@ meta command for {start test next body}
 # varname.
 meta command foreach {varList list args} {
     bind list 1..last-1 step 2
-    script-body last
+    enter tcl body last
 }
 
 # Format a string in the style of sprintf.
@@ -785,237 +787,237 @@ meta command info {subcommand args} {
 
     # Returns a list containing the names of the arguments to procedure
     # procname, in order.
-    subcommand args {procname}
+    command args {procname}
 
     # Returns the body of procedure procname.
-    subcommand body {procname}
+    command body {procname}
 
     # Returns information about the class, class.
-    subcommand class {subcommand class ? arg ...} {
+    command class {subcommand class ? arg ...} {
 
         # Returns a description of the method implementations that are used to
         # provide a stereotypical instance of class 's implementation of
         # method (stereotypical instances being objects instantiated by a
         # class without having any object-specific definitions added).
-        subcommand call {class method}
+        command call {class method}
 
         # This subcommand returns a description of the definition of the
         # constructor of class class.
-        subcommand constructor {class}
+        command constructor {class}
 
         # This subcommand returns a description of the definition of the
         # method named method of class class.
-        subcommand definition {class method}
+        command definition {class method}
 
         # This subcommand returns the body of the destructor of class class.
-        subcommand destructor {class}
+        command destructor {class}
 
         # This subcommand returns the list of filter methods set on the class.
-        subcommand filters {class}
+        command filters {class}
 
         # This subcommand returns the argument list for the method forwarding
         # called method that is set on the class called class.
-        subcommand forward {class method}
+        command forward {class method}
 
         # This subcommand returns a list of instances of class class.
-        subcommand instances {class ? pattern ?}
+        command instances {class ? pattern ?}
 
         # This subcommand returns a list of all public (i.e. exported) methods
         # of the class called class.
-        subcommand methods {class ? options... ?}
+        command methods {class ? options... ?}
 
         # This subcommand returns a description of the type of implementation
         # used for the method named method of class class.
-        subcommand methodtype {class method}
+        command methodtype {class method}
 
         # This subcommand returns a list of all classes that have been mixed
         # into the class named class.
-        subcommand mixins {class}
+        command mixins {class}
 
         # This subcommand returns a list of direct subclasses of class class.
-        subcommand subclasses {class ? pattern ?}
+        command subclasses {class ? pattern ?}
 
         # This subcommand returns a list of direct superclasses of class class
         # in inheritance precedence order.
-        subcommand superclasses {class}
+        command superclasses {class}
 
         # This subcommand returns a list of all variables that have been
         # declared for the class named class (i.e. that are automatically
         # present in the class's methods, constructor and destructor).
-        subcommand variables {class}
+        command variables {class}
     }
 
     # Returns a count of the total number of commands that have been invoked
     # in this interpreter.
-    subcommand cmdcount "{}"
+    command cmdcount "{}"
 
     # If pattern is not specified, returns a list of names of all the Tcl
     # commands visible (i.e. executable without using a qualified name) to the
     # current namespace, including both the built-in commands written in C and
     # the command procedures defined using the proc command.
-    subcommand commands {? pattern ?}
+    command commands {? pattern ?}
 
     # Returns 1 if command is a complete Tcl command in the sense of having no
     # unclosed quotes, braces, brackets or array element names.
-    subcommand complete {command}
+    command complete {command}
 
     # Returns the name of the currently executing coroutine, or the empty
     # string if either no coroutine is currently executing, or the current
     # coroutine has been deleted (but has not yet returned or yielded since
     # deletion).
-    subcommand coroutine "{}"
+    command coroutine "{}"
 
     # Procname must be the name of a Tcl command procedure and arg must be the
     # name of an argument to that procedure.
-    subcommand default {procname arg varname}
+    command default {procname arg varname}
 
     # Returns, in a form that is programmatically easy to parse, the function
     # names and arguments at each level from the call stack of the last error
     # in the given interp, or in the current one if not specified.
-    subcommand errorstack {? interp ?}
+    command errorstack {? interp ?}
 
     # Returns 1 if the variable named varName exists in the current context
     # (either as a global or local variable) and has been defined by being
     # given a value, returns 0 otherwise.
-    subcommand exists {varName}
+    command exists {varName}
 
     # This command provides access to all frames on the stack, even those
     # hidden from info level.
-    subcommand frame {? number ?}
+    command frame {? number ?}
 
     # If pattern is not specified, returns a list of all the math functions
     # currently defined.
-    subcommand functions {? pattern ?}
+    command functions {? pattern ?}
 
     # If pattern is not specified, returns a list of all the names of
     # currently-defined global variables.
-    subcommand globals {? pattern ?}
+    command globals {? pattern ?}
 
     # Returns the name of the computer on which this invocation is being
     # executed.
-    subcommand hostname "{}"
+    command hostname "{}"
 
     # If number is not specified, this command returns a number giving the
     # stack level of the invoking procedure, or 0 if the command is invoked at
     # top-level.
-    subcommand level {? number ?}
+    command level {? number ?}
 
     # Returns the name of the library directory in which standard Tcl scripts
     # are stored.
-    subcommand library "{}"
+    command library "{}"
 
     # Returns a list describing all of the packages that have been loaded into
     # interp with the load command.
-    subcommand loaded {? interp ?}
+    command loaded {? interp ?}
 
     # If pattern is not specified, returns a list of all the names of
     # currently-defined local variables, including arguments to the current
     # procedure, if any.
-    subcommand locals {? pattern ?}
+    command locals {? pattern ?}
 
     # Returns the full path name of the binary file from which the application
     # was invoked.
-    subcommand nameofexecutable "{}"
+    command nameofexecutable "{}"
 
     # Returns information about the object, object.
-    subcommand object {subcommand object ? arg ...} {
+    command object {subcommand object ? arg ...} {
 
         # Returns a description of the method implementations that are used to
         # provide object 's implementation of method.
-        subcommand call {object method}
+        command call {object method}
 
         # If className is unspecified, this subcommand returns class of the
         # object object.
-        subcommand class {object ? className ?}
+        command class {object ? className ?}
 
         # This subcommand returns a description of the definition of the
         # method named method of object object.
-        subcommand definition {object method}
+        command definition {object method}
 
         # This subcommand returns the list of filter methods set on the
         # object.
-        subcommand filters {object}
+        command filters {object}
 
         # This subcommand returns the argument list for the method forwarding
         # called method that is set on the object called object.
-        subcommand forward {object method}
+        command forward {object method}
 
         # This subcommand tests whether an object belongs to a particular
         # category, returning a boolean value that indicates whether the
         # object argument meets the criteria for the category.
-        subcommand isa {category object ? arg ?} {
+        command isa {category object ? arg ?} {
 
             # This returns whether object is a class (i.e. an instance of
             # oo::class or one of its subclasses).
-            subcommand class {object}
+            command class {object}
 
             # This returns whether object is a class that can manufacture
             # classes (i.e. is oo::class or a subclass of it).
-            subcommand metaclass {object}
+            command metaclass {object}
 
             # This returns whether class is directly mixed into object.
-            subcommand mixin {object class}
+            command mixin {object class}
 
             # This returns whether object really is an object.
-            subcommand object {object}
+            command object {object}
 
             # This returns whether class is the type of object (i.e. whether
             # object is an instance of class or one of its subclasses, whether
             # direct or indirect).
-            subcommand typeof {object class}
+            command typeof {object class}
         }
 
         # This subcommand returns a list of all public (i.e. exported) methods
         # of the object called object.
-        subcommand methods {object ? option... ?}
+        command methods {object ? option... ?}
 
         # This subcommand returns a description of the type of implementation
         # used for the method named method of object object.
-        subcommand methodtype {object method}
+        command methodtype {object method}
 
         # This subcommand returns a list of all classes that have been mixed
         # into the object named object.
-        subcommand mixins {object}
+        command mixins {object}
 
         # This subcommand returns the name of the internal namespace of the
         # object named object.
-        subcommand namespace {object}
+        command namespace {object}
 
         # This subcommand returns a list of all variables that have been
         # declared for the object named object (i.e. that are automatically
         # present in the object's methods).
-        subcommand variables {object}
+        command variables {object}
 
         # This subcommand returns a list of all variables in the private
         # namespace of the object named object.
-        subcommand vars {object ? pattern ?}
+        command vars {object ? pattern ?}
     }
 
     # Returns the value of the global variable tcl_patchLevel, which holds the
     # exact version of the Tcl library by default.
-    subcommand patchlevel "{}"
+    command patchlevel "{}"
 
     # If pattern is not specified, returns a list of all the names of Tcl
     # command procedures in the current namespace.
-    subcommand procs {? pattern ?}
+    command procs {? pattern ?}
 
     # If a Tcl script file is currently being evaluated (i.e. there is a call
     # to Tcl_EvalFile active or there is an active invocation of the source
     # command), then this command returns the name of the innermost file being
     # processed.
-    subcommand script {? filename ?}
+    command script {? filename ?}
 
     # Returns the extension used on this platform for the names of files
     # containing shared libraries (for example,.so under Solaris).
-    subcommand sharedlibextension "{}"
+    command sharedlibextension "{}"
 
     # Returns the value of the global variable tcl_version, which holds the
     # major and minor version of the Tcl library by default.
-    subcommand tclversion "{}"
+    command tclversion "{}"
 
     # If pattern is not specified, returns a list of all the names of
     # currently-visible variables.
-    subcommand vars {? pattern ?}
+    command vars {? pattern ?}
 
     # @generated end subcommands for info
 }
@@ -1031,105 +1033,105 @@ meta command interp {subcommand args} {
     # with the alias represented by srcToken (this is the value returned when
     # the alias was created; it is possible that the name of the source
     # command in the child is different from srcToken).
-    subcommand alias {srcPath srcToken}
+    command alias {srcPath srcToken}
 
     # Deletes the alias for srcToken in the child interpreter identified by
     # srcPath. srcToken refers to the value returned when the alias was
     # created; if the source command has been renamed, the renamed command
     # will be deleted.
-    subcommand alias "srcPath srcToken {}"
+    command alias "srcPath srcToken {}"
 
     # This command creates an alias between one child and another (see the
     # alias child command below for creating aliases between a child and its
     # parent).
-    subcommand alias {srcPath srcCmd targetPath targetCmd ? arg arg ... ?}
+    command alias {srcPath srcCmd targetPath targetCmd ? arg arg ... ?}
 
     # This command returns a Tcl list of the tokens of all the source commands
     # for aliases defined in the interpreter identified by path.
-    subcommand aliases {? path ?}
+    command aliases {? path ?}
 
     # This command either gets or sets the current background exception
     # handler for the interpreter identified by path.
-    subcommand bgerror {path ? cmdPrefix ?}
+    command bgerror {path ? cmdPrefix ?}
 
     # Cancels the script being evaluated in the interpreter identified by
     # path.
-    subcommand cancel {? -unwind ? ? -- ? ? path ? ? result ?}
+    command cancel {? -unwind ? ? -- ? ? path ? ? result ?}
 
     # Creates a child interpreter identified by path and a new command, called
     # a child command.
-    subcommand create {? -safe ? ? -- ? ? path ?}
+    command create {? -safe ? ? -- ? ? path ?}
 
     # Controls whether frame-level stack information is captured in the child
     # interpreter identified by path.
-    subcommand debug {path ? -frame ? bool ??}
+    command debug {path ? -frame ? bool ??}
 
     # Deletes zero or more interpreters given by the optional path arguments,
     # and for each interpreter, it also deletes its children.
-    subcommand delete {? path ...?}
+    command delete {? path ...?}
 
     # This command concatenates all of the arg arguments in the same fashion
     # as the concat command, then evaluates the resulting string as a Tcl
     # script in the child interpreter identified by path.
-    subcommand eval {path arg ? arg ... ?}
+    command eval {path arg ? arg ... ?}
 
     # Returns 1 if a child interpreter by the specified path exists in this
     # parent, 0 otherwise.
-    subcommand exists {path}
+    command exists {path}
 
     # Makes the hidden command hiddenName exposed, eventually bringing it back
     # under a new exposedCmdName name (this name is currently accepted only if
     # it is a valid global name space name without any::), in the interpreter
     # denoted by path.
-    subcommand expose {path hiddenName ? exposedCmdName ?}
+    command expose {path hiddenName ? exposedCmdName ?}
 
     # Makes the exposed command exposedCmdName hidden, renaming it to the
     # hidden command hiddenCmdName, or keeping the same name if hiddenCmdName
     # is not given, in the interpreter denoted by path.
-    subcommand hide {path exposedCmdName ? hiddenCmdName ?}
+    command hide {path exposedCmdName ? hiddenCmdName ?}
 
     # Returns a list of the names of all hidden commands in the interpreter
     # identified by path.
-    subcommand hidden {path}
+    command hidden {path}
 
     # Invokes the hidden command hiddenCmdName with the arguments supplied in
     # the interpreter denoted by path.
-    subcommand invokehidden {path ? -option ... ? hiddenCmdName ? arg ... ?}
+    command invokehidden {path ? -option ... ? hiddenCmdName ? arg ... ?}
 
     # Returns 1 if the interpreter identified by the specified path is safe, 0
     # otherwise.
-    subcommand issafe {? path ?}
+    command issafe {? path ?}
 
     # Sets up, manipulates and queries the configuration of the resource limit
     # limitType for the interpreter denoted by path.
-    subcommand limit {path limitType ? -option ? ? value ... ?}
+    command limit {path limitType ? -option ? ? value ... ?}
 
     # Marks the interpreter identified by path as trusted.
-    subcommand marktrusted {path}
+    command marktrusted {path}
 
     # Returns the maximum allowable nesting depth for the interpreter
     # specified by path.
-    subcommand recursionlimit {path ? newlimit ?}
+    command recursionlimit {path ? newlimit ?}
 
     # Causes the IO channel identified by channelId to become shared between
     # the interpreter identified by srcPath and the interpreter identified by
     # destPath.
-    subcommand share {srcPath channelId destPath}
+    command share {srcPath channelId destPath}
 
     # Returns a Tcl list of the names of all the child interpreters associated
     # with the interpreter identified by path.
-    subcommand slaves {? path ?}
+    command slaves {? path ?}
 
     # Alias for interp slaves.
-    subcommand children {? path ?}
+    command children {? path ?}
 
     # Returns a Tcl list describing the target interpreter for an alias.
-    subcommand target {path alias}
+    command target {path alias}
 
     # Causes the IO channel identified by channelId to become available in the
     # interpreter identified by destPath and unavailable in the interpreter
     # identified by srcPath.
-    subcommand transfer {srcPath channelId destPath}
+    command transfer {srcPath channelId destPath}
 
     # @generated end subcommands for interp
 }
@@ -1187,7 +1189,7 @@ meta command llength {list}
 # from each iteration.
 meta command lmap {varList list args} {
     bind list 1..last-1 step 2
-    script-body last
+    enter tcl body last
 }
 
 # Load machine code and initialize new commands.
@@ -1245,85 +1247,85 @@ meta command namespace {subcommand args} {
 
     # Returns a list of all child namespaces that belong to the namespace
     # namespace.
-    subcommand children {? namespace ? ? pattern ?}
+    command children {? namespace ? ? pattern ?}
 
     # Captures the current namespace context for later execution of the script
     # script.
-    subcommand code {script}
+    command code {script}
 
     # Returns the fully-qualified name for the current namespace.
-    subcommand current "{}"
+    command current "{}"
 
     # Each namespace namespace is deleted and all variables, procedures, and
     # child namespaces contained in the namespace are deleted.
-    subcommand delete {? namespace namespace ... ?}
+    command delete {? namespace namespace ... ?}
 
     # Creates and manipulates a command that is formed out of an ensemble of
     # subcommands.
-    subcommand ensemble {subcommand ? arg ... ?} {
+    command ensemble {subcommand ? arg ... ?} {
 
         # Creates a new ensemble command linked to the current namespace,
         # returning the fully qualified name of the command created.
-        subcommand create {? option value ... ?}
+        command create {? option value ... ?}
 
         # Retrieves the value of an option associated with the ensemble
         # command named command, or updates some options associated with that
         # ensemble command.
-        subcommand configure {command ? option ? ? value ... ?}
+        command configure {command ? option ? ? value ... ?}
 
         # Returns a boolean value that describes whether the command command
         # exists and is an ensemble command.
-        subcommand exists {command}
+        command exists {command}
     }
 
     # Activates a namespace called namespace and evaluates some code in that
     # context.
-    subcommand eval {namespace arg ? arg ... ?}
+    command eval {namespace arg ? arg ... ?}
 
     # Returns 1 if namespace is a valid namespace in the current context,
     # returns 0 otherwise.
-    subcommand exists {namespace}
+    command exists {namespace}
 
     # Specifies which commands are exported from a namespace.
-    subcommand export {? -clear ? ? pattern pattern ... ?}
+    command export {? -clear ? ? pattern pattern ... ?}
 
     # Removes previously imported commands from a namespace.
-    subcommand forget {? pattern pattern ... ?}
+    command forget {? pattern pattern ... ?}
 
     # Imports commands into a namespace, or queries the set of imported
     # commands in a namespace.
-    subcommand import {? -force ? ? pattern pattern ... ?}
+    command import {? -force ? ? pattern pattern ... ?}
 
     # Executes a script in the context of the specified namespace.
-    subcommand inscope {namespace script ? arg ... ?}
+    command inscope {namespace script ? arg ... ?}
 
     # Returns the fully-qualified name of the original command to which the
     # imported command command refers.
-    subcommand origin {command}
+    command origin {command}
 
     # Returns the fully-qualified name of the parent namespace for namespace
     # namespace.
-    subcommand parent {? namespace ?}
+    command parent {? namespace ?}
 
     # Returns the command resolution path of the current namespace.
-    subcommand path {? namespaceList ?}
+    command path {? namespaceList ?}
 
     # Returns any leading namespace qualifiers for string.
-    subcommand qualifiers {string}
+    command qualifiers {string}
 
     # Returns the simple name at the end of a qualified string.
-    subcommand tail {string}
+    command tail {string}
 
     # This command arranges for zero or more local variables in the current
     # procedure to refer to variables in namespace.
-    subcommand upvar {namespace ? otherVar myVar ...?}
+    command upvar {namespace ? otherVar myVar ...?}
 
     # Sets or returns the unknown command handler for the current namespace.
-    subcommand unknown {? script ?}
+    command unknown {? script ?}
 
     # Looks up name as either a command or variable and returns its fully-
     # qualified name.
-    subcommand which {? -command ? ? -variable ? name}
+    command which {? -command ? ? -variable ? name}
 
     # @generated end subcommands for namespace
 }
@@ -1342,53 +1344,53 @@ meta command package {subcommand args} {
     # Removes all information about each specified package from this
     # interpreter, including information provided by both package ifneeded and
     # package provide.
-    subcommand forget {? package package ... ?}
+    command forget {? package package ... ?}
 
     # This command typically appears only in system configuration scripts to
     # set up the package database.
-    subcommand ifneeded {package version ? script ?}
+    command ifneeded {package version ? script ?}
 
     # Returns a list of the names of all packages in the interpreter for which
     # a version has been provided (via package provide) or for which a package
     # ifneeded script is available.
-    subcommand names "{}"
+    command names "{}"
 
     # This command is equivalent to package require except that it does not
     # try and load the package if it is not already loaded.
-    subcommand present {? -exact ? package ? requirement... ?}
+    command present {? -exact ? package ? requirement... ?}
 
     # This command is invoked to indicate that version version of package
     # package is now present in the interpreter.
-    subcommand provide {package ? version ?}
+    command provide {package ? version ?}
 
     # This command is typically invoked by Tcl code that wishes to use a
     # particular version of a particular package.
-    subcommand require {package ? requirement... ?}
+    command require {package ? requirement... ?}
 
     # This form of the command is used when only the given version of package
     # is acceptable to the caller.
-    subcommand require {-exact package version}
+    command require {-exact package version}
 
     # This command supplies a "last resort" command to invoke during package
     # require if no suitable version of a package can be found in the package
     # ifneeded database.
-    subcommand unknown {? command ?}
+    command unknown {? command ?}
 
     # Compares the two version numbers given by version1 and version2.
-    subcommand vcompare {version1 version2}
+    command vcompare {version1 version2}
 
     # Returns a list of all the version numbers of package for which
     # information has been provided by package ifneeded commands.
-    subcommand versions {package}
+    command versions {package}
 
     # Returns 1 if the version satisfies at least one of the given
     # requirements, and 0 otherwise. requirements are defined in the
     # REQUIREMENT section below.
-    subcommand vsatisfies {version requirement...}
+    command vsatisfies {version requirement...}
 
     # Get or set whether package selection prefers the latest or stable
     # version.
-    subcommand prefer {? latest | stable ?}
+    command prefer {? latest | stable ?}
 
     # @generated end subcommands for package
 }
@@ -1509,101 +1511,101 @@ meta command string {subcommand args} {
 
     # Concatenate the given string s just like placing them directly next to
     # each other and return the resulting compound string.
-    subcommand cat {? string1 ? ? string2... ?}
+    command cat {? string1 ? ? string2... ?}
 
     # Perform a character-by-character comparison of strings string1 and
     # string2.
-    subcommand compare {? -nocase ? ? -length length ? string1 string2}
+    command compare {? -nocase ? ? -length length ? string1 string2}
 
     # Perform a character-by-character comparison of strings string1 and
     # string2.
-    subcommand equal {? -nocase ? ? -length length ? string1 string2}
+    command equal {? -nocase ? ? -length length ? string1 string2}
 
     # Search haystackString for a sequence of characters that exactly match
     # the characters in needleString.
-    subcommand first {needleString haystackString ? startIndex ?}
+    command first {needleString haystackString ? startIndex ?}
 
     # Returns the charIndex 'th character of the string argument.
-    subcommand index {string charIndex}
+    command index {string charIndex}
 
     # Returns 1 if string is a valid member of the specified character class,
     # otherwise returns 0.
-    subcommand is {class ? -strict ? ? -failindex varname ? string}
+    command is {class ? -strict ? ? -failindex varname ? string}
 
     # Search haystackString for a sequence of characters that exactly match
     # the characters in needleString.
-    subcommand last {needleString haystackString ? lastIndex ?}
+    command last {needleString haystackString ? lastIndex ?}
 
     # Returns a decimal string giving the number of characters in string.
-    subcommand length {string}
+    command length {string}
 
     # Replaces substrings in string based on the key-value pairs in mapping.
     # mapping is a list of key value key value... as in the form returned by
     # array get.
-    subcommand map {? -nocase ? mapping string}
+    command map {? -nocase ? mapping string}
 
     # See if pattern matches string; return 1 if it does, 0 if it does not.
-    subcommand match {? -nocase ? pattern string}
+    command match {? -nocase ? pattern string}
 
     # Returns a range of consecutive characters from string, starting with the
     # character whose index is first and ending with the character whose index
     # is last (using the forms described in STRING INDICES).
-    subcommand range {string first last}
+    command range {string first last}
 
     # Returns a string consisting of string concatenated with itself count
     # times.
-    subcommand repeat {string count}
+    command repeat {string count}
 
     # Removes a range of consecutive characters from string, starting with the
     # character whose index is first and ending with the character whose index
     # is last (using the forms described in STRING INDICES).
-    subcommand replace {string first last ? newstring ?}
+    command replace {string first last ? newstring ?}
 
     # Returns a string that is the same length as string but with its
     # characters in the reverse order.
-    subcommand reverse {string}
+    command reverse {string}
 
     # Returns a value equal to string except that all upper (or title) case
     # letters have been converted to lower case.
-    subcommand tolower {string ? first ? ? last ?}
+    command tolower {string ? first ? ? last ?}
 
     # Returns a value equal to string except that the first character in
     # string is converted to its Unicode title case variant (or upper case if
     # there is no title case variant) and the rest of the string is converted
     # to lower case.
-    subcommand totitle {string ? first ? ? last ?}
+    command totitle {string ? first ? ? last ?}
 
     # Returns a value equal to string except that all lower (or title) case
     # letters have been converted to upper case.
-    subcommand toupper {string ? first ? ? last ?}
+    command toupper {string ? first ? ? last ?}
 
     # Returns a value equal to string except that any leading or trailing
     # characters present in the string given by chars are removed.
-    subcommand trim {string ? chars ?}
+    command trim {string ? chars ?}
 
     # Returns a value equal to string except that any leading characters
     # present in the string given by chars are removed.
-    subcommand trimleft {string ? chars ?}
+    command trimleft {string ? chars ?}
 
     # Returns a value equal to string except that any trailing characters
     # present in the string given by chars are removed.
-    subcommand trimright {string ? chars ?}
+    command trimright {string ? chars ?}
 
     # Returns a decimal string giving the number of bytes used to represent
     # string in memory when encoded as Tcl's internal modified UTF-8; Tcl may
     # use other encodings for string as well, and does not guarantee to only
     # use a single encoding for a particular string.
-    subcommand bytelength {string}
+    command bytelength {string}
 
     # Returns the index of the character just after the last one in the word
     # containing character charIndex of string. charIndex may be specified
     # using the forms in STRING INDICES.
-    subcommand wordend {string charIndex}
+    command wordend {string charIndex}
 
     # Returns the index of the first character in the word containing
     # character charIndex of string. charIndex may be specified using the
     # forms in STRING INDICES.
-    subcommand wordstart {string charIndex}
+    command wordstart {string charIndex}
 
     # @generated end subcommands for string
 }
@@ -1654,66 +1656,66 @@ meta command trace {subcommand args} {
     # @generated begin subcommands for trace (Tcl 8.6)
 
     # Where type is command, execution, or variable.
-    subcommand add {type name ops ?args?} {
+    command add {type name ops ?args?} {
 
         # Arrange for commandPrefix to be executed (with additional arguments)
         # whenever command name is modified in one of the ways given by the
         # list ops.
-        subcommand command {name ops commandPrefix}
+        command command {name ops commandPrefix}
 
         # Arrange for commandPrefix to be executed (with additional arguments)
         # whenever command name is executed, with traces occurring at the
         # points indicated by the list ops.
-        subcommand execution {name ops commandPrefix}
+        command execution {name ops commandPrefix}
 
         # Arrange for commandPrefix to be executed whenever variable name is
         # accessed in one of the ways given by the list ops.
-        subcommand variable {name ops commandPrefix}
+        command variable {name ops commandPrefix}
     }
 
     # Where type is either command, execution or variable.
-    subcommand remove {type name opList commandPrefix} {
+    command remove {type name opList commandPrefix} {
 
         # If there is a trace set on command name with the operations and
         # command given by opList and commandPrefix, then the trace is
         # removed, so that commandPrefix will never again be invoked.
-        subcommand command {name opList commandPrefix}
+        command command {name opList commandPrefix}
 
         # If there is a trace set on command name with the operations and
         # command given by opList and commandPrefix, then the trace is
         # removed, so that commandPrefix will never again be invoked.
-        subcommand execution {name opList commandPrefix}
+        command execution {name opList commandPrefix}
 
         # If there is a trace set on variable name with the operations and
         # command given by opList and commandPrefix, then the trace is
         # removed, so that commandPrefix will never again be invoked.
-        subcommand variable {name opList commandPrefix}
+        command variable {name opList commandPrefix}
     }
 
     # Where type is either command, execution or variable.
-    subcommand info {type name} {
+    command info {type name} {
 
         # Returns a list containing one element for each trace currently set
         # on command name.
-        subcommand command {name}
+        command command {name}
 
         # Returns a list containing one element for each trace currently set
         # on command name.
-        subcommand execution {name}
+        command execution {name}
 
         # Returns a list containing one element for each trace currently set
         # on variable name.
-        subcommand variable {name}
+        command variable {name}
     }
 
     # This is equivalent to trace add variable name ops command.
-    subcommand variable {name ops command}
+    command variable {name ops command}
 
     # This is equivalent to trace remove variable name ops command
-    subcommand vdelete {name ops command}
+    command vdelete {name ops command}
 
     # This is equivalent to trace info variable name
-    subcommand vinfo {name}
+    command vinfo {name}
 
     # @generated end subcommands for trace
 }
@@ -1741,17 +1743,19 @@ meta command unload {fileName args}
 # rest of the array.
 meta command unset {args}
 
-# Process pending events and idle callbacks.
-# Enter the event loop until all pending events and idle callbacks have been
-# processed. This is useful when long-running code still needs to keep the
-# application responsive.
-meta command update {}
+meta command update variants {
+    # Process pending events and idle callbacks.
+    # Enter the event loop until all pending events and idle callbacks have been
+    # processed. This is useful when long-running code still needs to keep the
+    # application responsive.
+    form {}
 
-# Process pending idle callbacks only.
-# Run deferred idle work such as redraws and layout without processing new
-# events or background errors. This is useful when you want display updates to
-# happen immediately.
-meta command update {idletasks}
+    # Process pending idle callbacks only.
+    # Run deferred idle work such as redraws and layout without processing new
+    # events or background errors. This is useful when you want display updates to
+    # happen immediately.
+    form {idletasks}
+}
 
 # Execute a script in a different stack frame.
 # All of the arg arguments are concatenated as if they had been passed to
@@ -1805,70 +1809,70 @@ meta command zlib {subcommand args} {
 
     # Returns the zlib-format compressed binary data of the binary string in
     # string.
-    subcommand compress {string ? level ?}
+    command compress {string ? level ?}
 
     # Returns the uncompressed version of the raw compressed binary data in
     # string.
-    subcommand decompress {string ? bufferSize ?}
+    command decompress {string ? bufferSize ?}
 
     # Returns the raw compressed binary data of the binary string in string.
-    subcommand deflate {string ? level ?}
+    command deflate {string ? level ?}
 
     # Return the uncompressed contents of binary string string, which must
     # have been in gzip format.
-    subcommand gunzip {string ? -headerVar varName ?}
+    command gunzip {string ? -headerVar varName ?}
 
     # Return the compressed contents of binary string string in gzip format.
-    subcommand gzip {string ? -level level ? ? -header dict ?}
+    command gzip {string ? -level level ? ? -header dict ?}
 
     # Returns the uncompressed version of the raw compressed binary data in
     # string.
-    subcommand inflate {string ? bufferSize ?}
+    command inflate {string ? bufferSize ?}
 
     # Pushes a compressing or decompressing transformation onto the channel
     # channel.
-    subcommand push {mode channel ? options ... ?}
+    command push {mode channel ? options ... ?}
 
     # Creates a streaming compression or decompression command based on the
     # mode, and return the name of the command.
-    subcommand stream {mode ? options ?} {
+    command stream {mode ? options ?} {
 
         # The stream will be a compressing stream that produces zlib-format
         # output, using compression level level (if specified) which will be
         # an integer from 0 to 9, and the compression dictionary bindata (if
         # specified).
-        subcommand compress {? -dictionary bindata ? ? -level level ?}
+        command compress {? -dictionary bindata ? ? -level level ?}
 
         # The stream will be a decompressing stream that takes zlib-format
         # input and produces uncompressed output.
-        subcommand decompress {? -dictionary bindata ?}
+        command decompress {? -dictionary bindata ?}
 
         # The stream will be a compressing stream that produces raw output,
         # using compression level level (if specified) which will be an
         # integer from 0 to 9, and the compression dictionary bindata (if
         # specified).
-        subcommand deflate {? -dictionary bindata ? ? -level level ?}
+        command deflate {? -dictionary bindata ? ? -level level ?}
 
         # The stream will be a decompressing stream that takes gzip-format
         # input and produces uncompressed output.
-        subcommand gunzip "{}"
+        command gunzip "{}"
 
         # The stream will be a compressing stream that produces gzip-format
         # output, using compression level level (if specified) which will be
         # an integer from 0 to 9, and the header descriptor dictionary header
         # (if specified; for keys see zlib gzip).
-        subcommand gzip {? -header header ? ? -level level ?}
+        command gzip {? -header header ? ? -level level ?}
 
         # The stream will be a decompressing stream that takes raw compressed
         # input and produces uncompressed output.
-        subcommand inflate {? -dictionary bindata ?}
+        command inflate {? -dictionary bindata ?}
     }
 
     # Compute a checksum of binary string string using the Adler-32 algorithm.
-    subcommand adler32 {string ? initValue ?}
+    command adler32 {string ? initValue ?}
 
     # Compute a checksum of binary string string using the CRC-32 algorithm.
-    subcommand crc32 {string ? initValue ?}
+    command crc32 {string ? initValue ?}
 
     # @generated end subcommands for zlib
 }
