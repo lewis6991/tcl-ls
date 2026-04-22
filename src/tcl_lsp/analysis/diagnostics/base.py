@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import ClassVar, Literal, final
 
 from tcl_lsp.analysis.builtins import BuiltinCommand
+from tcl_lsp.analysis.embedded_languages import ContextualCommand
 from tcl_lsp.analysis.index import WorkspaceIndex
 from tcl_lsp.analysis.model import (
     CommandCall,
@@ -18,7 +19,7 @@ from tcl_lsp.common import Diagnostic, DiagnosticTag, Span
 from tcl_lsp.metadata_paths import MetadataRegistry
 
 type CommandCallKey = tuple[str, int, int, int, int]
-type ResolvedCommandTarget = BuiltinCommand | ProcDecl
+type ResolvedCommandTarget = BuiltinCommand | ContextualCommand | ProcDecl
 type AnalysisDiagnosticSeverity = Literal['error', 'warning', 'hint']
 
 

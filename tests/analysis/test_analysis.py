@@ -2245,17 +2245,16 @@ def test_analysis_treats_meta_command_as_builtin() -> None:
     assert meta_resolution.uncertainty.state == 'resolved'
     assert len(meta_resolution.target_symbol_ids) == 1
     assert meta_command_resolution.uncertainty.state == 'resolved'
-    assert len(meta_command_resolution.target_symbol_ids) == 1
+    assert len(meta_command_resolution.target_symbol_ids) == 3
 
     hover_by_offset = {hover.span.start.offset: hover.contents for hover in analysis.hovers}
     meta_command_call = next(
         command_call for command_call in facts.command_calls if command_call.name == 'meta command'
     )
     hover = hover_by_offset[meta_command_call.name_span.start.offset]
-    assert hover.startswith(
-        'builtin command meta command {name shape ? body ?}\n\n'
-        'Declare metadata for a command or command prefix.'
-    )
+    assert hover.startswith('builtin command meta command\n\n`meta command {name shape}`')
+    assert '`meta command {name shape body}`' in hover
+    assert '`meta command {name variants body}`' in hover
     assert 'command or command prefix' in hover.replace('\n', ' ').lower()
     assert analysis.diagnostics == ()
 

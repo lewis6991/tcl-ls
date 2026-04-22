@@ -12,7 +12,7 @@ from .base import (
     DiagnosticContext,
     ResolvedCommandTarget,
 )
-from .helpers import resolved_command_calls
+from .helpers import command_target_arities, resolved_command_calls
 
 
 class WrongArgumentCountChecker(DiagnosticChecker):
@@ -43,18 +43,15 @@ def _command_argument_message(
             return None
         expected = _arity_descriptions((command_target.arity,))
     else:
-        if not command_target.overloads:
+        supported_arities_with_signatures = command_target_arities(command_target)
+        if supported_arities_with_signatures is None:
             return None
 
-        supported_arities: list[CommandArity] = []
-        for overload in command_target.overloads:
-            if overload.arity is None:
-                return None
-            supported_arities.append(overload.arity)
+        supported_arities = tuple(arity for _, arity in supported_arities_with_signatures)
 
         if any(arity.accepts(arg_count) for arity in supported_arities):
             return None
-        expected = _arity_descriptions(tuple(supported_arities))
+        expected = _arity_descriptions(supported_arities)
 
     return (
         f'Wrong number of arguments for command `{command_name}`; '

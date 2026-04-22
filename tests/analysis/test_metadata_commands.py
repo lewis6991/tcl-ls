@@ -320,6 +320,13 @@ def test_tcloo_metadata_parses_embedded_context_annotations() -> None:
     assert procedure_annotation.body_selector.start_index == 2
     assert procedure_annotation.body_context == 'tcloo-method'
 
+    method_body_command = next(
+        command
+        for command in commands
+        if command.context_name == 'tcloo-method' and command.name == 'my'
+    )
+    assert method_body_command.context_fallback == 'tcl'
+
 
 def test_tepam_metadata_parses_plugin_annotations() -> None:
     metadata_path = bundled_metadata_dir() / Path('tcllib/tepam.meta.tcl')
@@ -389,6 +396,17 @@ def test_metadata_rejects_incomplete_top_level_meta_entries(tmp_path: Path) -> N
         load_metadata_commands(metadata_path)
 
 
+def test_metadata_rejects_bare_shape_with_top_level_body(tmp_path: Path) -> None:
+    metadata_path = tmp_path / 'bad.meta.tcl'
+    metadata_path.write_text('meta command interp hello {}\n', encoding='utf-8')
+
+    with pytest.raises(
+        RuntimeError,
+        match='must use a braced shape when a clause body is present',
+    ):
+        load_metadata_commands(metadata_path)
+
+
 def test_metadata_rejects_bind_without_inferable_kind(tmp_path: Path) -> None:
     metadata_path = tmp_path / 'bad_bind.meta.tcl'
     metadata_path.write_text(
@@ -436,6 +454,23 @@ def test_metadata_parses_language_entries_and_enter_annotations(tmp_path: Path) 
     assert language_command.signature == 'body'
 
 
+def test_metadata_parses_language_fallback_clauses(tmp_path: Path) -> None:
+    metadata_path = tmp_path / 'sample.meta.tcl'
+    metadata_path.write_text(
+        'meta language sample {\n    fallback tcl\n    command step {body}\n}\n',
+        encoding='utf-8',
+    )
+
+    commands = load_metadata_commands(metadata_path)
+    language_command = next(
+        command
+        for command in commands
+        if command.context_name == 'sample' and command.name == 'step'
+    )
+
+    assert language_command.context_fallback == 'tcl'
+
+
 def test_metadata_treats_form_as_regular_shape_without_variants(tmp_path: Path) -> None:
     metadata_path = tmp_path / 'single.meta.tcl'
     metadata_path.write_text(
@@ -470,6 +505,20 @@ def test_metadata_parses_variant_containers(tmp_path: Path) -> None:
         annotation for annotation in commands[1].annotations if isinstance(annotation, MetadataBind)
     )
     assert bind_annotation.selector.start_index == 1
+
+
+def test_metadata_rejects_variants_without_form(tmp_path: Path) -> None:
+    metadata_path = tmp_path / 'invalid_variants.meta.tcl'
+    metadata_path.write_text(
+        'meta command root variants {\n    command child {x}\n}\n',
+        encoding='utf-8',
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match='variants bodies must declare at least one `form` entry',
+    ):
+        load_metadata_commands(metadata_path)
 
 
 def test_metadata_parses_nested_command_declarations(tmp_path: Path) -> None:
@@ -575,6 +624,20 @@ def test_metadata_parses_new_package_and_source_syntax(tmp_path: Path) -> None:
     assert definition_source.base == 'definition'
 
 
+def test_metadata_rejects_non_contiguous_enter_body_selectors(tmp_path: Path) -> None:
+    metadata_path = tmp_path / 'invalid_enter.meta.tcl'
+    metadata_path.write_text(
+        'meta command wrap {a b c d} {\n    enter sample body 1..4 step 2\n}\n',
+        encoding='utf-8',
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match='must select one contiguous body range',
+    ):
+        load_metadata_commands(metadata_path)
+
+
 def test_metadata_parses_tagged_procedure_fields(tmp_path: Path) -> None:
     metadata_path = tmp_path / 'procedure.meta.tcl'
     metadata_path.write_text(
@@ -604,3 +667,23 @@ def test_metadata_parses_tagged_procedure_fields(tmp_path: Path) -> None:
     assert procedure.body_selector is not None
     assert procedure.body_selector.start_index == 2
     assert procedure.body_context == 'sample'
+
+
+def test_metadata_rejects_procedure_language_without_body(tmp_path: Path) -> None:
+    metadata_path = tmp_path / 'invalid_procedure.meta.tcl'
+    metadata_path.write_text(
+        'meta command demo {name params} {\n'
+        '    procedure {\n'
+        '        name select 1\n'
+        '        params select 2\n'
+        '        language sample\n'
+        '    }\n'
+        '}\n',
+        encoding='utf-8',
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match='may only declare `language` when `body` is present',
+    ):
+        load_metadata_commands(metadata_path)

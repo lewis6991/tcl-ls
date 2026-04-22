@@ -15,6 +15,8 @@ from tcl_lsp.analysis.control_flow import build_control_flow_script
 from tcl_lsp.analysis.embedded_languages import (
     EmbeddedLanguageEntry,
     EmbeddedLanguageName,
+    contextual_command_target,
+    embedded_language_entry_for_annotation,
     match_embedded_language_command,
     match_embedded_language_entry,
 )
@@ -66,6 +68,7 @@ from tcl_lsp.analysis.flow import (
 from tcl_lsp.analysis.metadata_commands import (
     MetadataBind,
     MetadataCommand,
+    MetadataContext,
     MetadataPlugin,
     MetadataProcedure,
     MetadataRef,
@@ -92,6 +95,7 @@ from tcl_lsp.common import Diagnostic, Position, Span, lsp_range
 from tcl_lsp.metadata_paths import DEFAULT_METADATA_REGISTRY, MetadataRegistry
 from tcl_lsp.parser import Parser, word_static_text
 from tcl_lsp.parser.model import (
+    BareWord,
     BracedWord,
     Command,
     CommandSubstitution,
@@ -380,6 +384,7 @@ class _FactCollector:
             arg_texts=tuple(word_static_text(word) for word in argument_words),
             arg_spans=tuple(word.span for word in argument_words),
             arg_expanded=tuple(word.expanded for word in argument_words),
+            arg_grouped=tuple(not isinstance(word, BareWord) for word in argument_words),
             context=context,
         )
 
@@ -387,6 +392,7 @@ class _FactCollector:
             self._collect_lowered_word_references(word_references, context)
 
         self._collect_builtin_subcommands(syntax_command, context)
+        self._collect_contextual_subcommands(syntax_command, context)
         self._collect_metadata_command_annotations(syntax_command, context)
         return command.command_name
 
@@ -398,6 +404,7 @@ class _FactCollector:
         arg_texts: tuple[str | None, ...],
         arg_spans: tuple[Span, ...],
         arg_expanded: tuple[bool, ...],
+        arg_grouped: tuple[bool, ...],
         context: _ExtractionContext,
     ) -> None:
         self._command_calls.append(
@@ -407,6 +414,7 @@ class _FactCollector:
                 arg_texts=arg_texts,
                 arg_spans=arg_spans,
                 arg_expanded=arg_expanded,
+                arg_grouped=arg_grouped,
                 namespace=context.namespace,
                 scope_id=context.scope_id,
                 procedure_symbol_id=context.procedure_symbol_id,
@@ -450,6 +458,54 @@ class _FactCollector:
                 arg_texts=tuple(word_static_text(argument) for argument in argument_words),
                 arg_spans=tuple(argument.span for argument in argument_words),
                 arg_expanded=tuple(argument.expanded for argument in argument_words),
+                arg_grouped=tuple(
+                    not isinstance(argument, BareWord) for argument in argument_words
+                ),
+                context=context,
+            )
+
+    def _collect_contextual_subcommands(
+        self,
+        command: Command,
+        context: _ExtractionContext,
+    ) -> None:
+        if context.embedded_language is None:
+            return
+
+        static_prefix_parts: list[str] = []
+        for index, word in enumerate(command.words):
+            static_text = word_static_text(word)
+            if static_text is None:
+                return
+            if index == 0:
+                static_text = normalize_command_name(static_text)
+
+            static_prefix_parts.append(static_text)
+            if index == 0:
+                continue
+
+            command_name = ' '.join(static_prefix_parts)
+            if (
+                contextual_command_target(
+                    context.embedded_language,
+                    command_name,
+                    metadata_registry=self._metadata_registry,
+                )
+                is None
+            ):
+                continue
+
+            argument_words = command.words[index + 1 :]
+            self._record_command_call(
+                command_name=command_name,
+                command_span=command.span,
+                name_span=word.content_span,
+                arg_texts=tuple(word_static_text(argument) for argument in argument_words),
+                arg_spans=tuple(argument.span for argument in argument_words),
+                arg_expanded=tuple(argument.expanded for argument in argument_words),
+                arg_grouped=tuple(
+                    not isinstance(argument, BareWord) for argument in argument_words
+                ),
                 context=context,
             )
 
@@ -504,17 +560,40 @@ class _FactCollector:
 
         handled = False
         for annotation in matched.metadata_command.annotations:
-            if not isinstance(annotation, MetadataProcedure):
+            if isinstance(annotation, MetadataProcedure):
+                self._collect_embedded_procedure(
+                    command,
+                    context,
+                    metadata_command=matched.metadata_command,
+                    command_name=matched.metadata_command.name,
+                    prefix_word_count=matched.prefix_word_count,
+                    procedure=annotation,
+                )
+                handled = True
                 continue
-            self._collect_embedded_procedure(
-                command,
-                context,
-                metadata_command=matched.metadata_command,
-                command_name=matched.metadata_command.name,
-                prefix_word_count=matched.prefix_word_count,
-                procedure=annotation,
-            )
-            handled = True
+            if isinstance(annotation, MetadataPlugin):
+                self._collect_metadata_plugin(
+                    command,
+                    context,
+                    metadata_command=matched.metadata_command,
+                    prefix_word_count=matched.prefix_word_count,
+                    plugin=annotation,
+                )
+                handled = True
+                continue
+            if isinstance(annotation, MetadataContext):
+                entry = embedded_language_entry_for_annotation(
+                    command,
+                    metadata_command=matched.metadata_command,
+                    annotation=annotation,
+                    prefix_word_count=matched.prefix_word_count,
+                    current_namespace=context.namespace,
+                )
+                if entry is None:
+                    continue
+                self._collect_embedded_entry(command, context, entry)
+                handled = True
+                continue
 
         handled |= self._collect_selected_metadata_annotations(
             command,
@@ -736,6 +815,14 @@ class _FactCollector:
         if entry is None:
             return False
 
+        return self._collect_embedded_entry(command, context, entry)
+
+    def _collect_embedded_entry(
+        self,
+        command: Command,
+        context: _ExtractionContext,
+        entry: EmbeddedLanguageEntry,
+    ) -> bool:
         handled = False
         if entry.script_word_index is not None and entry.script_word_index < len(command.words):
             selected_word = command.words[entry.script_word_index]

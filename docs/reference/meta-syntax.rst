@@ -184,6 +184,8 @@ Rules:
   command shape
 * single-form commands may use the shorthand form above
 * commands that declare explicit ``form`` entries must use a ``variants`` block
+* ``variants`` blocks must declare at least one ``form`` for the command node
+  itself; nested ``command`` entries only add child nodes
 * there is no separate ``usage`` clause
 
 Example:
@@ -538,9 +540,12 @@ Rules:
 
 * ``enter`` is a normal sibling clause inside a form
 * multiple ``enter`` clauses may appear in the same form
-* ``body`` and ``owner`` use the normal selector language
-* when ``owner`` is present, it should resolve to one statically known
-  argument
+* ``body`` accepts direct positional selectors, including contiguous ranges and
+  ``after-options`` selectors, but not ``list`` selectors or stepped
+  non-contiguous ranges
+* ``owner`` must select exactly one direct argument; ``list`` and
+  ``after-options`` selectors are not supported there
+* when ``owner`` is present, the selected argument should still be static
 * if multiple body arguments are selected, they must form one contiguous range
 
 Behavior notes:
@@ -663,6 +668,7 @@ Rules:
   ``-``
 * ``body`` is optional and, when present, uses ``select SELECTOR``
 * ``language`` is optional and names the embedded language used for the body
+* ``language`` may only appear when ``body`` is also present
 * selector-valued fields use the general selector language, not a special
   positive-index-only syntax
 

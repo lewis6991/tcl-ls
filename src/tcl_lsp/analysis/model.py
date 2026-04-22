@@ -163,6 +163,7 @@ class CommandCall:
     arg_texts: tuple[str | None, ...]
     arg_spans: tuple[Span, ...]
     arg_expanded: tuple[bool, ...]
+    arg_grouped: tuple[bool, ...]
     namespace: str
     scope_id: str
     procedure_symbol_id: str | None

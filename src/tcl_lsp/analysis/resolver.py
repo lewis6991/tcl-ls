@@ -18,8 +18,10 @@ from tcl_lsp.analysis.diagnostics import (
 )
 from tcl_lsp.analysis.diagnostics.helpers import command_call_key
 from tcl_lsp.analysis.embedded_languages import (
+    ContextualCommand,
+    contextual_command_target,
+    contextual_language_allows_tcl_fallback,
     contextual_resolution_reason,
-    resolves_contextual_command,
 )
 from tcl_lsp.analysis.facts.parsing import is_simple_name, split_tcl_list
 from tcl_lsp.analysis.facts.utils import name_tail, variable_symbol_id
@@ -402,11 +404,12 @@ class Resolver:
             )
 
         builtin_name = _normalize_command_name(command_call.name)
-        if resolves_contextual_command(
+        contextual_target = contextual_command_target(
             command_call.embedded_language,
             builtin_name,
             metadata_registry=self._metadata_registry,
-        ):
+        )
+        if contextual_target is not None:
             return (
                 ResolutionResult(
                     reference=reference,
@@ -416,6 +419,29 @@ class Resolver:
                             command_call.embedded_language,
                             builtin_name,
                             metadata_registry=self._metadata_registry,
+                        ),
+                    ),
+                    target_symbol_ids=(),
+                ),
+                None,
+                contextual_target,
+            )
+
+        if (
+            command_call.embedded_language is not None
+            and not contextual_language_allows_tcl_fallback(
+                command_call.embedded_language,
+                metadata_registry=self._metadata_registry,
+            )
+        ):
+            return (
+                ResolutionResult(
+                    reference=reference,
+                    uncertainty=AnalysisUncertainty(
+                        state='unresolved',
+                        reason=(
+                            'Command is not declared in the active embedded language '
+                            'and that language does not fall back to Tcl resolution.'
                         ),
                     ),
                     target_symbol_ids=(),
@@ -910,6 +936,8 @@ def _metadata_command_for_target(
         return _annotated_metadata_commands(metadata_registry).get(
             (target.metadata_path_name, target.name)
         )
+    if isinstance(target, ContextualCommand):
+        return None
 
     source_path = source_id_to_path(target.uri)
     if source_path is None:

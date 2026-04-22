@@ -94,6 +94,15 @@ def _optional_group_arity(tokens: tuple[str, ...]) -> CommandArity | None:
 def _signature_token_arity(token: str, *, is_last: bool) -> CommandArity | None:
     if not token:
         return CommandArity(min_args=0, max_args=0)
+    if token.startswith('=') and len(token) > 1:
+        return CommandArity(min_args=1, max_args=1)
+    if token.startswith('<') and token.endswith('>') and len(token) > 2:
+        slot_name = token[1:-1]
+        if slot_name in {'selector', 'bodySelector', 'ownerSelector', 'procedureSelector'}:
+            # Selectors range from one word (`1`) to five words
+            # (`after-options list 1..last step 2`).
+            return CommandArity(min_args=1, max_args=5)
+        return CommandArity(min_args=1, max_args=1)
     if token == 'args':
         if not is_last:
             return None

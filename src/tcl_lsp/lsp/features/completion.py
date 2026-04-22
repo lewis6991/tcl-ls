@@ -33,6 +33,7 @@ from tcl_lsp.lsp.features.cursor_context import (
 from tcl_lsp.lsp.state import ManagedDocument
 from tcl_lsp.metadata_paths import MetadataRegistry
 from tcl_lsp.parser import Parser, word_static_text
+from tcl_lsp.parser.model import BareWord
 from tcl_lsp.parser.model import Command as SyntaxCommand
 from tcl_lsp.project.paths import source_id_to_path
 
@@ -379,6 +380,7 @@ def _live_command_call(
         arg_texts=tuple(word_static_text(word) for word in argument_words),
         arg_spans=tuple(word.span for word in argument_words),
         arg_expanded=tuple(word.expanded for word in argument_words),
+        arg_grouped=tuple(not isinstance(word, BareWord) for word in argument_words),
         namespace=namespace,
         scope_id=scope_id,
         procedure_symbol_id=None,

@@ -13,6 +13,7 @@ from tcl_lsp.analysis.metadata_commands import (
     load_metadata_commands,
 )
 from tcl_lsp.analysis.model import CommandArity, DefinitionTarget
+from tcl_lsp.analysis.signature_matching import display_metadata_signature
 from tcl_lsp.cache import metadata_lru_cache
 from tcl_lsp.common import Span, lsp_location
 from tcl_lsp.metadata_paths import DEFAULT_METADATA_REGISTRY, MetadataRegistry
@@ -31,6 +32,7 @@ _PACKAGE_ALIASES = {
 class BuiltinOverload:
     symbol_id: str
     signature: str
+    match_signature: str
     arity: CommandArity | None
     options: tuple[MetadataOption, ...]
     subcommands: tuple[str, ...]
@@ -275,9 +277,14 @@ def _load_metadata_file(
                 symbol_id=_builtin_symbol_id(
                     package_name,
                     metadata_command.name,
+                    metadata_command.signature,
                     metadata_command.name_span.start.offset,
                 ),
-                signature=_signature(metadata_command.name, metadata_command.signature),
+                signature=_signature(
+                    metadata_command.name,
+                    display_metadata_signature(metadata_command.signature),
+                ),
+                match_signature=metadata_command.signature,
                 arity=metadata_signature_arity(metadata_command.signature),
                 options=metadata_command.options,
                 subcommands=metadata_command.subcommands,
@@ -452,12 +459,14 @@ def _annotated_entries_for_file(
         )
         existing = override_entries.get(metadata_command.name)
         if metadata_command.name in override_entries:
-            if existing is None and annotated_command is None:
+            if annotated_command is None:
+                continue
+            if existing is None:
+                override_entries[metadata_command.name] = annotated_command
+                annotated[metadata_command.name] = annotated_command
                 continue
             if (
-                existing is not None
-                and annotated_command is not None
-                and existing.options == annotated_command.options
+                existing.options == annotated_command.options
                 and existing.subcommands == annotated_command.subcommands
                 and existing.annotations == annotated_command.annotations
             ):
@@ -476,8 +485,8 @@ def _signature(name: str, parameter_list: str) -> str:
     return f'{name} {{{parameter_list}}}'
 
 
-def _builtin_symbol_id(package_name: str, name: str, offset: int) -> str:
-    return f'builtin::{package_name}::{name}::{offset}'
+def _builtin_symbol_id(package_name: str, name: str, signature: str, offset: int) -> str:
+    return f'builtin::{package_name}::{name}::{signature}::{offset}'
 
 
 def _canonical_package_name(package_name: str) -> str:

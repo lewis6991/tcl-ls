@@ -117,6 +117,7 @@ class MetadataCommand:
     uri: str
     name: str
     context_name: str | None
+    context_fallback: str | None
     signature: str
     documentation: str | None
     name_span: Span
@@ -201,6 +202,7 @@ def _parse_metadata_command_entry(
     metadata_path: Path,
     metadata_uri: str,
     context_name: str | None = None,
+    context_fallback: str | None = None,
     parent_name: str | None = None,
 ) -> tuple[MetadataCommand, ...]:
     if context_name is None:
@@ -252,8 +254,14 @@ def _parse_metadata_command_entry(
             metadata_uri=metadata_uri,
             command_name=full_name,
             context_name=context_name,
+            context_fallback=context_fallback,
             name_span=name_word.content_span,
             documentation=documentation,
+        )
+
+    if annotation_word is not None and isinstance(declaration_word, BareWord):
+        raise RuntimeError(
+            f'Metadata command `{full_name}` must use a braced shape when a clause body is present.'
         )
 
     signature = word_static_text(declaration_word)
@@ -268,6 +276,7 @@ def _parse_metadata_command_entry(
             metadata_uri=metadata_uri,
             command_name=full_name,
             context_name=context_name,
+            context_fallback=context_fallback,
             body_text=_metadata_body_text(annotation_word),
         )
 
@@ -277,6 +286,7 @@ def _parse_metadata_command_entry(
             uri=metadata_uri,
             name=full_name,
             context_name=context_name,
+            context_fallback=context_fallback,
             signature=signature,
             documentation=documentation,
             name_span=name_word.content_span,
@@ -311,19 +321,38 @@ def _parse_metadata_context_entry(
             f'Invalid metadata language `{context_name}` in `{metadata_path.name}`: {message}'
         )
 
-    commands: list[MetadataCommand] = []
+    nested_command_entries: list[Command] = []
+    context_fallback: str | None = None
     for nested_command in parse_result.script.commands:
-        if word_static_text(nested_command.words[0]) != 'command':
+        nested_name = word_static_text(nested_command.words[0])
+        if nested_name == 'fallback':
+            if context_fallback is not None:
+                raise RuntimeError(
+                    f'Metadata language `{context_name}` declares multiple fallback clauses.'
+                )
+            if len(nested_command.words) != 2 or word_static_text(nested_command.words[1]) != 'tcl':
+                raise RuntimeError(
+                    f'Metadata language `{context_name}` fallback clauses must be `fallback tcl`.'
+                )
+            context_fallback = 'tcl'
+            continue
+        if nested_name != 'command':
             raise RuntimeError(
                 f'Metadata language `{context_name}` entries must use '
-                '`command name {args}` or `command name variants { ... }`.'
+                '`command name {args}`, `command name variants { ... }`, '
+                'or `fallback tcl`.'
             )
+        nested_command_entries.append(nested_command)
+
+    commands: list[MetadataCommand] = []
+    for nested_command in nested_command_entries:
         commands.extend(
             _parse_metadata_command_entry(
                 nested_command,
                 metadata_path=metadata_path,
                 metadata_uri=metadata_uri,
                 context_name=context_name,
+                context_fallback=context_fallback,
             )
         )
 
@@ -473,6 +502,7 @@ def _parse_annotation_body(
     metadata_uri: str,
     command_name: str,
     context_name: str | None,
+    context_fallback: str | None,
     body_text: str,
 ) -> tuple[tuple[MetadataOption, ...], tuple[MetadataAnnotation, ...], tuple[MetadataCommand, ...]]:
     annotation_uri = f'{metadata_uri}#{command_name}'
@@ -502,6 +532,7 @@ def _parse_annotation_body(
                     metadata_uri=metadata_uri,
                     parent_name=command_name,
                     context_name=context_name,
+                    context_fallback=context_fallback,
                 )
             )
             continue
@@ -560,6 +591,7 @@ def _parse_nested_command_entry(
     metadata_uri: str,
     parent_name: str,
     context_name: str | None,
+    context_fallback: str | None,
 ) -> tuple[MetadataCommand, ...]:
     if len(command.words) not in {3, 4}:
         raise RuntimeError(
@@ -595,8 +627,14 @@ def _parse_nested_command_entry(
             metadata_uri=metadata_uri,
             command_name=full_name,
             context_name=context_name,
+            context_fallback=context_fallback,
             name_span=command.words[1].content_span,
             documentation=_command_documentation(command.leading_comments),
+        )
+
+    if annotation_word is not None and isinstance(declaration_word, BareWord):
+        raise RuntimeError(
+            f'Nested command `{full_name}` must use a braced shape when a clause body is present.'
         )
 
     signature = word_static_text(declaration_word)
@@ -612,6 +650,7 @@ def _parse_nested_command_entry(
             metadata_uri=metadata_uri,
             command_name=full_name,
             context_name=context_name,
+            context_fallback=context_fallback,
             body_text=_metadata_body_text(annotation_word),
         )
 
@@ -621,6 +660,7 @@ def _parse_nested_command_entry(
             uri=metadata_uri,
             name=full_name,
             context_name=context_name,
+            context_fallback=context_fallback,
             signature=signature,
             documentation=_command_documentation(command.leading_comments),
             name_span=command.words[1].content_span,
@@ -810,6 +850,11 @@ def _parse_procedure_annotation(command: Command, command_name: str) -> Metadata
         raise RuntimeError(
             f'Procedure annotations for `{command_name}` must declare `name` and `params`.'
         )
+    if body_context is not None and body_selector is None:
+        raise RuntimeError(
+            f'Procedure annotations for `{command_name}` may only declare `language` '
+            'when `body` is present.'
+        )
 
     return MetadataProcedure(
         member_name_selector=cast(MetadataSelector | None, member_name_selector),
@@ -855,14 +900,18 @@ def _validate_package_selector(selector: MetadataSelector, command_name: str) ->
 def _validate_context_body_selector(selector: MetadataSelector, command_name: str) -> None:
     if selector.list_mode:
         raise RuntimeError(
-            f'Context annotations for `{command_name}` must use direct positional selectors.'
+            f'Enter annotations for `{command_name}` must use direct positional selectors.'
+        )
+    if selector.step != 1:
+        raise RuntimeError(
+            f'Enter annotations for `{command_name}` must select one contiguous body range.'
         )
 
 
 def _validate_context_owner_selector(selector: MetadataSelector, command_name: str) -> None:
     if selector.list_mode or selector.after_options or not selector.selects_single_argument:
         raise RuntimeError(
-            f'Context annotations for `{command_name}` must select exactly one owner argument.'
+            f'Enter annotations for `{command_name}` must select exactly one owner argument.'
         )
 
 
@@ -918,6 +967,31 @@ def _parse_selector_tokens(
         ),
         index,
     )
+
+
+def parse_selector_tokens(
+    words: list[str] | tuple[str, ...],
+    *,
+    command_name: str,
+) -> tuple[MetadataSelector, int]:
+    return _parse_selector_tokens(words, command_name=command_name)
+
+
+def validate_context_body_selector(selector: MetadataSelector, command_name: str) -> None:
+    _validate_context_body_selector(selector, command_name)
+
+
+def validate_context_owner_selector(selector: MetadataSelector, command_name: str) -> None:
+    _validate_context_owner_selector(selector, command_name)
+
+
+def validate_procedure_selector(
+    selector: MetadataSelector,
+    *,
+    command_name: str,
+    role: str,
+) -> None:
+    _validate_procedure_selector(selector, command_name=command_name, role=role)
 
 
 def _select_resolved_argument_indices(
@@ -1131,6 +1205,7 @@ def _parse_metadata_form_entry(
     metadata_uri: str,
     command_name: str,
     context_name: str | None,
+    context_fallback: str | None,
     name_span: Span,
     documentation: str | None,
 ) -> tuple[MetadataCommand, ...]:
@@ -1154,6 +1229,7 @@ def _parse_metadata_form_entry(
             metadata_uri=metadata_uri,
             command_name=command_name,
             context_name=context_name,
+            context_fallback=context_fallback,
             body_text=_metadata_body_text(annotation_word),
         )
 
@@ -1163,6 +1239,7 @@ def _parse_metadata_form_entry(
             uri=metadata_uri,
             name=command_name,
             context_name=context_name,
+            context_fallback=context_fallback,
             signature=signature,
             documentation=_command_documentation(command.leading_comments) or documentation,
             name_span=name_span,
@@ -1202,13 +1279,16 @@ def _load_metadata_variant_commands(
     metadata_uri: str,
     command_name: str,
     context_name: str | None,
+    context_fallback: str | None,
     name_span: Span,
     documentation: str | None,
 ) -> tuple[MetadataCommand, ...]:
     loaded_commands: list[MetadataCommand] = []
+    saw_form = False
     for nested_command in commands:
         nested_name = word_static_text(nested_command.words[0])
         if nested_name == 'form':
+            saw_form = True
             loaded_commands.extend(
                 _parse_metadata_form_entry(
                     nested_command,
@@ -1216,6 +1296,7 @@ def _load_metadata_variant_commands(
                     metadata_uri=metadata_uri,
                     command_name=command_name,
                     context_name=context_name,
+                    context_fallback=context_fallback,
                     name_span=name_span,
                     documentation=documentation,
                 )
@@ -1229,12 +1310,18 @@ def _load_metadata_variant_commands(
                     metadata_uri=metadata_uri,
                     parent_name=command_name,
                     context_name=context_name,
+                    context_fallback=context_fallback,
                 )
             )
             continue
         raise RuntimeError(
             f'Metadata command `{command_name}` variants bodies may only contain '
             '`form` and `command` entries.'
+        )
+    if not saw_form:
+        raise RuntimeError(
+            f'Metadata command `{command_name}` variants bodies must declare '
+            'at least one `form` entry.'
         )
     return tuple(loaded_commands)
 
@@ -1290,6 +1377,7 @@ def _commands_with_derived_subcommands(
                 uri=command.uri,
                 name=command.name,
                 context_name=command.context_name,
+                context_fallback=command.context_fallback,
                 signature=command.signature,
                 documentation=command.documentation,
                 name_span=command.name_span,

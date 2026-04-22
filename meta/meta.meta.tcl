@@ -15,6 +15,7 @@ meta module Tcl
 #       command name variants { ... }
 #   }
 #   meta language languageName {
+#       fallback tcl
 #       command name {shape} ? { clause ... } ?
 #       command name variants {
 #           form {shape} ? { clause ... } ?
@@ -28,7 +29,8 @@ meta module Tcl
 #
 # `shape` is the structural form of one callable command shape. It is not
 # display-only text. Single-form commands may elide `form`; commands that use
-# explicit `form` entries should use `variants`.
+# explicit `form` entries should use `variants`. `variants` blocks must still
+# declare at least one `form`; nested `command` entries only add child nodes.
 #
 # Clause bodies:
 #   A command body is a static Tcl command list, usually written as a braced
@@ -83,7 +85,9 @@ meta module Tcl
 #
 # enter language body selector ? owner selector ?
 #   Enter the named embedded command language for the selected body argument or
-#   arguments. `owner` is optional. Use `enter tcl body ...` for Tcl bodies.
+#   arguments. The body selector must be a direct contiguous range. `owner` is
+#   optional and must select one direct argument. Use `enter tcl body ...` for
+#   Tcl bodies.
 #
 # source selector caller
 # source selector definition
@@ -101,13 +105,18 @@ meta module Tcl
 #       name select selector | literal value | -
 #       params select selector | literal {name ...} | -
 #       body select selector
-#       language name
+#       language name            # only when `body` is present
 #       _params-source select selector
 #
 # plugin script commandPrefix
 #   Run a Tcl plugin to produce dynamic metadata effects. Plugin procedure
 #   effects should use the same `select`/`literal` field vocabulary as the
 #   declarative `procedure` annotation.
+#
+# fallback tcl
+#   Allow the embedded language to fall back to ordinary Tcl command
+#   resolution after checking its explicit `command` declarations. Languages
+#   without a fallback are closed and only accept their declared commands.
 #
 # A command can use multiple clauses in one body when needed.
 #
@@ -119,21 +128,116 @@ meta command meta {subcommand args} {
     # Declare the builtin package or module represented by this metadata file.
     # Files with a `meta module` declaration are indexed as bundled package
     # metadata.
-    command module {name}
+    command module {<name>}
 
     # Declare metadata for a command or command prefix.
     # Use `meta command name {shape}` for single-form commands, or
     # `meta command name variants { ... }` for explicit `form` and nested
     # `command` declarations.
     command command variants {
-        form {name shape}
-        form {name shape body}
-        form {name variants body}
+        form {<name> <shape>}
+        form {<name> <groupedShape> <body>} {
+            enter meta-command-body body 3
+        }
+        form {<name> =variants <body>} {
+            enter meta-command-body body 3
+        }
     }
 
     # Declare an embedded command language and the commands valid within it.
     # The body contains `command name {shape}` or
     # `command name variants { ... }` entries that are only valid while a
     # matching `enter` clause is active.
-    command language {name body}
+    command language {<name> <body>} {
+        enter meta-language-body body 2
+    }
+}
+
+meta language meta-command-body {
+    command option variants {
+        form {<name>}
+        form {<name> <value>}
+        form {=-- =stop}
+    }
+
+    command command variants {
+        form {<name> <shape>}
+        form {<name> <groupedShape> <body>} {
+            enter meta-command-body body 3
+        }
+        form {<name> =variants <body>} {
+            enter meta-command-body body 3
+        }
+    }
+
+    command form variants {
+        form {<shape>}
+        form {<groupedShape> <body>} {
+            enter meta-command-body body 2
+        }
+    }
+
+    command bind variants {
+        form {<selector>}
+        form {<selector> <kind>}
+    }
+
+    command ref {<selector>}
+
+    command enter variants {
+        form {<language> =body <bodySelector>}
+        form {<language> =body <bodySelector> =owner <ownerSelector>}
+    }
+
+    command source variants {
+        form {<selector> =caller}
+        form {<selector> =definition}
+    }
+
+    command package variants {
+        form {=literal <packageName>}
+        form {=select <selector>}
+    }
+
+    command procedure {<body>} {
+        enter meta-procedure-body body 1
+    }
+
+    command plugin {<script> <commandPrefix>}
+}
+
+meta language meta-language-body {
+    command fallback variants {
+        form {=tcl}
+    }
+
+    command command variants {
+        form {<name> <shape>}
+        form {<name> <groupedShape> <body>} {
+            enter meta-command-body body 3
+        }
+        form {<name> =variants <body>} {
+            enter meta-command-body body 3
+        }
+    }
+}
+
+meta language meta-procedure-body {
+    command name variants {
+        form {=select <procedureSelector>}
+        form {=literal <value>}
+        form {=-}
+    }
+
+    command params variants {
+        form {=select <procedureSelector>}
+        form {=literal <value>}
+        form {=-}
+    }
+
+    command body {=select <procedureSelector>}
+
+    command language {<name>}
+
+    command _params-source {=select <procedureSelector>}
 }
