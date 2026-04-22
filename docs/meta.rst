@@ -19,6 +19,13 @@ Directories are scanned recursively for ``*.meta.tcl`` files. A direct
 ``.meta.tcl`` path is loaded as-is. A ``.tcl`` or ``.tm`` plugin path causes
 the containing directory to be scanned for sibling metadata files.
 
+Metadata roots also define override precedence. Later roots override earlier
+command trees on exact command names or prefixes, which lets project metadata
+replace bundled metadata cleanly. Within a single root, conflicting exact
+command declarations are treated as errors rather than order-dependent
+overrides. Sibling ``foo.meta.tcl`` files are auto-associated with
+``foo.tcl``/``foo.tm`` only when that match is unambiguous.
+
 Basic Metadata Shape
 --------------------
 

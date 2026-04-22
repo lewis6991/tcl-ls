@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from lsprotocol import types
 
@@ -86,12 +87,12 @@ def _annotated_metadata_commands_by_package(
     metadata_registry: MetadataRegistry,
 ) -> dict[str, dict[str, MetadataCommand]]:
     commands_by_package: dict[str, dict[str, MetadataCommand]] = {}
-    for package_name, metadata_paths in _builtin_metadata_paths_by_package(
+    for package_name, metadata_path_layers in _builtin_metadata_path_layers_by_package(
         metadata_registry
     ).items():
         commands_by_package[package_name] = _load_annotated_metadata_package(
             package_name=package_name,
-            metadata_paths=metadata_paths,
+            metadata_path_layers=metadata_path_layers,
         )
     return commands_by_package
 
@@ -138,12 +139,12 @@ def _builtin_commands_by_package(
     metadata_registry: MetadataRegistry,
 ) -> dict[str, dict[str, BuiltinCommand]]:
     commands_by_package: dict[str, dict[str, BuiltinCommand]] = {}
-    for package_name, metadata_paths in _builtin_metadata_paths_by_package(
+    for package_name, metadata_path_layers in _builtin_metadata_path_layers_by_package(
         metadata_registry
     ).items():
         commands_by_package[package_name] = _load_metadata_package(
             package_name=package_name,
-            metadata_paths=metadata_paths,
+            metadata_path_layers=metadata_path_layers,
         )
     return commands_by_package
 
@@ -303,22 +304,25 @@ def _load_metadata_file(
 def _load_metadata_package(
     *,
     package_name: str,
-    metadata_paths: tuple[Path, ...],
+    metadata_path_layers: tuple[tuple[Path, ...], ...],
 ) -> dict[str, BuiltinCommand]:
     package_commands: dict[str, BuiltinCommand] = {}
-    for metadata_path in metadata_paths:
-        for name, command in _load_metadata_file(
-            package_name=package_name,
-            metadata_path=metadata_path,
-        ).items():
-            existing = package_commands.get(name)
-            if existing is None:
-                package_commands[name] = command
-                continue
-            # Later metadata overrides the earlier command model. Project-local
-            # metadata can use this to replace bundled commands when a tool
-            # environment shadows Tcl roots such as `clock` or `trace`.
-            package_commands[name] = command
+    for metadata_paths in metadata_path_layers:
+        layer_commands: dict[str, BuiltinCommand] = {}
+        for metadata_path in metadata_paths:
+            for name, command in _load_metadata_file(
+                package_name=package_name,
+                metadata_path=metadata_path,
+            ).items():
+                if name in layer_commands:
+                    raise RuntimeError(
+                        f'Conflicting builtin metadata for `{package_name}` command `{name}`.'
+                    )
+                layer_commands[name] = command
+        # Later metadata roots override earlier command trees. Within one root,
+        # duplicate command declarations are treated as conflicting metadata.
+        _discard_overridden_commands(package_commands, layer_commands)
+        package_commands.update(layer_commands)
 
     if not package_commands:
         raise RuntimeError(f'No builtin command metadata entries were loaded for `{package_name}`.')
@@ -328,51 +332,65 @@ def _load_metadata_package(
 def _load_annotated_metadata_package(
     *,
     package_name: str,
-    metadata_paths: tuple[Path, ...],
+    metadata_path_layers: tuple[tuple[Path, ...], ...],
 ) -> dict[str, MetadataCommand]:
     annotated: dict[str, MetadataCommand] = {}
-    for metadata_path in metadata_paths:
-        for metadata_command in load_metadata_commands(metadata_path):
-            if metadata_command.context_name is not None:
-                continue
-            if (
-                not metadata_command.options
-                and not metadata_command.subcommands
-                and not metadata_command.annotations
-            ):
-                continue
-            existing = annotated.get(metadata_command.name)
-            if existing is not None and (
-                existing.options != metadata_command.options
-                or existing.subcommands != metadata_command.subcommands
-                or existing.annotations != metadata_command.annotations
-            ):
-                raise RuntimeError(
-                    f'Conflicting metadata annotations for `{package_name}` command '
-                    f'`{metadata_command.name}`.'
-                )
-            annotated[metadata_command.name] = metadata_command
+    for metadata_paths in metadata_path_layers:
+        layer_override_names: dict[str, None] = {}
+        layer_annotated: dict[str, MetadataCommand] = {}
+        for metadata_path in metadata_paths:
+            file_override_names, file_annotated = _annotated_entries_for_file(
+                package_name=package_name,
+                metadata_path=metadata_path,
+            )
+            for command_name in file_override_names:
+                if command_name in layer_override_names:
+                    raise RuntimeError(
+                        f'Conflicting metadata annotations for `{package_name}` command '
+                        f'`{command_name}`.'
+                    )
+                layer_override_names[command_name] = None
+            layer_annotated.update(file_annotated)
+        _discard_overridden_commands(annotated, layer_override_names)
+        annotated.update(layer_annotated)
     return annotated
 
 
 @metadata_lru_cache(maxsize=1)
-def _builtin_metadata_paths_by_package(
+def _builtin_metadata_path_layers_by_package(
     metadata_registry: MetadataRegistry,
-) -> dict[str, tuple[Path, ...]]:
-    paths_by_package: dict[str, list[Path]] = {}
-    for metadata_path in metadata_registry.metadata_files():
-        package_name = _declared_builtin_module_name(metadata_path)
-        if package_name is None:
-            continue
-        paths_by_package.setdefault(package_name, []).append(metadata_path)
+) -> dict[str, tuple[tuple[Path, ...], ...]]:
+    path_layers_by_package: dict[str, list[tuple[Path, ...]]] = {}
+    for _, layer_paths in metadata_registry.metadata_file_layers():
+        layer_paths_by_package: dict[str, list[Path]] = {}
+        for metadata_path in layer_paths:
+            package_name = _declared_builtin_module_name(metadata_path)
+            if package_name is None:
+                continue
+            layer_paths_by_package.setdefault(package_name, []).append(metadata_path)
+        for package_name, package_paths in layer_paths_by_package.items():
+            path_layers_by_package.setdefault(package_name, []).append(tuple(package_paths))
 
-    if not paths_by_package:
+    if not path_layers_by_package:
         raise RuntimeError('No builtin metadata files were declared.')
 
     return {
-        package_name: tuple(metadata_paths)
-        for package_name, metadata_paths in paths_by_package.items()
+        package_name: tuple(metadata_path_layers)
+        for package_name, metadata_path_layers in path_layers_by_package.items()
     }
+
+
+def _discard_overridden_commands(
+    commands: dict[str, Any],
+    override_commands: dict[str, Any],
+) -> None:
+    override_names = tuple(override_commands)
+    for existing_name in tuple(commands):
+        if any(
+            existing_name == override_name or existing_name.startswith(f'{override_name} ')
+            for override_name in override_names
+        ):
+            commands.pop(existing_name, None)
 
 
 @metadata_lru_cache(maxsize=None)
@@ -411,6 +429,47 @@ def _declared_builtin_module_name(metadata_path: Path) -> str | None:
         declared_name = module_name
 
     return declared_name
+
+
+def _annotated_entries_for_file(
+    *,
+    package_name: str,
+    metadata_path: Path,
+) -> tuple[tuple[str, ...], dict[str, MetadataCommand]]:
+    override_entries: dict[str, MetadataCommand | None] = {}
+    annotated: dict[str, MetadataCommand] = {}
+    for metadata_command in load_metadata_commands(metadata_path):
+        if metadata_command.context_name is not None:
+            continue
+        annotated_command = (
+            metadata_command
+            if (
+                metadata_command.options
+                or metadata_command.subcommands
+                or metadata_command.annotations
+            )
+            else None
+        )
+        existing = override_entries.get(metadata_command.name)
+        if metadata_command.name in override_entries:
+            if existing is None and annotated_command is None:
+                continue
+            if (
+                existing is not None
+                and annotated_command is not None
+                and existing.options == annotated_command.options
+                and existing.subcommands == annotated_command.subcommands
+                and existing.annotations == annotated_command.annotations
+            ):
+                continue
+            raise RuntimeError(
+                f'Conflicting metadata annotations for `{package_name}` command '
+                f'`{metadata_command.name}`.'
+            )
+        override_entries[metadata_command.name] = annotated_command
+        if annotated_command is not None:
+            annotated[metadata_command.name] = annotated_command
+    return tuple(override_entries), annotated
 
 
 def _signature(name: str, parameter_list: str) -> str:

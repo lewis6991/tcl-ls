@@ -424,6 +424,82 @@ class Resolver:
                 None,
             )
 
+        matches = workspace_index.resolve_procedure(command_call.name, command_call.namespace)
+        resolved_import: CommandImport | None = None
+        if not matches:
+            imported_proc_matches = self._resolve_imported_procedures(
+                command_call.name,
+                command_call.namespace,
+                workspace_index,
+            )
+            if len(imported_proc_matches) == 1:
+                resolved_import, proc = imported_proc_matches[0]
+                matches = (proc,)
+            elif len(imported_proc_matches) > 1:
+                return (
+                    ResolutionResult(
+                        reference=reference,
+                        uncertainty=AnalysisUncertainty(
+                            state='ambiguous',
+                            reason='Multiple imported procedures match this command name.',
+                        ),
+                        target_symbol_ids=tuple(
+                            proc.symbol_id for _, proc in imported_proc_matches
+                        ),
+                    ),
+                    None,
+                    None,
+                )
+
+        if len(matches) > 1:
+            return (
+                ResolutionResult(
+                    reference=reference,
+                    uncertainty=AnalysisUncertainty(
+                        state='ambiguous',
+                        reason='Multiple procedures match this command name.',
+                    ),
+                    target_symbol_ids=tuple(match.symbol_id for match in matches),
+                ),
+                None,
+                None,
+            )
+        if len(matches) == 1:
+            proc = matches[0]
+            detail = _command_hover(
+                _proc_hover(proc),
+                import_trace=(
+                    _import_trace(
+                        resolved_import,
+                        hover_trace_parents,
+                    )
+                    if resolved_import is not None
+                    else None
+                ),
+                transitive_trace=_source_transitive_trace(
+                    proc.uri,
+                    workspace_index,
+                    transitive_required_packages,
+                    hover_trace_parents,
+                ),
+            )
+            return (
+                ResolutionResult(
+                    reference=reference,
+                    uncertainty=AnalysisUncertainty(
+                        state='resolved',
+                        reason=(
+                            'Resolved via a static namespace import.'
+                            if resolved_import is not None
+                            else 'Resolved to a unique procedure definition.'
+                        ),
+                    ),
+                    target_symbol_ids=(proc.symbol_id,),
+                ),
+                HoverInfo(span=command_call.name_span, contents=detail),
+                proc,
+            )
+
         builtin_matches = builtin_commands_for_packages(
             builtin_name,
             required_packages,
@@ -518,59 +594,31 @@ class Resolver:
                     None,
                 )
 
-        matches = workspace_index.resolve_procedure(command_call.name, command_call.namespace)
-        resolved_import: CommandImport | None = None
-        if not matches:
-            imported_proc_matches = self._resolve_imported_procedures(
-                command_call.name,
-                command_call.namespace,
-                workspace_index,
-            )
-            if len(imported_proc_matches) == 1:
-                resolved_import, proc = imported_proc_matches[0]
-                matches = (proc,)
-            elif len(imported_proc_matches) > 1:
-                return (
-                    ResolutionResult(
-                        reference=reference,
-                        uncertainty=AnalysisUncertainty(
-                            state='ambiguous',
-                            reason='Multiple imported procedures match this command name.',
-                        ),
-                        target_symbol_ids=tuple(
-                            proc.symbol_id for _, proc in imported_proc_matches
-                        ),
-                    ),
-                    None,
-                    None,
-                )
-
         imported_builtin_match: tuple[CommandImport, BuiltinCommand] | None = None
-        if not matches:
-            imported_builtin_matches = self._resolve_imported_builtins(
-                command_call.name,
-                command_call.namespace,
-                workspace_index,
-            )
-            if len(imported_builtin_matches) == 1:
-                imported_builtin_match = imported_builtin_matches[0]
-            elif len(imported_builtin_matches) > 1:
-                return (
-                    ResolutionResult(
-                        reference=reference,
-                        uncertainty=AnalysisUncertainty(
-                            state='ambiguous',
-                            reason='Multiple imported builtin commands match this command name.',
-                        ),
-                        target_symbol_ids=tuple(
-                            overload.symbol_id
-                            for _, builtin in imported_builtin_matches
-                            for overload in builtin.overloads
-                        ),
+        imported_builtin_matches = self._resolve_imported_builtins(
+            command_call.name,
+            command_call.namespace,
+            workspace_index,
+        )
+        if len(imported_builtin_matches) == 1:
+            imported_builtin_match = imported_builtin_matches[0]
+        elif len(imported_builtin_matches) > 1:
+            return (
+                ResolutionResult(
+                    reference=reference,
+                    uncertainty=AnalysisUncertainty(
+                        state='ambiguous',
+                        reason='Multiple imported builtin commands match this command name.',
                     ),
-                    None,
-                    None,
-                )
+                    target_symbol_ids=tuple(
+                        overload.symbol_id
+                        for _, builtin in imported_builtin_matches
+                        for overload in builtin.overloads
+                    ),
+                ),
+                None,
+                None,
+            )
         if imported_builtin_match is not None:
             resolved_import, builtin_from_import = imported_builtin_match
             return (
@@ -604,126 +652,64 @@ class Resolver:
                 ),
                 builtin_from_import,
             )
-        if not matches:
-            implicit_test_builtins = self._resolve_implicit_test_builtins(command_call)
-            if len(implicit_test_builtins) == 1:
-                builtin = implicit_test_builtins[0]
-                return (
-                    ResolutionResult(
-                        reference=reference,
-                        uncertainty=AnalysisUncertainty(
-                            state='resolved',
-                            reason='Resolved via implicit tcltest imports for a test file.',
-                        ),
-                        target_symbol_ids=tuple(
-                            overload.symbol_id for overload in builtin.overloads
-                        ),
-                    ),
-                    HoverInfo(
-                        span=command_call.name_span,
-                        contents=_command_hover(_builtin_hover(builtin)),
-                    ),
-                    builtin,
-                )
-            if len(implicit_test_builtins) > 1:
-                return (
-                    ResolutionResult(
-                        reference=reference,
-                        uncertainty=AnalysisUncertainty(
-                            state='ambiguous',
-                            reason='Multiple implicit tcltest builtin commands match this name.',
-                        ),
-                        target_symbol_ids=tuple(
-                            overload.symbol_id
-                            for builtin in implicit_test_builtins
-                            for overload in builtin.overloads
-                        ),
-                    ),
-                    None,
-                    None,
-                )
 
-            package_name = _matching_required_package(command_call.name, required_packages)
-            if package_name is not None:
-                return (
-                    ResolutionResult(
-                        reference=reference,
-                        uncertainty=AnalysisUncertainty(
-                            state='dynamic',
-                            reason=f'Command may be provided by required package `{package_name}`.',
-                        ),
-                        target_symbol_ids=(),
-                    ),
-                    None,
-                    None,
-                )
+        implicit_test_builtins = self._resolve_implicit_test_builtins(command_call)
+        if len(implicit_test_builtins) == 1:
+            builtin = implicit_test_builtins[0]
             return (
                 ResolutionResult(
                     reference=reference,
                     uncertainty=AnalysisUncertainty(
-                        state='unresolved',
-                        reason='No matching procedure was indexed in the workspace.',
+                        state='resolved',
+                        reason='Resolved via implicit tcltest imports for a test file.',
+                    ),
+                    target_symbol_ids=tuple(overload.symbol_id for overload in builtin.overloads),
+                ),
+                HoverInfo(
+                    span=command_call.name_span,
+                    contents=_command_hover(_builtin_hover(builtin)),
+                ),
+                builtin,
+            )
+        if len(implicit_test_builtins) > 1:
+            return (
+                ResolutionResult(
+                    reference=reference,
+                    uncertainty=AnalysisUncertainty(
+                        state='ambiguous',
+                        reason='Multiple implicit tcltest builtin commands match this name.',
+                    ),
+                    target_symbol_ids=tuple(
+                        overload.symbol_id
+                        for builtin in implicit_test_builtins
+                        for overload in builtin.overloads
+                    ),
+                ),
+                None,
+                None,
+            )
+
+        package_name = _matching_required_package(command_call.name, required_packages)
+        if package_name is not None:
+            return (
+                ResolutionResult(
+                    reference=reference,
+                    uncertainty=AnalysisUncertainty(
+                        state='dynamic',
+                        reason=f'Command may be provided by required package `{package_name}`.',
                     ),
                     target_symbol_ids=(),
                 ),
                 None,
                 None,
             )
-        if len(matches) > 1:
-            return (
-                ResolutionResult(
-                    reference=reference,
-                    uncertainty=AnalysisUncertainty(
-                        state='ambiguous',
-                        reason='Multiple procedures match this command name.',
-                    ),
-                    target_symbol_ids=tuple(match.symbol_id for match in matches),
-                ),
-                None,
-                None,
-            )
-        if len(matches) == 1:
-            proc = matches[0]
-            detail = _command_hover(
-                _proc_hover(proc),
-                import_trace=(
-                    _import_trace(
-                        resolved_import,
-                        hover_trace_parents,
-                    )
-                    if resolved_import is not None
-                    else None
-                ),
-                transitive_trace=_source_transitive_trace(
-                    proc.uri,
-                    workspace_index,
-                    transitive_required_packages,
-                    hover_trace_parents,
-                ),
-            )
-            return (
-                ResolutionResult(
-                    reference=reference,
-                    uncertainty=AnalysisUncertainty(
-                        state='resolved',
-                        reason=(
-                            'Resolved via a static namespace import.'
-                            if resolved_import is not None
-                            else 'Resolved to a unique procedure definition.'
-                        ),
-                    ),
-                    target_symbol_ids=(proc.symbol_id,),
-                ),
-                HoverInfo(span=command_call.name_span, contents=detail),
-                proc,
-            )
 
         return (
             ResolutionResult(
                 reference=reference,
                 uncertainty=AnalysisUncertainty(
-                    state='dynamic',
-                    reason='Command resolution did not fit a supported static case.',
+                    state='unresolved',
+                    reason='No matching procedure or bundled command metadata was found.',
                 ),
                 target_symbol_ids=(),
             ),

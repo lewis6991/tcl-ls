@@ -1,12 +1,35 @@
 from __future__ import annotations
 
-from tcl_lsp.analysis import DocumentFacts, FactExtractor, Resolver, WorkspaceIndex
+from pathlib import Path
+
+from tcl_lsp.analysis import AnalysisResult, DocumentFacts, FactExtractor, Resolver, WorkspaceIndex
 from tcl_lsp.analysis.builtins import builtin_command
-from tcl_lsp.metadata_paths import DEFAULT_METADATA_REGISTRY
+from tcl_lsp.metadata_paths import DEFAULT_METADATA_REGISTRY, create_metadata_registry
 from tcl_lsp.parser import Parser
 
 from .support import analyze_document as _analyze
 from .support import analyze_workspace as _analyze_workspace
+
+
+def _analyze_path(
+    parser: Parser,
+    source_path: Path,
+    *,
+    metadata_paths: tuple[Path, ...] = (),
+) -> tuple[DocumentFacts, AnalysisResult]:
+    metadata_registry = create_metadata_registry(metadata_paths)
+    extractor = FactExtractor(parser, metadata_registry=metadata_registry)
+    resolver = Resolver(metadata_registry=metadata_registry)
+    workspace = WorkspaceIndex()
+
+    parse_result = parser.parse_document(
+        source_path.as_uri(),
+        source_path.read_text(encoding='utf-8'),
+    )
+    facts = extractor.extract(parse_result)
+    workspace.update(facts.uri, facts)
+    analysis = resolver.analyze(facts.uri, facts, workspace)
+    return facts, analysis
 
 
 def test_analysis_resolves_proc_calls_and_parameters(parser: Parser) -> None:
@@ -2235,3 +2258,189 @@ def test_analysis_treats_meta_command_as_builtin() -> None:
     )
     assert 'command or command prefix' in hover.replace('\n', ' ').lower()
     assert analysis.diagnostics == ()
+
+
+def test_analysis_prefers_workspace_procedures_over_builtin_metadata(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///shadow_builtin.tcl',
+        'namespace eval n {\n'
+        '    proc set {value} {\n'
+        '        return $value\n'
+        '    }\n'
+        '    proc run {} {\n'
+        '        set local\n'
+        '    }\n'
+        '}\n',
+    )
+    facts = snapshot.facts
+    analysis = snapshot.analysis
+
+    local_set = next(proc for proc in facts.procedures if proc.qualified_name == '::n::set')
+    set_resolution = next(
+        resolution
+        for resolution in analysis.resolutions
+        if resolution.reference.kind == 'command' and resolution.reference.name == 'set'
+    )
+
+    assert set_resolution.uncertainty.state == 'resolved'
+    assert set_resolution.target_symbol_ids == (local_set.symbol_id,)
+
+
+def test_analysis_prefers_workspace_procedures_over_qualified_builtins(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///shadow_package_builtin.tcl',
+        'namespace eval json {\n'
+        '    proc json2dict {value} {\n'
+        '        return $value\n'
+        '    }\n'
+        '}\n'
+        'json::json2dict payload\n',
+    )
+    facts = snapshot.facts
+    analysis = snapshot.analysis
+
+    local_proc = next(
+        proc for proc in facts.procedures if proc.qualified_name == '::json::json2dict'
+    )
+    resolution = next(
+        candidate
+        for candidate in analysis.resolutions
+        if candidate.reference.kind == 'command' and candidate.reference.name == 'json::json2dict'
+    )
+
+    assert resolution.uncertainty.state == 'resolved'
+    assert resolution.target_symbol_ids == (local_proc.symbol_id,)
+
+
+def test_analysis_project_metadata_can_clear_bundled_builtin_annotations(
+    parser: Parser,
+    tmp_path: Path,
+) -> None:
+    override_path = tmp_path / 'override.meta.tcl'
+    override_path.write_text(
+        'meta module Tcl\nmeta command regexp {args}\n',
+        encoding='utf-8',
+    )
+    source_path = tmp_path / 'main.tcl'
+    source_path.write_text(
+        'proc run {} {\n    regexp {a} text match\n    puts $match\n}\n',
+        encoding='utf-8',
+    )
+
+    _, analysis = _analyze_path(parser, source_path, metadata_paths=(tmp_path,))
+
+    unresolved_messages = {
+        diagnostic.message
+        for diagnostic in analysis.diagnostics
+        if diagnostic.code == 'unresolved-variable'
+    }
+    assert 'Unresolved variable `match`.' in unresolved_messages
+
+
+def test_analysis_project_metadata_can_replace_bundled_builtin_annotations(
+    parser: Parser,
+    tmp_path: Path,
+) -> None:
+    override_path = tmp_path / 'override.meta.tcl'
+    override_path.write_text(
+        'meta module Tcl\nmeta command regexp {args} {\n    bind 1 set\n}\n',
+        encoding='utf-8',
+    )
+    source_path = tmp_path / 'main.tcl'
+    source_path.write_text(
+        'proc run {} {\n    regexp destination text\n    puts $destination\n}\n',
+        encoding='utf-8',
+    )
+
+    _, analysis = _analyze_path(parser, source_path, metadata_paths=(tmp_path,))
+
+    unresolved_messages = {
+        diagnostic.message
+        for diagnostic in analysis.diagnostics
+        if diagnostic.code == 'unresolved-variable'
+    }
+    assert 'Unresolved variable `destination`.' not in unresolved_messages
+
+
+def test_analysis_applies_sibling_metadata_to_tm_sources(
+    parser: Parser,
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / 'helper.tm'
+    source_path.write_text(
+        'proc copy_into {value name} {}\n'
+        'proc run {} {\n'
+        '    copy_into hello out\n'
+        '    puts $out\n'
+        '}\n',
+        encoding='utf-8',
+    )
+    metadata_path = tmp_path / 'helper.meta.tcl'
+    metadata_path.write_text(
+        'meta command copy_into {value name} {\n    bind 2 set\n}\n',
+        encoding='utf-8',
+    )
+
+    _, analysis = _analyze_path(parser, source_path, metadata_paths=(tmp_path,))
+
+    unresolved_messages = {
+        diagnostic.message
+        for diagnostic in analysis.diagnostics
+        if diagnostic.code == 'unresolved-variable'
+    }
+    assert 'Unresolved variable `out`.' not in unresolved_messages
+
+
+def test_analysis_does_not_guess_sibling_metadata_when_tcl_and_tm_both_exist(
+    parser: Parser,
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / 'helper.tcl'
+    source_path.write_text(
+        'proc copy_into {value name} {}\n'
+        'proc run {} {\n'
+        '    copy_into hello out\n'
+        '    puts $out\n'
+        '}\n',
+        encoding='utf-8',
+    )
+    (tmp_path / 'helper.tm').write_text('proc unrelated {} {}\n', encoding='utf-8')
+    metadata_path = tmp_path / 'helper.meta.tcl'
+    metadata_path.write_text(
+        'meta command copy_into {value name} {\n    bind 2 set\n}\n',
+        encoding='utf-8',
+    )
+
+    _, analysis = _analyze_path(parser, source_path, metadata_paths=(tmp_path,))
+
+    unresolved_messages = {
+        diagnostic.message
+        for diagnostic in analysis.diagnostics
+        if diagnostic.code == 'unresolved-variable'
+    }
+    assert 'Unresolved variable `out`.' in unresolved_messages
+
+
+def test_analysis_keeps_option_aware_bindings_conservative_when_prefix_is_dynamic(
+    parser: Parser,
+) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///dynamic_regexp.tcl',
+        'proc run {flag pattern} {\n'
+        '    regexp $flag $pattern text result\n'
+        '    puts $text\n'
+        '    puts $result\n'
+        '}\n',
+    )
+    analysis = snapshot.analysis
+
+    unresolved_messages = {
+        diagnostic.message
+        for diagnostic in analysis.diagnostics
+        if diagnostic.code == 'unresolved-variable'
+    }
+    assert 'Unresolved variable `text`.' in unresolved_messages
+    assert 'Unresolved variable `result`.' in unresolved_messages

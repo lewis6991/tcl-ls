@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from tcl_lsp.analysis.builtins import builtin_command, builtin_commands_by_package
+from tcl_lsp.analysis.builtins import (
+    annotated_metadata_commands_for_packages,
+    builtin_command,
+    builtin_commands_by_package,
+)
 from tcl_lsp.analysis.metadata_commands import (
     MetadataBind,
     MetadataContext,
@@ -38,7 +42,7 @@ def test_core_metadata_supports_option_aware_selectors() -> None:
     assert selected == (5, 6, 7)
 
 
-def test_core_metadata_option_selectors_allow_dynamic_positionals() -> None:
+def test_core_metadata_option_selectors_reject_dynamic_option_prefixes() -> None:
     metadata_path = bundled_metadata_dir() / Path('tcl8.6/tcl.meta.tcl')
     regexp_command = next(
         command for command in load_metadata_commands(metadata_path) if command.name == 'regexp'
@@ -55,7 +59,7 @@ def test_core_metadata_option_selectors_allow_dynamic_positionals() -> None:
         regexp_command.options,
     )
 
-    assert selected == (4,)
+    assert selected is None
 
 
 def test_core_metadata_option_selectors_skip_unstable_expansion_tails() -> None:
@@ -228,6 +232,42 @@ def test_project_metadata_overrides_matching_bundled_builtin_commands(tmp_path: 
     assert overload.location.uri == override_path.as_uri()
 
 
+def test_project_metadata_override_replaces_bundled_subcommand_tree(tmp_path: Path) -> None:
+    override_path = tmp_path / 'override.meta.tcl'
+    override_path.write_text(
+        'meta module Tcl\nmeta command namespace {args}\n',
+        encoding='utf-8',
+    )
+    metadata_registry = create_metadata_registry((tmp_path,))
+    namespace_command = builtin_command('namespace', metadata_registry=metadata_registry)
+    namespace_eval = builtin_command('namespace eval', metadata_registry=metadata_registry)
+
+    assert namespace_command is not None
+    assert namespace_command.metadata_path_name == 'override.meta.tcl'
+    assert namespace_eval is None
+
+
+def test_project_metadata_same_root_rejects_conflicting_annotations(tmp_path: Path) -> None:
+    (tmp_path / 'a.meta.tcl').write_text(
+        'meta module Tcl\nmeta command regexp {args} {\n    bind 1 set\n}\n',
+        encoding='utf-8',
+    )
+    (tmp_path / 'b.meta.tcl').write_text(
+        'meta module Tcl\nmeta command regexp {args} {\n    bind 2 set\n}\n',
+        encoding='utf-8',
+    )
+    metadata_registry = create_metadata_registry((tmp_path,))
+
+    with pytest.raises(
+        RuntimeError,
+        match='Conflicting metadata annotations',
+    ):
+        annotated_metadata_commands_for_packages(
+            frozenset(),
+            metadata_registry=metadata_registry,
+        )
+
+
 def test_tcloo_metadata_parses_embedded_context_annotations() -> None:
     metadata_path = bundled_metadata_dir() / Path('tcl8.6/tcloo.meta.tcl')
     commands = load_metadata_commands(metadata_path)
@@ -316,5 +356,30 @@ def test_metadata_rejects_spaced_context_command_names(tmp_path: Path) -> None:
     with pytest.raises(
         RuntimeError,
         match='Metadata command entries must use single command names',
+    ):
+        load_metadata_commands(metadata_path)
+
+
+def test_metadata_rejects_incomplete_top_level_meta_entries(tmp_path: Path) -> None:
+    metadata_path = tmp_path / 'bad.meta.tcl'
+    metadata_path.write_text('meta\n', encoding='utf-8')
+
+    with pytest.raises(
+        RuntimeError,
+        match='Metadata top-level entries must be',
+    ):
+        load_metadata_commands(metadata_path)
+
+
+def test_metadata_rejects_bind_without_inferable_kind(tmp_path: Path) -> None:
+    metadata_path = tmp_path / 'bad_bind.meta.tcl'
+    metadata_path.write_text(
+        'meta command demo {name} {\n    bind 1\n}\n',
+        encoding='utf-8',
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match='requires an explicit binding kind',
     ):
         load_metadata_commands(metadata_path)

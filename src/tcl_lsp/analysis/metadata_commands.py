@@ -140,9 +140,20 @@ def load_metadata_commands(metadata_path: Path) -> tuple[MetadataCommand, ...]:
 
     commands: list[MetadataCommand] = []
     for command in parse_result.script.commands:
+        if not command.words:
+            continue
         if word_static_text(command.words[0]) != 'meta':
             continue
+        if len(command.words) < 2:
+            raise RuntimeError(
+                'Metadata top-level entries must be `meta module name`, '
+                '`meta command name {args}`, or `meta context name { ... }`.'
+            )
         entry_kind = word_static_text(command.words[1])
+        if entry_kind == 'module':
+            if len(command.words) != 3 or word_static_text(command.words[2]) is None:
+                raise RuntimeError('Metadata module entries must be `meta module name`.')
+            continue
         if entry_kind == 'command':
             commands.extend(
                 _parse_metadata_command_entry(
@@ -160,6 +171,11 @@ def load_metadata_commands(metadata_path: Path) -> tuple[MetadataCommand, ...]:
                     metadata_uri=metadata_uri,
                 )
             )
+            continue
+        raise RuntimeError(
+            'Metadata top-level entries must be `meta module name`, '
+            '`meta command name {args}`, or `meta context name { ... }`.'
+        )
 
     if not commands:
         return ()
@@ -298,7 +314,9 @@ def select_argument_indices(
     expanded_flags = _normalized_argument_expansion_flags(arg_texts, arg_expanded)
     if selector.after_options:
         scan_result = scan_command_options(arg_texts, options, expanded_flags)
-        if scan_result.state not in {'ok', 'dynamic', 'unstable'}:
+        if scan_result.state == 'dynamic':
+            return None
+        if scan_result.state not in {'ok', 'unstable'}:
             return None
         return _select_resolved_argument_indices(
             selector,
@@ -579,6 +597,8 @@ def _parse_bind_annotation(command: Command, command_name: str) -> MetadataBind:
                 f'Bind annotations for `{command_name}` must be `bind selector ?kind?`.'
             )
         kind = _parse_binding_kind(words[-1], command_name)
+    elif _implicit_binding_kind(command_name) is None:
+        raise RuntimeError(f'Metadata command `{command_name}` requires an explicit binding kind.')
     return MetadataBind(selector=selector, kind=kind)
 
 
@@ -1049,6 +1069,13 @@ def _parse_binding_kind(text: str, command_name: str) -> BindingKind:
     if text not in BINDING_KINDS:
         raise RuntimeError(f'Unknown metadata binding kind `{text}` for `{command_name}`.')
     return text
+
+
+def _implicit_binding_kind(command_name: str) -> BindingKind | None:
+    inferred_kind = command_name.rsplit(' ', maxsplit=1)[-1].rsplit('::', maxsplit=1)[-1]
+    if inferred_kind not in BINDING_KINDS:
+        return None
+    return inferred_kind
 
 
 def _parse_optional_procedure_index(

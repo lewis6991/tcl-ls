@@ -55,6 +55,32 @@ Minimal example:
        }
    }
 
+Override Precedence
+-------------------
+
+Metadata loading follows root precedence as well as per-file syntax. When more
+than one metadata root is active, later roots override earlier ones.
+
+Rules:
+
+* later roots override earlier command trees by exact command name or prefix
+* overriding ``namespace`` replaces earlier ``namespace`` and
+  ``namespace ...`` metadata
+* overriding ``namespace eval`` replaces earlier ``namespace eval`` and
+  ``namespace eval ...`` metadata, but does not replace unrelated
+  ``namespace export`` metadata
+* within a single metadata root, conflicting declarations for the same command
+  tree are treated as errors instead of order-dependent overrides
+* a declaration with no annotations still counts as an override and clears
+  earlier annotations for that command tree
+* sibling ``foo.meta.tcl`` files are auto-associated with ``foo.tcl`` or
+  ``foo.tm`` only when that match is unambiguous
+
+This keeps override behavior deterministic. Project metadata can replace
+bundled metadata cleanly, but ``tcl-ls`` does not try to guess between
+multiple same-stem source siblings or merge conflicting declarations from one
+root.
+
 ``meta module``
 ---------------
 
