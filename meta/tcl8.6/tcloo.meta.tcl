@@ -60,7 +60,7 @@ meta language tcloo-definition {
 }
 
 meta language tcloo-method {
-    fallback tcl
+    extends tcl
 
     command my {methodName args} {
         command variable {name args} {

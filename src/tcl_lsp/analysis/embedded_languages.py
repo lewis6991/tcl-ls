@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
+from itertools import pairwise
+from typing import Any
 
 from tcl_lsp.analysis.arity import metadata_signature_arity
 from tcl_lsp.analysis.facts.utils import namespace_for_name, normalize_command_name, qualify_name
@@ -9,7 +12,8 @@ from tcl_lsp.analysis.metadata_commands import (
     MetadataCommand,
     MetadataContext,
     MetadataProcedure,
-    all_metadata_commands,
+    all_metadata_language_extends,
+    load_metadata_commands,
     scan_command_options,
     select_argument_indices,
 )
@@ -29,6 +33,7 @@ class EmbeddedLanguageEntry:
     namespace: str
     script_word_index: int | None
     inline_command_start_index: int | None
+    inline_command_end_index: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,71 +56,135 @@ class _EmbeddedLanguage:
     root_commands: frozenset[str]
     procedure_roots: frozenset[str]
     binding_roots: frozenset[str]
-    fallback_to_tcl: bool
+    extends_tcl: bool
 
 
 @metadata_lru_cache(maxsize=1)
 def _embedded_languages(
     metadata_registry: MetadataRegistry,
 ) -> dict[EmbeddedLanguageName, _EmbeddedLanguage]:
-    commands_by_language: dict[str, dict[str, list[MetadataCommand]]] = {}
-    root_commands_by_language: dict[str, set[str]] = {}
-    procedure_roots_by_language: dict[str, set[str]] = {}
-    binding_roots_by_language: dict[str, set[str]] = {}
-    fallback_to_tcl_by_language: dict[str, bool] = {}
+    commands_by_language = _embedded_language_command_index(metadata_registry)
+    extends_tcl_by_language = all_metadata_language_extends(metadata_registry).copy()
 
-    for metadata_command in all_metadata_commands(metadata_registry=metadata_registry):
-        if metadata_command.context_name is None:
-            continue
+    # Keep declared languages even when they contribute no commands so closed
+    # DSLs do not silently reopen as plain Tcl.
+    for language_name in extends_tcl_by_language:
+        commands_by_language.setdefault(language_name, {})
 
-        language_name = metadata_command.context_name
-        commands_for_language = commands_by_language.setdefault(language_name, {})
-        commands_for_language.setdefault(metadata_command.name, []).append(metadata_command)
-        if metadata_command.context_fallback == 'tcl':
-            fallback_to_tcl_by_language[language_name] = True
+    embedded_languages: dict[str, _EmbeddedLanguage] = {}
+    for language_name, commands_for_language in commands_by_language.items():
+        root_commands: set[str] = set()
+        procedure_roots: set[str] = set()
+        binding_roots: set[str] = set()
+        for command_name, overloads in commands_for_language.items():
+            root_name = _root_command_name(command_name)
+            root_commands.add(root_name)
+            if any(
+                isinstance(annotation, MetadataProcedure)
+                for overload in overloads
+                for annotation in overload.annotations
+            ):
+                procedure_roots.add(root_name)
+            if any(
+                isinstance(annotation, MetadataBind)
+                for overload in overloads
+                for annotation in overload.annotations
+            ):
+                binding_roots.add(root_name)
 
-        root_name = _root_command_name(metadata_command.name)
-        root_commands_by_language.setdefault(language_name, set()).add(root_name)
-        if any(
-            isinstance(annotation, MetadataProcedure) for annotation in metadata_command.annotations
-        ):
-            procedure_roots_by_language.setdefault(language_name, set()).add(root_name)
-        if any(isinstance(annotation, MetadataBind) for annotation in metadata_command.annotations):
-            binding_roots_by_language.setdefault(language_name, set()).add(root_name)
-
-    return {
-        language_name: _EmbeddedLanguage(
+        embedded_languages[language_name] = _EmbeddedLanguage(
             name=language_name,
-            commands_by_name={
-                command_name: tuple(commands)
-                for command_name, commands in commands_for_language.items()
-            },
-            root_commands=frozenset(root_commands_by_language.get(language_name, ())),
-            procedure_roots=frozenset(procedure_roots_by_language.get(language_name, ())),
-            binding_roots=frozenset(binding_roots_by_language.get(language_name, ())),
-            fallback_to_tcl=fallback_to_tcl_by_language.get(language_name, False),
+            commands_by_name=commands_for_language,
+            root_commands=frozenset(root_commands),
+            procedure_roots=frozenset(procedure_roots),
+            binding_roots=frozenset(binding_roots),
+            extends_tcl=extends_tcl_by_language.get(language_name, False),
         )
-        for language_name, commands_for_language in commands_by_language.items()
-    }
-
-
-@metadata_lru_cache(maxsize=1)
-def _context_entry_commands(metadata_registry: MetadataRegistry) -> tuple[MetadataCommand, ...]:
-    return tuple(
-        metadata_command
-        for metadata_command in all_metadata_commands(metadata_registry=metadata_registry)
-        if metadata_command.context_name is None
-        and any(
-            isinstance(annotation, MetadataContext) for annotation in metadata_command.annotations
-        )
-    )
+    return embedded_languages
 
 
 @metadata_lru_cache(maxsize=1)
 def _context_entry_command_index(
     metadata_registry: MetadataRegistry,
 ) -> dict[str, tuple[MetadataCommand, ...]]:
-    return _command_index(_context_entry_commands(metadata_registry))
+    commands_by_name: dict[str, tuple[MetadataCommand, ...]] = {}
+    for layer_commands in _metadata_commands_by_layer(metadata_registry):
+        layer_commands_by_name: dict[str, list[MetadataCommand]] = {}
+        for metadata_command in layer_commands:
+            if metadata_command.context_name is not None:
+                continue
+            layer_commands_by_name.setdefault(metadata_command.name, []).append(metadata_command)
+
+        _discard_overridden_command_trees(commands_by_name, layer_commands_by_name)
+        commands_by_name.update(
+            {
+                command_name: tuple(overloads)
+                for command_name, overloads in layer_commands_by_name.items()
+            }
+        )
+
+    return {
+        command_name: overloads
+        for command_name, overloads in commands_by_name.items()
+        if any(
+            isinstance(annotation, MetadataContext)
+            for overload in overloads
+            for annotation in overload.annotations
+        )
+    }
+
+
+@metadata_lru_cache(maxsize=1)
+def _embedded_language_command_index(
+    metadata_registry: MetadataRegistry,
+) -> dict[str, dict[str, tuple[MetadataCommand, ...]]]:
+    commands_by_language: dict[str, dict[str, tuple[MetadataCommand, ...]]] = {}
+    for layer_commands in _metadata_commands_by_layer(metadata_registry):
+        layer_commands_by_language: dict[str, dict[str, list[MetadataCommand]]] = {}
+        for metadata_command in layer_commands:
+            if metadata_command.context_name is None:
+                continue
+            layer_commands_by_language.setdefault(metadata_command.context_name, {}).setdefault(
+                metadata_command.name, []
+            ).append(metadata_command)
+
+        for language_name, layer_commands_by_name in layer_commands_by_language.items():
+            commands_for_language = commands_by_language.setdefault(language_name, {})
+            _discard_overridden_command_trees(commands_for_language, layer_commands_by_name)
+            commands_for_language.update(
+                {
+                    command_name: tuple(overloads)
+                    for command_name, overloads in layer_commands_by_name.items()
+                }
+            )
+    return commands_by_language
+
+
+@metadata_lru_cache(maxsize=1)
+def _metadata_commands_by_layer(
+    metadata_registry: MetadataRegistry,
+) -> tuple[tuple[MetadataCommand, ...], ...]:
+    layer_commands: list[tuple[MetadataCommand, ...]] = []
+    for _, layer_paths in metadata_registry.metadata_file_layers():
+        commands: list[MetadataCommand] = []
+        for metadata_path in layer_paths:
+            commands.extend(load_metadata_commands(metadata_path))
+        if commands:
+            layer_commands.append(tuple(commands))
+    return tuple(layer_commands)
+
+
+def _discard_overridden_command_trees(
+    commands: dict[str, Any],
+    override_commands: dict[str, Any],
+) -> None:
+    override_names = tuple(override_commands)
+    for existing_name in tuple(commands):
+        if any(
+            existing_name == override_name or existing_name.startswith(f'{override_name} ')
+            for override_name in override_names
+        ):
+            commands.pop(existing_name, None)
 
 
 def match_embedded_language_command(
@@ -151,10 +220,13 @@ def contextual_language_allows_tcl_fallback(
     *,
     metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
 ) -> bool:
+    if language_name is None or language_name == 'tcl':
+        return True
+
     language = _embedded_languages(metadata_registry).get(language_name or '')
     if language is None:
-        return True
-    return language.fallback_to_tcl
+        return False
+    return language.extends_tcl
 
 
 def resolves_contextual_command(
@@ -173,18 +245,18 @@ def resolves_contextual_command(
     )
 
 
-def match_embedded_language_entry(
+def match_embedded_language_entries(
     command: Command,
     *,
     current_namespace: str,
     metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
-) -> EmbeddedLanguageEntry | None:
+) -> tuple[EmbeddedLanguageEntry, ...] | None:
     matched = _match_metadata_command(
         command,
         _context_entry_command_index(metadata_registry),
     )
     if matched is None:
-        return None
+        return ()
 
     entries: dict[EmbeddedLanguageEntry, None] = {}
     for annotation in matched.metadata_command.annotations:
@@ -201,9 +273,31 @@ def match_embedded_language_entry(
             continue
         entries.setdefault(entry, None)
 
-    if len(entries) != 1:
-        return None
-    return next(iter(entries))
+    return resolve_embedded_language_entries(entries)
+
+
+def resolve_embedded_language_entries(
+    entries: Iterable[EmbeddedLanguageEntry],
+) -> tuple[EmbeddedLanguageEntry, ...] | None:
+    ordered_entries = tuple(
+        sorted(
+            dict.fromkeys(entries),
+            key=lambda entry: (
+                _entry_start_index(entry),
+                _entry_end_index(entry),
+                entry.language,
+                entry.namespace,
+                entry.owner_name or '',
+            ),
+        )
+    )
+
+    # Overlapping selections are ambiguous even when they mention the same
+    # language, because one word range cannot belong to two embedded parses.
+    for left, right in pairwise(ordered_entries):
+        if _entries_overlap(left, right):
+            return None
+    return ordered_entries
 
 
 def contextual_resolution_reason(
@@ -222,15 +316,6 @@ def contextual_resolution_reason(
     if normalized_name in language.binding_roots:
         return 'Resolved as a contextual command with local variable effects.'
     return 'Resolved as a contextual command in an embedded language context.'
-
-
-def _command_index(
-    metadata_commands: tuple[MetadataCommand, ...],
-) -> dict[str, tuple[MetadataCommand, ...]]:
-    commands_by_name: dict[str, list[MetadataCommand]] = {}
-    for metadata_command in metadata_commands:
-        commands_by_name.setdefault(metadata_command.name, []).append(metadata_command)
-    return {command_name: tuple(commands) for command_name, commands in commands_by_name.items()}
 
 
 def _match_metadata_command(
@@ -314,6 +399,7 @@ def embedded_language_entry_for_annotation(
             namespace=owner_namespace,
             script_word_index=prefix_word_count + body_indices[0],
             inline_command_start_index=None,
+            inline_command_end_index=None,
         )
 
     return EmbeddedLanguageEntry(
@@ -322,7 +408,28 @@ def embedded_language_entry_for_annotation(
         namespace=owner_namespace,
         script_word_index=None,
         inline_command_start_index=prefix_word_count + body_indices[0],
+        inline_command_end_index=prefix_word_count + body_indices[-1],
     )
+
+
+def _entry_start_index(entry: EmbeddedLanguageEntry) -> int:
+    if entry.script_word_index is not None:
+        return entry.script_word_index
+    assert entry.inline_command_start_index is not None
+    return entry.inline_command_start_index
+
+
+def _entry_end_index(entry: EmbeddedLanguageEntry) -> int:
+    if entry.script_word_index is not None:
+        return entry.script_word_index
+    assert entry.inline_command_end_index is not None
+    return entry.inline_command_end_index
+
+
+def _entries_overlap(left: EmbeddedLanguageEntry, right: EmbeddedLanguageEntry) -> bool:
+    return _entry_start_index(left) <= _entry_end_index(right) and _entry_start_index(
+        right
+    ) <= _entry_end_index(left)
 
 
 def _matching_metadata_command(

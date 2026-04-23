@@ -29,7 +29,7 @@ from tcl_lsp.analysis.index import WorkspaceIndex
 from tcl_lsp.analysis.metadata_commands import (
     MetadataBind,
     MetadataCommand,
-    all_metadata_commands,
+    file_scoped_annotated_metadata_commands,
     select_argument_indices,
 )
 from tcl_lsp.analysis.metadata_effects import metadata_dependency_overlay
@@ -54,7 +54,6 @@ from tcl_lsp.common import HoverInfo, Span, lsp_location
 from tcl_lsp.metadata_paths import (
     DEFAULT_METADATA_REGISTRY,
     MetadataRegistry,
-    metadata_lookup_names,
 )
 from tcl_lsp.project.paths import source_id_to_path
 
@@ -903,28 +902,13 @@ def _metadata_var_binding(
 def _annotated_metadata_commands(
     metadata_registry: MetadataRegistry,
 ) -> dict[tuple[str, str], MetadataCommand]:
-    commands_by_key: dict[tuple[str, str], MetadataCommand] = {}
-    for metadata_command in all_metadata_commands(metadata_registry=metadata_registry):
-        if metadata_command.context_name is not None:
-            continue
-        if not any(
-            isinstance(annotation, MetadataBind) for annotation in metadata_command.annotations
-        ):
-            continue
-
-        for path_name in metadata_lookup_names(metadata_command.metadata_path):
-            key = (path_name, metadata_command.name)
-            existing = commands_by_key.get(key)
-            if existing is not None and (
-                existing.options != metadata_command.options
-                or existing.annotations != metadata_command.annotations
-            ):
-                raise RuntimeError(
-                    f'Conflicting metadata binding annotations for `{metadata_command.name}` in '
-                    f'`{metadata_command.metadata_path.name}`.'
-                )
-            commands_by_key[key] = metadata_command
-    return commands_by_key
+    return {
+        key: metadata_command
+        for key, metadata_command in file_scoped_annotated_metadata_commands(
+            metadata_registry=metadata_registry
+        ).items()
+        if any(isinstance(annotation, MetadataBind) for annotation in metadata_command.annotations)
+    }
 
 
 def _metadata_command_for_target(

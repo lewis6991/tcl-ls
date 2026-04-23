@@ -295,7 +295,9 @@ def _load_metadata_file(
         )
 
     if not commands:
-        raise RuntimeError('No builtin command metadata entries were loaded.')
+        # A metadata file may exist only to contribute embedded-language
+        # declarations that are referenced by commands in other files.
+        return {}
 
     return {
         name: BuiltinCommand(
@@ -331,8 +333,6 @@ def _load_metadata_package(
         _discard_overridden_commands(package_commands, layer_commands)
         package_commands.update(layer_commands)
 
-    if not package_commands:
-        raise RuntimeError(f'No builtin command metadata entries were loaded for `{package_name}`.')
     return package_commands
 
 

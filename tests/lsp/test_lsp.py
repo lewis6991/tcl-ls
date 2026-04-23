@@ -2485,6 +2485,10 @@ def test_language_server_hover_formats_meta_builtin_command(server: LanguageServ
     assert hover_value.startswith('```tcl\nmeta {subcommand args}\n```\n\n')
     assert 'Top-level declarations:' in hover_value
     assert 'meta language languageName {' in hover_value
+    assert '`extends tcl` is an optional ordinary clause inside a `meta language` body.' in (
+        hover_value
+    )
+    assert 'plugin script procName' in hover_value
     assert 'structured documentation instead of executable behavior' in hover_value.replace(
         '\n', ' '
     )

@@ -199,7 +199,7 @@ def _match_slot_token(
     if actual is None or arg_expanded[arg_index]:
         return 'dynamic'
 
-    if slot_name == 'name':
+    if slot_name in {'name', 'procName'}:
         return 'exact' if ' ' not in actual else 'reject'
     if slot_name == 'shape':
         return 'exact'

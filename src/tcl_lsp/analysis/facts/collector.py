@@ -19,7 +19,8 @@ from tcl_lsp.analysis.embedded_languages import (
     contextual_command_target,
     embedded_language_entry_for_annotation,
     match_embedded_language_command,
-    match_embedded_language_entry,
+    match_embedded_language_entries,
+    resolve_embedded_language_entries,
 )
 from tcl_lsp.analysis.facts.lowering import (
     LoweredCatchCommand,
@@ -110,6 +111,14 @@ from tcl_lsp.parser.model import (
 )
 from tcl_lsp.plugins.host import PluginProcedureEffect, TclPluginHost
 from tcl_lsp.project.paths import source_id_to_path
+
+_CONFLICTING_EMBEDDED_LANGUAGE_CODE = 'conflicting-embedded-language'
+_CONFLICTING_EMBEDDED_LANGUAGE_MESSAGE = 'Overlapping enter body selections are ambiguous.'
+_UNSUPPORTED_SPECIAL_ENTER_CODE = 'unsupported-special-enter'
+_UNSUPPORTED_SPECIAL_ENTER_MESSAGE = (
+    'Structured Tcl commands only support single-word `enter body` selectors '
+    'for script-body arguments.'
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -287,14 +296,36 @@ class _FactCollector:
         self, command: LoweredCommand, context: _ExtractionContext
     ) -> _ExtractionContext:
         syntax_command = command.command
-        command_name = self._collect_command_common(command, context)
-        if type(command) is not LoweredGenericCommand and self._collect_special_lowered_command(
-            command, context
+        command_name, metadata_context_entries = self._collect_command_common(command, context)
+        if type(command) is not LoweredGenericCommand:
+            special_entries = self._resolved_command_embedded_entries(
+                syntax_command,
+                context,
+                additional_entries=metadata_context_entries,
+            )
+            if special_entries is None:
+                self._report_conflicting_embedded_language(syntax_command.span)
+                return context
+            if not self._special_embedded_entries_supported(command, special_entries):
+                self._report_unsupported_special_enter(syntax_command.span)
+                return context
+            if self._collect_special_lowered_command(
+                command,
+                context,
+                embedded_entries=special_entries,
+            ):
+                return context
+        if self._collect_embedded_language_command(
+            syntax_command,
+            context,
+            additional_entries=metadata_context_entries,
         ):
             return context
-        if self._collect_embedded_language_command(syntax_command, context):
-            return context
-        if self._collect_embedded_language_entry(syntax_command, context):
+        if self._collect_embedded_language_entry(
+            syntax_command,
+            context,
+            additional_entries=metadata_context_entries,
+        ):
             return context
 
         normalized_command_name = (
@@ -315,26 +346,190 @@ class _FactCollector:
         self,
         command: LoweredCommand,
         context: _ExtractionContext,
+        *,
+        embedded_entries: tuple[EmbeddedLanguageEntry, ...] = (),
     ) -> bool:
+        entry_by_script_word_index = {
+            entry.script_word_index: entry
+            for entry in embedded_entries
+            if entry.script_word_index is not None
+        }
         if isinstance(command, LoweredProcCommand):
-            self._collect_lowered_proc(command, context)
+            self._collect_lowered_proc(
+                command,
+                context,
+                entry_by_script_word_index=entry_by_script_word_index,
+            )
         elif isinstance(command, LoweredNamespaceEvalCommand):
-            self._collect_lowered_namespace_eval(command, context)
+            self._collect_lowered_namespace_eval(
+                command,
+                context,
+                entry_by_script_word_index=entry_by_script_word_index,
+            )
         elif isinstance(command, LoweredForCommand):
-            self._collect_lowered_for(command, context)
+            self._collect_lowered_for(
+                command,
+                context,
+                entry_by_script_word_index=entry_by_script_word_index,
+            )
         elif isinstance(command, LoweredIfCommand):
-            self._collect_lowered_if(command, context)
+            self._collect_lowered_if(
+                command,
+                context,
+                entry_by_script_word_index=entry_by_script_word_index,
+            )
         elif isinstance(command, LoweredCatchCommand):
-            self._collect_lowered_catch(command, context)
+            self._collect_lowered_catch(
+                command,
+                context,
+                entry_by_script_word_index=entry_by_script_word_index,
+            )
         elif isinstance(command, LoweredTryCommand):
-            self._collect_lowered_try(command, context)
+            self._collect_lowered_try(
+                command,
+                context,
+                entry_by_script_word_index=entry_by_script_word_index,
+            )
         elif isinstance(command, LoweredSwitchCommand):
-            self._collect_lowered_switch(command, context)
+            self._collect_lowered_switch(
+                command,
+                context,
+                entry_by_script_word_index=entry_by_script_word_index,
+            )
         elif isinstance(command, LoweredWhileCommand):
-            self._collect_lowered_while(command, context)
+            self._collect_lowered_while(
+                command,
+                context,
+                entry_by_script_word_index=entry_by_script_word_index,
+            )
         else:
             return False
         return True
+
+    def _special_embedded_entries_supported(
+        self,
+        command: LoweredCommand,
+        entries: tuple[EmbeddedLanguageEntry, ...],
+    ) -> bool:
+        valid_word_indices = self._special_body_word_indices(command)
+        # Structured commands already lower their script-body words directly,
+        # so `enter` can only retarget those exact single-word slots.
+        return all(
+            entry.script_word_index in valid_word_indices
+            and entry.inline_command_start_index is None
+            and entry.inline_command_end_index is None
+            for entry in entries
+        )
+
+    def _special_body_word_indices(self, command: LoweredCommand) -> frozenset[int]:
+        # Validity here is about selector shape, not whether this call site
+        # lowered into a static script body. Dynamic bodies are a no-op, not a
+        # metadata error.
+        if isinstance(command, (LoweredProcCommand, LoweredNamespaceEvalCommand)):
+            return frozenset({3})
+        if isinstance(command, LoweredForCommand):
+            return frozenset({1, 3, 4})
+        if isinstance(command, LoweredIfCommand):
+            return self._if_body_word_indices(command.command.words)
+        if isinstance(command, LoweredCatchCommand):
+            return frozenset({1})
+        if isinstance(command, LoweredTryCommand):
+            return self._try_body_word_indices(command.command.words)
+        if isinstance(command, LoweredSwitchCommand):
+            return self._switch_body_word_indices(command.command.words)
+        if isinstance(command, LoweredWhileCommand):
+            return frozenset({2})
+        return frozenset()
+
+    def _if_body_word_indices(self, words: tuple[Word, ...]) -> frozenset[int]:
+        body_indices: set[int] = set()
+        index = 1
+        saw_clause = False
+        while index < len(words):
+            if saw_clause:
+                keyword = word_static_text(words[index])
+                if keyword == 'elseif':
+                    index += 1
+                elif keyword == 'else':
+                    if index + 1 < len(words):
+                        body_indices.add(index + 1)
+                    break
+                else:
+                    break
+
+            body_index = self._if_body_word_index(words, index + 1)
+            if body_index is None:
+                break
+            body_indices.add(body_index)
+            index = body_index + 1
+            saw_clause = True
+        return frozenset(body_indices)
+
+    def _if_body_word_index(self, words: tuple[Word, ...], index: int) -> int | None:
+        if index < len(words) and word_static_text(words[index]) == 'then':
+            index += 1
+        if index >= len(words):
+            return None
+        return index
+
+    def _try_body_word_indices(self, words: tuple[Word, ...]) -> frozenset[int]:
+        body_indices: set[int] = {1}
+        index = 2
+        while index < len(words):
+            clause_word = words[index]
+            if clause_word.expanded:
+                break
+
+            clause_name = word_static_text(clause_word)
+            if clause_name == 'finally':
+                if index + 1 < len(words):
+                    body_indices.add(index + 1)
+                break
+
+            if clause_name not in {'on', 'trap'} or index + 3 >= len(words):
+                break
+            if any(words[offset].expanded for offset in range(index, index + 4)):
+                break
+
+            body_indices.add(index + 3)
+            index += 4
+        return frozenset(body_indices)
+
+    def _switch_body_word_indices(self, words: tuple[Word, ...]) -> frozenset[int]:
+        value_index = self._switch_value_word_index(words)
+        if value_index is None or value_index + 2 >= len(words):
+            return frozenset()
+
+        branch_start_index = value_index + 1
+        branch_word_count = len(words) - branch_start_index
+        if branch_word_count == 1:
+            return frozenset()
+
+        return frozenset(
+            branch_start_index + index + 1 for index in range(0, branch_word_count - 1, 2)
+        )
+
+    def _switch_value_word_index(self, words: tuple[Word, ...]) -> int | None:
+        index = 1
+        while index < len(words):
+            option = word_static_text(words[index])
+            if option is None:
+                break
+            if option == '--':
+                index += 1
+                break
+            if option in {'-exact', '-glob', '-nocase', '-regexp'}:
+                index += 1
+                continue
+            if option in {'-matchvar', '-indexvar'}:
+                index += 2
+                continue
+            if option.startswith('-') and option != '-':
+                return None
+            break
+        if index >= len(words):
+            return None
+        return index
 
     def _collect_builtin_handler_command(
         self,
@@ -374,10 +569,10 @@ class _FactCollector:
         self,
         command: LoweredCommand,
         context: _ExtractionContext,
-    ) -> str | None:
+    ) -> tuple[str | None, tuple[EmbeddedLanguageEntry, ...]]:
         syntax_command = command.command
         if not syntax_command.words:
-            return None
+            return None, ()
 
         command_name_word = syntax_command.words[0]
         argument_words = syntax_command.words[1:]
@@ -397,8 +592,10 @@ class _FactCollector:
 
         self._collect_builtin_subcommands(syntax_command, context)
         self._collect_contextual_subcommands(syntax_command, context)
-        self._collect_metadata_command_annotations(syntax_command, context)
-        return command.command_name
+        metadata_context_entries = self._collect_metadata_command_annotations(
+            syntax_command, context
+        )
+        return command.command_name, metadata_context_entries
 
     def _record_command_call(
         self,
@@ -517,21 +714,24 @@ class _FactCollector:
         self,
         command: Command,
         context: _ExtractionContext,
-    ) -> None:
+    ) -> tuple[EmbeddedLanguageEntry, ...]:
         matched_command = self._matched_metadata_command(command, context)
         if matched_command is None:
-            return
+            return ()
 
         metadata_command, prefix_word_count = matched_command
+        metadata_context_entries: list[EmbeddedLanguageEntry] = []
         for annotation in metadata_command.annotations:
             if not isinstance(annotation, MetadataProcedure):
                 if isinstance(annotation, MetadataPlugin):
-                    self._collect_metadata_plugin(
-                        command,
-                        context,
-                        metadata_command=metadata_command,
-                        prefix_word_count=prefix_word_count,
-                        plugin=annotation,
+                    metadata_context_entries.extend(
+                        self._collect_metadata_plugin(
+                            command,
+                            context,
+                            metadata_command=metadata_command,
+                            prefix_word_count=prefix_word_count,
+                            plugin=annotation,
+                        )
                     )
                 continue
             self._collect_metadata_procedure(
@@ -548,11 +748,14 @@ class _FactCollector:
             metadata_command=metadata_command,
             prefix_word_count=prefix_word_count,
         )
+        return tuple(metadata_context_entries)
 
     def _collect_embedded_language_command(
         self,
         command: Command,
         context: _ExtractionContext,
+        *,
+        additional_entries: tuple[EmbeddedLanguageEntry, ...] = (),
     ) -> bool:
         matched = match_embedded_language_command(
             command,
@@ -563,6 +766,7 @@ class _FactCollector:
             return False
 
         handled = False
+        embedded_entries: list[EmbeddedLanguageEntry] = list(additional_entries)
         for annotation in matched.metadata_command.annotations:
             if isinstance(annotation, MetadataProcedure):
                 self._collect_embedded_procedure(
@@ -576,12 +780,14 @@ class _FactCollector:
                 handled = True
                 continue
             if isinstance(annotation, MetadataPlugin):
-                self._collect_metadata_plugin(
-                    command,
-                    context,
-                    metadata_command=matched.metadata_command,
-                    prefix_word_count=matched.prefix_word_count,
-                    plugin=annotation,
+                embedded_entries.extend(
+                    self._collect_metadata_plugin(
+                        command,
+                        context,
+                        metadata_command=matched.metadata_command,
+                        prefix_word_count=matched.prefix_word_count,
+                        plugin=annotation,
+                    )
                 )
                 handled = True
                 continue
@@ -595,10 +801,10 @@ class _FactCollector:
                 )
                 if entry is None:
                     continue
-                self._collect_embedded_entry(command, context, entry)
-                handled = True
+                embedded_entries.append(entry)
                 continue
 
+        handled |= self._collect_embedded_entries(command, context, tuple(embedded_entries))
         handled |= self._collect_selected_metadata_annotations(
             command,
             context,
@@ -615,7 +821,7 @@ class _FactCollector:
         metadata_command: MetadataCommand,
         prefix_word_count: int,
         plugin: MetadataPlugin,
-    ) -> None:
+    ) -> tuple[EmbeddedLanguageEntry, ...]:
         word_texts, static_flags = self._plugin_word_texts(command.words)
         effects = self._plugin_host.call_plugin(
             plugin,
@@ -635,6 +841,7 @@ class _FactCollector:
                 'uri': context.uri,
             },
         )
+        embedded_entries: list[EmbeddedLanguageEntry] = []
         for effect in effects:
             if isinstance(effect, PluginProcedureEffect):
                 self._collect_plugin_procedure(
@@ -647,7 +854,7 @@ class _FactCollector:
             if isinstance(effect, MetadataContext):
                 entry = self._plugin_embedded_entry(command, context, effect)
                 if entry is not None:
-                    self._collect_embedded_entry(command, context, entry)
+                    embedded_entries.append(entry)
                 continue
             if isinstance(effect, MetadataPackage):
                 self._collect_plugin_package(command, context, effect)
@@ -661,6 +868,7 @@ class _FactCollector:
                 )
                 continue
             self._collect_plugin_selected_effect(command, context, effect)
+        return tuple(embedded_entries)
 
     def _collect_metadata_procedure(
         self,
@@ -971,6 +1179,7 @@ class _FactCollector:
                 namespace=owner_namespace,
                 script_word_index=body_indices[0],
                 inline_command_start_index=None,
+                inline_command_end_index=None,
             )
 
         return EmbeddedLanguageEntry(
@@ -979,6 +1188,7 @@ class _FactCollector:
             namespace=owner_namespace,
             script_word_index=None,
             inline_command_start_index=body_indices[0],
+            inline_command_end_index=body_indices[-1],
         )
 
     def _selected_plugin_word_indices(
@@ -1061,16 +1271,75 @@ class _FactCollector:
         self,
         command: Command,
         context: _ExtractionContext,
+        *,
+        additional_entries: tuple[EmbeddedLanguageEntry, ...] = (),
     ) -> bool:
-        entry = match_embedded_language_entry(
+        entries = self._resolved_command_embedded_entries(
+            command,
+            context,
+            additional_entries=additional_entries,
+        )
+        if entries is None:
+            self._report_conflicting_embedded_language(command.span)
+            return True
+        return self._collect_embedded_entries(command, context, entries)
+
+    def _resolved_command_embedded_entries(
+        self,
+        command: Command,
+        context: _ExtractionContext,
+        *,
+        additional_entries: tuple[EmbeddedLanguageEntry, ...] = (),
+    ) -> tuple[EmbeddedLanguageEntry, ...] | None:
+        entries = match_embedded_language_entries(
             command,
             current_namespace=context.namespace,
             metadata_registry=self._metadata_registry,
         )
-        if entry is None:
+        if entries is None:
+            return None
+        return resolve_embedded_language_entries((*entries, *additional_entries))
+
+    def _report_conflicting_embedded_language(self, span: Span) -> None:
+        self._diagnostics.append(
+            Diagnostic(
+                span=span,
+                severity='error',
+                message=_CONFLICTING_EMBEDDED_LANGUAGE_MESSAGE,
+                source='analysis',
+                code=_CONFLICTING_EMBEDDED_LANGUAGE_CODE,
+            )
+        )
+
+    def _report_unsupported_special_enter(self, span: Span) -> None:
+        self._diagnostics.append(
+            Diagnostic(
+                span=span,
+                severity='error',
+                message=_UNSUPPORTED_SPECIAL_ENTER_MESSAGE,
+                source='analysis',
+                code=_UNSUPPORTED_SPECIAL_ENTER_CODE,
+            )
+        )
+
+    def _collect_embedded_entries(
+        self,
+        command: Command,
+        context: _ExtractionContext,
+        entries: tuple[EmbeddedLanguageEntry, ...],
+    ) -> bool:
+        if not entries:
             return False
 
-        return self._collect_embedded_entry(command, context, entry)
+        resolved_entries = resolve_embedded_language_entries(entries)
+        if resolved_entries is None:
+            self._report_conflicting_embedded_language(command.span)
+            return True
+
+        handled = False
+        for entry in resolved_entries:
+            handled = self._collect_embedded_entry(command, context, entry) or handled
+        return handled
 
     def _collect_embedded_entry(
         self,
@@ -1092,6 +1361,9 @@ class _FactCollector:
         if entry.inline_command_start_index is not None and entry.inline_command_start_index < len(
             command.words
         ):
+            inline_command_end_index = entry.inline_command_end_index
+            if inline_command_end_index is None:
+                return handled
             entry_context = self._embedded_language_context(
                 entry,
                 parent_context=context,
@@ -1099,7 +1371,7 @@ class _FactCollector:
                 selected_word=command.words[entry.inline_command_start_index],
             )
             self._collect_inline_embedded_command(
-                command.words[entry.inline_command_start_index :],
+                command.words[entry.inline_command_start_index : inline_command_end_index + 1],
                 entry_context,
             )
             handled = True
@@ -1703,6 +1975,8 @@ class _FactCollector:
         self,
         command: LoweredProcCommand,
         context: _ExtractionContext,
+        *,
+        entry_by_script_word_index: dict[int, EmbeddedLanguageEntry],
     ) -> None:
         if command.name is None or command.name_span is None or command.body_span is None:
             return
@@ -1730,7 +2004,12 @@ class _FactCollector:
 
         body_context = self._procedure_context(proc_decl)
         self._record_parameter_bindings(proc_decl.parameters, body_context)
-        self._collect_lowered_body(command.body, body_context)
+        self._collect_special_lowered_body(
+            command,
+            command.body,
+            body_context,
+            entry_by_script_word_index=entry_by_script_word_index,
+        )
 
     def _collect_namespace(self, command: Command, context: _ExtractionContext) -> None:
         if len(command.words) < 2:
@@ -1743,6 +2022,8 @@ class _FactCollector:
         self,
         command: LoweredNamespaceEvalCommand,
         context: _ExtractionContext,
+        *,
+        entry_by_script_word_index: dict[int, EmbeddedLanguageEntry],
     ) -> None:
         if command.namespace_name is None or command.namespace_span is None:
             return
@@ -1759,9 +2040,11 @@ class _FactCollector:
         if context.procedure_symbol_id is not None:
             return
 
-        self._collect_lowered_body(
+        self._collect_special_lowered_body(
+            command,
             command.body,
             self._namespace_context(context.uri, namespace_scope.qualified_name),
+            entry_by_script_word_index=entry_by_script_word_index,
         )
 
     def _collect_namespace_import(self, command: Command, context: _ExtractionContext) -> None:
@@ -1888,11 +2171,28 @@ class _FactCollector:
         self,
         command: LoweredForCommand,
         context: _ExtractionContext,
+        *,
+        entry_by_script_word_index: dict[int, EmbeddedLanguageEntry],
     ) -> None:
-        self._collect_lowered_body(command.start_body, context)
+        self._collect_special_lowered_body(
+            command,
+            command.start_body,
+            context,
+            entry_by_script_word_index=entry_by_script_word_index,
+        )
         self._collect_lowered_condition(command.condition, context)
-        self._collect_lowered_body(command.next_body, context)
-        self._collect_lowered_body(command.body, context)
+        self._collect_special_lowered_body(
+            command,
+            command.next_body,
+            context,
+            entry_by_script_word_index=entry_by_script_word_index,
+        )
+        self._collect_special_lowered_body(
+            command,
+            command.body,
+            context,
+            entry_by_script_word_index=entry_by_script_word_index,
+        )
 
     def _collect_info(self, command: Command, context: _ExtractionContext) -> None:
         if len(command.words) < 3:
@@ -1938,6 +2238,8 @@ class _FactCollector:
         self,
         command: LoweredIfCommand,
         context: _ExtractionContext,
+        *,
+        entry_by_script_word_index: dict[int, EmbeddedLanguageEntry],
     ) -> None:
         remaining_context = context
         for clause in command.clauses:
@@ -1946,15 +2248,32 @@ class _FactCollector:
                 clause.condition,
                 remaining_context,
             )
-            self._collect_lowered_body(clause.body, clause_context)
-        self._collect_lowered_body(command.else_body, remaining_context)
+            self._collect_special_lowered_body(
+                command,
+                clause.body,
+                clause_context,
+                entry_by_script_word_index=entry_by_script_word_index,
+            )
+        self._collect_special_lowered_body(
+            command,
+            command.else_body,
+            remaining_context,
+            entry_by_script_word_index=entry_by_script_word_index,
+        )
 
     def _collect_lowered_catch(
         self,
         command: LoweredCatchCommand,
         context: _ExtractionContext,
+        *,
+        entry_by_script_word_index: dict[int, EmbeddedLanguageEntry],
     ) -> None:
-        self._collect_lowered_body(command.body, context)
+        self._collect_special_lowered_body(
+            command,
+            command.body,
+            context,
+            entry_by_script_word_index=entry_by_script_word_index,
+        )
         for variable_word in command.command.words[2:4]:
             self._record_simple_binding_word(variable_word, context, kind='catch')
 
@@ -1962,13 +2281,30 @@ class _FactCollector:
         self,
         command: LoweredTryCommand,
         context: _ExtractionContext,
+        *,
+        entry_by_script_word_index: dict[int, EmbeddedLanguageEntry],
     ) -> None:
-        self._collect_lowered_body(command.body, context)
+        self._collect_special_lowered_body(
+            command,
+            command.body,
+            context,
+            entry_by_script_word_index=entry_by_script_word_index,
+        )
         for handler in command.handlers:
             if handler.binding_word is not None:
                 self._record_list_binding_word(handler.binding_word, context, kind='catch')
-            self._collect_lowered_body(handler.body, context)
-        self._collect_lowered_body(command.finally_body, context)
+            self._collect_special_lowered_body(
+                command,
+                handler.body,
+                context,
+                entry_by_script_word_index=entry_by_script_word_index,
+            )
+        self._collect_special_lowered_body(
+            command,
+            command.finally_body,
+            context,
+            entry_by_script_word_index=entry_by_script_word_index,
+        )
 
     def _collect_global(self, command: Command, context: _ExtractionContext) -> None:
         if context.procedure_symbol_id is None:
@@ -2091,6 +2427,8 @@ class _FactCollector:
         self,
         command: LoweredSwitchCommand,
         context: _ExtractionContext,
+        *,
+        entry_by_script_word_index: dict[int, EmbeddedLanguageEntry],
     ) -> None:
         self._collect_switch_regexp_bindings(command.regexp_binding_words, context)
         for branch_patterns, body in zip(
@@ -2106,7 +2444,12 @@ class _FactCollector:
                     patterns=branch_patterns,
                 ),
             )
-            self._collect_lowered_body(body, branch_context)
+            self._collect_special_lowered_body(
+                command,
+                body,
+                branch_context,
+                entry_by_script_word_index=entry_by_script_word_index,
+            )
 
     def _collect_vwait(self, command: Command, context: _ExtractionContext) -> None:
         if len(command.words) < 2:
@@ -2134,9 +2477,16 @@ class _FactCollector:
         self,
         command: LoweredWhileCommand,
         context: _ExtractionContext,
+        *,
+        entry_by_script_word_index: dict[int, EmbeddedLanguageEntry],
     ) -> None:
         self._collect_lowered_condition(command.condition, context)
-        self._collect_lowered_body(command.body, context)
+        self._collect_special_lowered_body(
+            command,
+            command.body,
+            context,
+            entry_by_script_word_index=entry_by_script_word_index,
+        )
 
     def _collect_lowered_body(
         self,
@@ -2146,6 +2496,34 @@ class _FactCollector:
         if body is None:
             return
         self._collect_lowered_script(body.script, context)
+
+    def _collect_special_lowered_body(
+        self,
+        command: LoweredCommand,
+        body: LoweredScriptBody | None,
+        context: _ExtractionContext,
+        *,
+        entry_by_script_word_index: dict[int, EmbeddedLanguageEntry],
+    ) -> None:
+        if body is None:
+            return
+
+        body_context = context
+        if body.word_index is not None:
+            entry = entry_by_script_word_index.get(body.word_index)
+            if entry is not None and body.word_index < len(command.command.words):
+                selected_word = command.command.words[body.word_index]
+                # Special lowered commands already own these body words. When a
+                # top-level `enter` retargets one of them, switch the body
+                # context in place instead of parsing the same body twice.
+                body_context = self._embedded_language_context(
+                    entry,
+                    parent_context=context,
+                    command=command.command,
+                    selected_word=selected_word,
+                )
+
+        self._collect_lowered_script(body.script, body_context)
 
     def _collect_lowered_condition(
         self,

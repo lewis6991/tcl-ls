@@ -11,6 +11,9 @@ File-Level Declarations
 Metadata files use ordinary Tcl syntax, but ``tcl-ls`` only interprets a small
 declarative subset. The accepted file-level forms are:
 
+Outside command shapes, this page spells optional outer grammar as separate
+forms and prose. Literal ``?`` words only appear inside command-shape syntax.
+
 .. code-block:: tcl
 
    meta module name
@@ -58,6 +61,8 @@ Rules:
 
 * declaration words must be static Tcl words
 * command and language names must be a single word
+* ``extends tcl`` is an optional ordinary clause inside a ``meta language``
+  body
 * nested command names must be declared with ``command``, not with a spaced
   top-level name such as ``meta command {file atime} ...``
 * leading ``#`` comments immediately before a ``meta command`` or nested
@@ -94,6 +99,7 @@ than one metadata root is active, later roots override earlier ones.
 Rules:
 
 * later roots override earlier command trees by exact command name or prefix
+* repeated ``meta language`` blocks still compose within one metadata root
 * overriding ``namespace`` replaces earlier ``namespace`` and
   ``namespace ...`` metadata
 * overriding ``namespace eval`` replaces earlier ``namespace eval`` and
@@ -188,6 +194,42 @@ Rules:
   itself; nested ``command`` entries only add child nodes
 * there is no separate ``usage`` clause
 
+Command Shape Syntax
+~~~~~~~~~~~~~~~~~~~~
+
+A command shape is a Tcl list. Each list item describes one runtime argument
+position.
+
+Rules:
+
+* plain words such as ``varName``, ``script``, or ``packageName`` are
+  descriptive placeholders; they consume one argument and mainly document that
+  position
+* standalone ``?`` items wrap an optional group, so ``? newValue ?`` means
+  that argument may be omitted and ``? option value ?`` makes both positions
+  optional together
+* ``args`` means "consume the remaining arguments"; it must appear by itself
+  as the final shape item
+* words prefixed with ``=`` are exact literals, so ``=select`` and ``=owner``
+  mean those words must appear literally
+* a grouped Tcl word still counts as one argument position, which is how a
+  form such as ``{info {id {}}}`` can describe one grouped argument
+* a grouped item of the form ``{name default}`` uses Tcl's defaulted-argument
+  notation and describes one optional argument position; this is the natural
+  spelling when the underlying API is already described like a Tcl parameter
+  list
+* angle-bracket slots such as ``<name>`` or ``<selector>`` appear only in the
+  bundled ``meta.meta.tcl`` grammar that documents metadata syntax itself;
+  ordinary metadata does not use angle brackets in everyday command shapes
+
+Generated metadata and signature help use the same shape notation, so labels
+such as ``set {varName ? newValue ?}`` follow the same rules.
+
+``? ... ?`` is the general optional-group notation for command shapes.
+Generated metadata and signature help may normalize simple one-argument
+optionals to that form even when the underlying API is naturally written with
+the Tcl-style ``{name default}`` shorthand.
+
 Example:
 
 .. code-block:: tcl
@@ -227,11 +269,14 @@ Example:
 each entry uses ``command`` rather than ``meta command``. Those nested
 commands are only valid while a matching ``enter`` clause is active.
 
+Languages are closed by default. Without an ``extends tcl`` clause, only the
+commands declared inside that language are valid there.
+
 This splits the old overloaded ``context`` model into three separate jobs:
 
 * ``meta language name { ... }`` declares a named embedded language
-* ``enter language body selector ? owner selector ?`` activates that language
-  for selected body words
+* ``enter language body selector`` or ``enter language body selector owner
+  selector`` activates that language for selected body words
 * ``procedure { ... language name }`` selects the language used for a
   procedure-like body
 
@@ -258,6 +303,8 @@ How ``meta language`` works:
 
 * ``meta language`` only defines a named embedded language; it does not
   activate anything by itself
+* ``extends tcl`` is optional and re-enables ordinary Tcl command resolution
+  after checking the language's explicit ``command`` entries
 * a separate ``enter`` clause on some enclosing command decides when that
   language becomes active
 * once active, commands inside the selected body are matched against the
@@ -298,6 +345,44 @@ In the first form, the braced definition script is one selected body word. In
 the second form, ``method greet {name} {puts $name}`` is a contiguous selected
 tail of command words.
 
+``extends tcl``
+~~~~~~~~~~~~~~~
+
+.. code-block:: tcl
+
+   meta language tcloo-method {
+       extends tcl
+
+       command my {methodName args} {
+           command variable {name args} {
+               bind 1.. variable
+               ref 1..
+           }
+       }
+
+       command next {args}
+       command self {args}
+   }
+
+``extends tcl`` opts an embedded language back into ordinary Tcl command
+resolution after its explicit language-local ``command`` entries are checked.
+This is useful for bodies that are mostly Tcl but add a few extra commands or
+override some existing ones.
+
+Rules:
+
+* languages without ``extends tcl`` are closed
+* ``extends tcl`` is optional
+* when present, it may appear at most once in a ``meta language`` body
+* ``tcl`` is currently the only supported ``extends`` target
+* repeated ``meta language name { ... }`` blocks compose within one metadata
+  root
+* if a later metadata root redeclares that language, its ``extends tcl``
+  policy overrides earlier roots for that language
+
+This lets a language stay strict when it is a real DSL, while still modeling
+mixed environments like TclOO method bodies without redeclaring all of Tcl.
+
 End-to-end example:
 
 .. code-block:: tcl
@@ -318,6 +403,8 @@ End-to-end example:
    }
 
    meta language tcloo-method {
+       extends tcl
+
        command my {methodName args} {
            command variable {name args} {
                bind 1.. variable
@@ -391,8 +478,8 @@ Selector examples in context:
        bind 1 append
    }
 
-   # All arguments after the second one are Tcl bodies.
-   meta command if {test body args} {
+   # All arguments after the first one form one inline Tcl command stream.
+   meta command dsl::eval {context args} {
        enter tcl body 2..
    }
 
@@ -466,7 +553,7 @@ Example:
 
    meta command array {subcommand args} {
        command exists {arrayName}
-       command get {arrayName ?pattern?}
+       command get {arrayName ? pattern ?}
        command set {arrayName list}
    }
 
@@ -543,6 +630,10 @@ Rules:
 * ``body`` accepts direct positional selectors, including contiguous ranges and
   ``after-options`` selectors, but not ``list`` selectors or stepped
   non-contiguous ranges
+* structured Tcl commands lowered specially by tcl-ls
+  (``proc``, ``namespace eval``, ``for``, ``if``, ``catch``, ``try``,
+  ``switch``, and ``while``) only accept single-word ``body`` selectors that
+  target one of their existing script-body arguments
 * ``owner`` must select exactly one direct argument; ``list`` and
   ``after-options`` selectors are not supported there
 * when ``owner`` is present, the selected argument should still be static
@@ -553,7 +644,9 @@ Behavior notes:
 * one selected body argument means "parse this word as an embedded script"
 * multiple selected body arguments mean "treat this contiguous range as an
   inline embedded command stream"
-* overlapping body selections with different languages are conflicts
+* that inline form is only available on generic command tails; structured Tcl
+  commands must use separate ``enter`` clauses for separate body slots
+* overlapping body selections are conflicts
 
 Examples:
 
@@ -664,13 +757,23 @@ Rules:
 
 * ``name`` is required and accepts ``select SELECTOR``, ``literal VALUE``, or
   ``-``
-* ``params`` is required and accepts ``select SELECTOR``, ``literal VALUE``, or
-  ``-``
+* ``params`` is required and accepts ``select SELECTOR``,
+  ``literal PARAMETER_LIST``, or ``-``
 * ``body`` is optional and, when present, uses ``select SELECTOR``
 * ``language`` is optional and names the embedded language used for the body
 * ``language`` may only appear when ``body`` is also present
 * selector-valued fields use the general selector language, not a special
   positive-index-only syntax
+* ``name select SELECTOR``, ``params select SELECTOR``, and ``body select
+  SELECTOR`` must each select exactly one argument
+* ``name -`` reuses the enclosing command name tail
+* ``params -`` means the emitted procedure has an empty parameter list
+* ``params literal PARAMETER_LIST`` uses ordinary Tcl procedure parameter-list
+  syntax: parameter names, ``{name default}`` items, and an optional trailing
+  ``args``
+
+``params literal ...`` describes the emitted procedure's parameter list
+directly. It is not command-shape syntax.
 
 Examples:
 
@@ -749,16 +852,17 @@ Supported plugin effects are:
 
    bind selector kind
    ref selector
-   enter language body selector ?owner selector?
+   enter language body selector
+   enter language body selector owner selector
    package literal packageName
    package select selector
    source selector caller
    source selector definition
    procedure {
-       name select 1
+       name select 2
        params literal {left right}
-       _params-source select 2
-       body select 3
+       _params-source select 3
+       body select 4
        language sample
    }
 
@@ -772,10 +876,13 @@ Effect rules:
   to the plugin
 * plugin selectors do not support ``after-options`` because plugins do not
   declare option tables for the generic selector machinery
-* plugin ``procedure`` effects use the same field names and value kinds as
-  declarative ``procedure`` clauses
-* ``_params-source`` is a provisional escape hatch for plugin-derived literal
-  parameters whose source location still needs a coarse word anchor
+* plugin ``procedure`` effects reuse declarative ``name``, ``params``,
+  ``body``, and ``language`` fields
+* plugin ``params literal PARAMETER_LIST`` values use the same Tcl procedure
+  parameter-list syntax as declarative ``procedure`` metadata
+* plugins may additionally return ``_params-source`` as a provisional
+  plugin-only escape hatch for literal parameters whose source location still
+  needs a coarse word anchor
 * ``_params-source`` is intentionally separate from ``params`` so it can be
   removed or replaced later without locking the core ``procedure`` syntax into
   a hack
@@ -789,10 +896,10 @@ Example plugin return:
        {package literal TclOO}
        {enter tcl body 3}
        {procedure {
-           name select 1
+           name select 2
            params literal {left right}
-           _params-source select 2
-           body select 3
+           _params-source select 3
+           body select 4
            language sample
        }}
    }

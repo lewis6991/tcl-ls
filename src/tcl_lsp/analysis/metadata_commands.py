@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
+from tcl_lsp.analysis.facts.utils import normalize_command_name
 from tcl_lsp.analysis.model import BINDING_KINDS, BindingKind
 from tcl_lsp.cache import metadata_lru_cache
 from tcl_lsp.common import Span
-from tcl_lsp.metadata_paths import DEFAULT_METADATA_REGISTRY, MetadataRegistry
+from tcl_lsp.metadata_paths import (
+    DEFAULT_METADATA_REGISTRY,
+    MetadataRegistry,
+    metadata_lookup_names,
+)
 from tcl_lsp.parser import Parser, word_static_text
 from tcl_lsp.parser.model import BareWord, BracedWord, Command, Token, Word
 
@@ -117,7 +123,7 @@ class MetadataCommand:
     uri: str
     name: str
     context_name: str | None
-    context_fallback: str | None
+    context_extends: str | None
     signature: str
     documentation: str | None
     name_span: Span
@@ -126,8 +132,14 @@ class MetadataCommand:
     annotations: tuple[MetadataAnnotation, ...]
 
 
-@metadata_lru_cache(maxsize=None)
 def load_metadata_commands(metadata_path: Path) -> tuple[MetadataCommand, ...]:
+    return _load_metadata_entries(metadata_path)[0]
+
+
+@metadata_lru_cache(maxsize=None)
+def _load_metadata_entries(
+    metadata_path: Path,
+) -> tuple[tuple[MetadataCommand, ...], tuple[tuple[str, bool], ...]]:
     metadata_uri = metadata_path.as_uri()
     text = metadata_path.read_text(encoding='utf-8')
     parse_result = Parser().parse_document(path=metadata_uri, text=text)
@@ -136,11 +148,16 @@ def load_metadata_commands(metadata_path: Path) -> tuple[MetadataCommand, ...]:
         raise RuntimeError(f'Invalid metadata file `{metadata_path.name}`: {message}')
 
     commands: list[MetadataCommand] = []
+    language_extends: list[tuple[str, bool]] = []
     for command in parse_result.script.commands:
         if not command.words:
             continue
         if word_static_text(command.words[0]) != 'meta':
-            continue
+            raise RuntimeError(
+                'Metadata top-level entries must be `meta module name`, '
+                '`meta command name {args}`, `meta command name variants { ... }`, '
+                'or `meta language name { ... }`.'
+            )
         if len(command.words) < 2:
             raise RuntimeError(
                 'Metadata top-level entries must be `meta module name`, '
@@ -162,13 +179,13 @@ def load_metadata_commands(metadata_path: Path) -> tuple[MetadataCommand, ...]:
             )
             continue
         if entry_kind == 'language':
-            commands.extend(
-                _parse_metadata_context_entry(
-                    command,
-                    metadata_path=metadata_path,
-                    metadata_uri=metadata_uri,
-                )
+            context_name, context_extends, context_commands = _parse_metadata_context_entry(
+                command,
+                metadata_path=metadata_path,
+                metadata_uri=metadata_uri,
             )
+            language_extends.append((context_name, context_extends == 'tcl'))
+            commands.extend(context_commands)
             continue
         raise RuntimeError(
             'Metadata top-level entries must be `meta module name`, '
@@ -176,9 +193,10 @@ def load_metadata_commands(metadata_path: Path) -> tuple[MetadataCommand, ...]:
             'or `meta language name { ... }`.'
         )
 
-    if not commands:
-        return ()
-    return _commands_with_derived_subcommands(tuple(commands))
+    metadata_commands = tuple(commands)
+    if metadata_commands:
+        metadata_commands = _commands_with_derived_subcommands(metadata_commands)
+    return metadata_commands, tuple(language_extends)
 
 
 def all_metadata_commands(
@@ -196,13 +214,148 @@ def _all_metadata_commands(metadata_registry: MetadataRegistry) -> tuple[Metadat
     return tuple(commands)
 
 
+@metadata_lru_cache(maxsize=1)
+def all_metadata_language_extends(metadata_registry: MetadataRegistry) -> dict[str, bool]:
+    language_extends: dict[str, bool] = {}
+    for _, layer_paths in metadata_registry.metadata_file_layers():
+        layer_extends: dict[str, bool] = {}
+        for metadata_path in layer_paths:
+            for language_name, extends_tcl in _load_metadata_entries(metadata_path)[1]:
+                # Repeated `meta language name { ... }` blocks compose within
+                # one metadata root, so any extending block keeps the language
+                # open inside that layer.
+                layer_extends[language_name] = (
+                    layer_extends.get(language_name, False) or extends_tcl
+                )
+        # Later metadata roots override earlier roots, including whether a
+        # language stays open to Tcl fallback.
+        language_extends.update(layer_extends)
+    return language_extends
+
+
+def file_scoped_annotated_metadata_commands(
+    *,
+    metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
+) -> dict[tuple[str, str], MetadataCommand]:
+    return _file_scoped_annotated_metadata_commands(metadata_registry)
+
+
+@metadata_lru_cache(maxsize=1)
+def _file_scoped_annotated_metadata_commands(
+    metadata_registry: MetadataRegistry,
+) -> dict[tuple[str, str], MetadataCommand]:
+    commands_by_lookup_name: dict[str, dict[str, MetadataCommand]] = {}
+    for _, layer_paths in metadata_registry.metadata_file_layers():
+        layer_overrides_by_lookup_name: dict[str, dict[str, None]] = {}
+        layer_commands_by_lookup_name: dict[str, dict[str, MetadataCommand]] = {}
+        for metadata_path in layer_paths:
+            override_names, annotated_commands = _file_scoped_annotated_entries_for_file(
+                metadata_path
+            )
+            if not override_names:
+                continue
+            for lookup_name in metadata_lookup_names(metadata_path):
+                layer_override_names = layer_overrides_by_lookup_name.setdefault(lookup_name, {})
+                layer_commands = layer_commands_by_lookup_name.setdefault(lookup_name, {})
+                for command_name in override_names:
+                    if command_name in layer_override_names:
+                        raise RuntimeError(
+                            f'Conflicting file-scoped metadata annotations for '
+                            f'`{command_name}` in `{metadata_path.name}`.'
+                        )
+                    layer_override_names[command_name] = None
+                for command_name, metadata_command in annotated_commands.items():
+                    existing = layer_commands.get(command_name)
+                    if existing is not None and (
+                        existing.options != metadata_command.options
+                        or existing.subcommands != metadata_command.subcommands
+                        or existing.annotations != metadata_command.annotations
+                    ):
+                        raise RuntimeError(
+                            f'Conflicting file-scoped metadata annotations for '
+                            f'`{metadata_command.name}` in `{metadata_path.name}`.'
+                        )
+                    layer_commands[command_name] = metadata_command
+
+        for lookup_name, override_names in layer_overrides_by_lookup_name.items():
+            commands = commands_by_lookup_name.setdefault(lookup_name, {})
+            _discard_overridden_command_trees(commands, override_names)
+            commands.update(layer_commands_by_lookup_name.get(lookup_name, {}))
+
+    return {
+        (lookup_name, command_name): metadata_command
+        for lookup_name, commands in commands_by_lookup_name.items()
+        for command_name, metadata_command in commands.items()
+    }
+
+
+def _file_scoped_annotated_entries_for_file(
+    metadata_path: Path,
+) -> tuple[tuple[str, ...], dict[str, MetadataCommand]]:
+    override_entries: dict[str, MetadataCommand | None] = {}
+    annotated: dict[str, MetadataCommand] = {}
+    for metadata_command in load_metadata_commands(metadata_path):
+        if metadata_command.context_name is not None:
+            continue
+
+        command_name = normalize_command_name(metadata_command.name)
+        annotated_command = (
+            metadata_command
+            if (
+                metadata_command.options
+                or metadata_command.subcommands
+                or metadata_command.annotations
+            )
+            else None
+        )
+        existing = override_entries.get(command_name, _MISSING)
+        if existing is _MISSING:
+            override_entries[command_name] = annotated_command
+            if annotated_command is not None:
+                annotated[command_name] = annotated_command
+            continue
+
+        if annotated_command is None:
+            continue
+        if existing is None:
+            override_entries[command_name] = annotated_command
+            annotated[command_name] = annotated_command
+            continue
+        existing_command = cast(MetadataCommand, existing)
+        if (
+            existing_command.options == annotated_command.options
+            and existing_command.subcommands == annotated_command.subcommands
+            and existing_command.annotations == annotated_command.annotations
+        ):
+            continue
+        raise RuntimeError(
+            f'Conflicting file-scoped metadata annotations for '
+            f'`{metadata_command.name}` in `{metadata_path.name}`.'
+        )
+
+    return tuple(override_entries), annotated
+
+
+def _discard_overridden_command_trees[CommandValue](
+    commands: dict[str, CommandValue],
+    override_commands: Mapping[str, object],
+) -> None:
+    override_names = tuple(override_commands)
+    for existing_name in tuple(commands):
+        if any(
+            existing_name == override_name or existing_name.startswith(f'{override_name} ')
+            for override_name in override_names
+        ):
+            commands.pop(existing_name, None)
+
+
 def _parse_metadata_command_entry(
     command: Command,
     *,
     metadata_path: Path,
     metadata_uri: str,
     context_name: str | None = None,
-    context_fallback: str | None = None,
+    context_extends: str | None = None,
     parent_name: str | None = None,
 ) -> tuple[MetadataCommand, ...]:
     if context_name is None:
@@ -233,7 +386,7 @@ def _parse_metadata_command_entry(
     if ' ' in command_name:
         raise RuntimeError(
             'Metadata command entries must use single command names. '
-            'Use nested `command name {signature}` declarations for child commands.'
+            'Use nested `command name {shape}` declarations for child commands.'
         )
 
     full_name = command_name if parent_name is None else f'{parent_name} {command_name}'
@@ -254,7 +407,7 @@ def _parse_metadata_command_entry(
             metadata_uri=metadata_uri,
             command_name=full_name,
             context_name=context_name,
-            context_fallback=context_fallback,
+            context_extends=context_extends,
             name_span=name_word.content_span,
             documentation=documentation,
         )
@@ -276,7 +429,7 @@ def _parse_metadata_command_entry(
             metadata_uri=metadata_uri,
             command_name=full_name,
             context_name=context_name,
-            context_fallback=context_fallback,
+            context_extends=context_extends,
             body_text=_metadata_body_text(annotation_word),
         )
 
@@ -286,7 +439,7 @@ def _parse_metadata_command_entry(
             uri=metadata_uri,
             name=full_name,
             context_name=context_name,
-            context_fallback=context_fallback,
+            context_extends=context_extends,
             signature=signature,
             documentation=documentation,
             name_span=name_word.content_span,
@@ -303,7 +456,7 @@ def _parse_metadata_context_entry(
     *,
     metadata_path: Path,
     metadata_uri: str,
-) -> tuple[MetadataCommand, ...]:
+) -> tuple[str, str | None, tuple[MetadataCommand, ...]]:
     if len(command.words) != 4:
         raise RuntimeError('Metadata language entries must be `meta language name { ... }`.')
 
@@ -322,25 +475,25 @@ def _parse_metadata_context_entry(
         )
 
     nested_command_entries: list[Command] = []
-    context_fallback: str | None = None
+    context_extends: str | None = None
     for nested_command in parse_result.script.commands:
         nested_name = word_static_text(nested_command.words[0])
-        if nested_name == 'fallback':
-            if context_fallback is not None:
+        if nested_name == 'extends':
+            if context_extends is not None:
                 raise RuntimeError(
-                    f'Metadata language `{context_name}` declares multiple fallback clauses.'
+                    f'Metadata language `{context_name}` declares multiple extends clauses.'
                 )
             if len(nested_command.words) != 2 or word_static_text(nested_command.words[1]) != 'tcl':
                 raise RuntimeError(
-                    f'Metadata language `{context_name}` fallback clauses must be `fallback tcl`.'
+                    f'Metadata language `{context_name}` extends clauses must be `extends tcl`.'
                 )
-            context_fallback = 'tcl'
+            context_extends = 'tcl'
             continue
         if nested_name != 'command':
             raise RuntimeError(
                 f'Metadata language `{context_name}` entries must use '
                 '`command name {args}`, `command name variants { ... }`, '
-                'or `fallback tcl`.'
+                'or `extends tcl`.'
             )
         nested_command_entries.append(nested_command)
 
@@ -352,11 +505,11 @@ def _parse_metadata_context_entry(
                 metadata_path=metadata_path,
                 metadata_uri=metadata_uri,
                 context_name=context_name,
-                context_fallback=context_fallback,
+                context_extends=context_extends,
             )
         )
 
-    return tuple(commands)
+    return context_name, context_extends, tuple(commands)
 
 
 def select_argument_indices(
@@ -502,7 +655,7 @@ def _parse_annotation_body(
     metadata_uri: str,
     command_name: str,
     context_name: str | None,
-    context_fallback: str | None,
+    context_extends: str | None,
     body_text: str,
 ) -> tuple[tuple[MetadataOption, ...], tuple[MetadataAnnotation, ...], tuple[MetadataCommand, ...]]:
     annotation_uri = f'{metadata_uri}#{command_name}'
@@ -532,7 +685,7 @@ def _parse_annotation_body(
                     metadata_uri=metadata_uri,
                     parent_name=command_name,
                     context_name=context_name,
-                    context_fallback=context_fallback,
+                    context_extends=context_extends,
                 )
             )
             continue
@@ -591,12 +744,12 @@ def _parse_nested_command_entry(
     metadata_uri: str,
     parent_name: str,
     context_name: str | None,
-    context_fallback: str | None,
+    context_extends: str | None,
 ) -> tuple[MetadataCommand, ...]:
     if len(command.words) not in {3, 4}:
         raise RuntimeError(
             f'Nested command declarations for `{parent_name}` must be '
-            '`command name {signature}` optionally followed by an annotation body, '
+            '`command name {shape}` optionally followed by an annotation body, '
             'or `command name variants { ... }`.'
         )
 
@@ -627,7 +780,7 @@ def _parse_nested_command_entry(
             metadata_uri=metadata_uri,
             command_name=full_name,
             context_name=context_name,
-            context_fallback=context_fallback,
+            context_extends=context_extends,
             name_span=command.words[1].content_span,
             documentation=_command_documentation(command.leading_comments),
         )
@@ -650,7 +803,7 @@ def _parse_nested_command_entry(
             metadata_uri=metadata_uri,
             command_name=full_name,
             context_name=context_name,
-            context_fallback=context_fallback,
+            context_extends=context_extends,
             body_text=_metadata_body_text(annotation_word),
         )
 
@@ -660,7 +813,7 @@ def _parse_nested_command_entry(
             uri=metadata_uri,
             name=full_name,
             context_name=context_name,
-            context_fallback=context_fallback,
+            context_extends=context_extends,
             signature=signature,
             documentation=_command_documentation(command.leading_comments),
             name_span=command.words[1].content_span,
@@ -679,7 +832,8 @@ def _parse_bind_annotation(command: Command, command_name: str) -> MetadataBind:
     if consumed < len(words) - 1:
         if consumed != len(words) - 2:
             raise RuntimeError(
-                f'Bind annotations for `{command_name}` must be `bind selector ?kind?`.'
+                f'Bind annotations for `{command_name}` must be '
+                '`bind selector` or `bind selector kind`.'
             )
         kind = _parse_binding_kind(words[-1], command_name)
     elif _implicit_binding_kind(command_name) is None:
@@ -733,7 +887,8 @@ def _parse_enter_annotation(command: Command, command_name: str) -> MetadataCont
     if len(words) < 4 or words[2] != 'body':
         raise RuntimeError(
             f'Enter annotations for `{command_name}` must be '
-            '`enter language body selector ? owner selector ?`.'
+            '`enter language body selector` or '
+            '`enter language body selector owner selector`.'
         )
 
     context_name = words[1]
@@ -744,7 +899,8 @@ def _parse_enter_annotation(command: Command, command_name: str) -> MetadataCont
         if words[index] != 'owner':
             raise RuntimeError(
                 f'Enter annotations for `{command_name}` must be '
-                '`enter language body selector ? owner selector ?`.'
+                '`enter language body selector` or '
+                '`enter language body selector owner selector`.'
             )
         owner_selector, owner_consumed = _parse_selector_tokens(
             words[index + 1 :],
@@ -753,7 +909,8 @@ def _parse_enter_annotation(command: Command, command_name: str) -> MetadataCont
         if owner_consumed != len(words) - index - 1:
             raise RuntimeError(
                 f'Enter annotations for `{command_name}` must be '
-                '`enter language body selector ? owner selector ?`.'
+                '`enter language body selector` or '
+                '`enter language body selector owner selector`.'
             )
         _validate_context_owner_selector(owner_selector, command_name)
     _validate_context_body_selector(body_selector, command_name)
@@ -768,9 +925,8 @@ def _parse_procedure_annotation(command: Command, command_name: str) -> Metadata
     if len(command.words) != 2:
         raise RuntimeError(
             f'Procedure annotations for `{command_name}` must be '
-            '`procedure { name select selector|literal value|-; '
-            'params select selector|literal value|-; '
-            '? body select selector ?; ? language body-language ? }`.'
+            'a `procedure { ... }` block with `name ...` and `params ...`, '
+            'plus optional `body select selector` and `language body-language`.'
         )
 
     config_text = _metadata_body_text(command.words[1])
@@ -1205,7 +1361,7 @@ def _parse_metadata_form_entry(
     metadata_uri: str,
     command_name: str,
     context_name: str | None,
-    context_fallback: str | None,
+    context_extends: str | None,
     name_span: Span,
     documentation: str | None,
 ) -> tuple[MetadataCommand, ...]:
@@ -1229,7 +1385,7 @@ def _parse_metadata_form_entry(
             metadata_uri=metadata_uri,
             command_name=command_name,
             context_name=context_name,
-            context_fallback=context_fallback,
+            context_extends=context_extends,
             body_text=_metadata_body_text(annotation_word),
         )
 
@@ -1239,7 +1395,7 @@ def _parse_metadata_form_entry(
             uri=metadata_uri,
             name=command_name,
             context_name=context_name,
-            context_fallback=context_fallback,
+            context_extends=context_extends,
             signature=signature,
             documentation=_command_documentation(command.leading_comments) or documentation,
             name_span=name_span,
@@ -1279,7 +1435,7 @@ def _load_metadata_variant_commands(
     metadata_uri: str,
     command_name: str,
     context_name: str | None,
-    context_fallback: str | None,
+    context_extends: str | None,
     name_span: Span,
     documentation: str | None,
 ) -> tuple[MetadataCommand, ...]:
@@ -1296,7 +1452,7 @@ def _load_metadata_variant_commands(
                     metadata_uri=metadata_uri,
                     command_name=command_name,
                     context_name=context_name,
-                    context_fallback=context_fallback,
+                    context_extends=context_extends,
                     name_span=name_span,
                     documentation=documentation,
                 )
@@ -1310,7 +1466,7 @@ def _load_metadata_variant_commands(
                     metadata_uri=metadata_uri,
                     parent_name=command_name,
                     context_name=context_name,
-                    context_fallback=context_fallback,
+                    context_extends=context_extends,
                 )
             )
             continue
@@ -1377,7 +1533,7 @@ def _commands_with_derived_subcommands(
                 uri=command.uri,
                 name=command.name,
                 context_name=command.context_name,
-                context_fallback=command.context_fallback,
+                context_extends=command.context_extends,
                 signature=command.signature,
                 documentation=command.documentation,
                 name_span=command.name_span,

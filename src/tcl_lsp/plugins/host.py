@@ -335,7 +335,10 @@ def _parse_plugin_bind_effect(command: Command) -> MetadataBind:
     if consumed == len(words) - 2:
         kind = _parse_plugin_binding_kind(words[-1], command_name=command_name)
     elif consumed != len(words) - 1:
-        raise RuntimeError(f'Bind plugin effects must be `bind selector ?kind?`, got `{words[0]}`.')
+        raise RuntimeError(
+            'Bind plugin effects must be `bind selector` or `bind selector kind`, '
+            f'got `{words[0]}`.'
+        )
     elif kind is None:
         raise RuntimeError('Bind plugin effects must declare an explicit binding kind.')
     return MetadataBind(selector=selector, kind=kind)
@@ -391,7 +394,8 @@ def _parse_plugin_enter_effect(command: Command) -> MetadataContext:
     words = _plugin_command_words(command)
     if len(words) < 4 or words[2] != 'body':
         raise RuntimeError(
-            'Enter plugin effects must be `enter language body selector ? owner selector ?`.'
+            'Enter plugin effects must be `enter language body selector` or '
+            '`enter language body selector owner selector`.'
         )
 
     context_name = words[1]
@@ -402,7 +406,8 @@ def _parse_plugin_enter_effect(command: Command) -> MetadataContext:
     if index < len(words):
         if words[index] != 'owner':
             raise RuntimeError(
-                'Enter plugin effects must be `enter language body selector ? owner selector ?`.'
+                'Enter plugin effects must be `enter language body selector` or '
+                '`enter language body selector owner selector`.'
             )
         owner_selector, owner_consumed = parse_selector_tokens(
             words[index + 1 :],
@@ -411,7 +416,8 @@ def _parse_plugin_enter_effect(command: Command) -> MetadataContext:
         _validate_plugin_selector(owner_selector, key='enter owner')
         if owner_consumed != len(words) - index - 1:
             raise RuntimeError(
-                'Enter plugin effects must be `enter language body selector ? owner selector ?`.'
+                'Enter plugin effects must be `enter language body selector` or '
+                '`enter language body selector owner selector`.'
             )
         validate_context_owner_selector(owner_selector, command_name)
     validate_context_body_selector(body_selector, command_name)
@@ -425,11 +431,9 @@ def _parse_plugin_enter_effect(command: Command) -> MetadataContext:
 def _parse_plugin_procedure_effect(command: Command) -> PluginProcedureEffect:
     if len(command.words) != 2:
         raise RuntimeError(
-            'Procedure plugin effects must be '
-            '`procedure { name select selector|literal value|-; '
-            'params select selector|literal value|-; '
-            '? body select selector ?; ? language body-language ?; '
-            '? _params-source select selector ? }`.'
+            'Procedure plugin effects must be a `procedure { ... }` block with '
+            '`name ...` and `params ...`, plus optional `body select selector`, '
+            '`language body-language`, and `_params-source select selector`.'
         )
 
     config_text = _metadata_body_text(command.words[1])

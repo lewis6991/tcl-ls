@@ -36,6 +36,7 @@ class LoweredScript:
 @dataclass(frozen=True, slots=True)
 class LoweredScriptBody:
     script: LoweredScript
+    word_index: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -431,7 +432,7 @@ class _Lowerer:
                 command.words[2] if len(command.words) > 2 else None
             ),
             body_span=body_span(body_word) if body_word is not None else None,
-            body=self._lower_script_word(body_word),
+            body=self._lower_script_word(body_word, word_index=3),
         )
 
     def _lower_namespace(
@@ -453,7 +454,10 @@ class _Lowerer:
             word_references=word_references,
             namespace_name=word_static_text(namespace_word) if namespace_word is not None else None,
             namespace_span=namespace_word.span if namespace_word is not None else None,
-            body=self._lower_script_word(command.words[3] if len(command.words) > 3 else None),
+            body=self._lower_script_word(
+                command.words[3] if len(command.words) > 3 else None,
+                word_index=3,
+            ),
         )
 
     def _lower_for(
@@ -467,13 +471,20 @@ class _Lowerer:
             command_name=command_name,
             word_references=word_references,
             start_body=self._lower_script_word(
-                command.words[1] if len(command.words) > 1 else None
+                command.words[1] if len(command.words) > 1 else None,
+                word_index=1,
             ),
             condition=self._lower_condition_word(
                 command.words[2] if len(command.words) > 2 else None
             ),
-            next_body=self._lower_script_word(command.words[3] if len(command.words) > 3 else None),
-            body=self._lower_script_word(command.words[4] if len(command.words) > 4 else None),
+            next_body=self._lower_script_word(
+                command.words[3] if len(command.words) > 3 else None,
+                word_index=3,
+            ),
+            body=self._lower_script_word(
+                command.words[4] if len(command.words) > 4 else None,
+                word_index=4,
+            ),
         )
 
     def _lower_if(
@@ -506,7 +517,8 @@ class _Lowerer:
                         )
                         break
                     else_body = self._lower_script_word(
-                        command.words[index + 1] if index + 1 < len(command.words) else None
+                        command.words[index + 1] if index + 1 < len(command.words) else None,
+                        word_index=index + 1,
                     )
                     if index + 2 < len(command.words):
                         self._emit_analysis_diagnostic(
@@ -543,7 +555,10 @@ class _Lowerer:
             clauses.append(
                 LoweredIfClause(
                     condition=condition,
-                    body=self._lower_script_word(command.words[body_index]),
+                    body=self._lower_script_word(
+                        command.words[body_index],
+                        word_index=body_index,
+                    ),
                 )
             )
             index = body_index + 1
@@ -566,7 +581,10 @@ class _Lowerer:
             command=command,
             command_name=command_name,
             word_references=word_references,
-            body=self._lower_script_word(command.words[1] if len(command.words) > 1 else None),
+            body=self._lower_script_word(
+                command.words[1] if len(command.words) > 1 else None,
+                word_index=1,
+            ),
         )
 
     def _lower_try(
@@ -591,7 +609,7 @@ class _Lowerer:
                     if index + 1 < len(command.words) and not command.words[index + 1].expanded
                     else None
                 )
-                finally_body = self._lower_script_word(body_word)
+                finally_body = self._lower_script_word(body_word, word_index=index + 1)
                 break
 
             if clause_name not in {'on', 'trap'}:
@@ -604,7 +622,10 @@ class _Lowerer:
             handlers.append(
                 LoweredTryHandler(
                     binding_word=command.words[index + 2],
-                    body=self._lower_script_word(command.words[index + 3]),
+                    body=self._lower_script_word(
+                        command.words[index + 3],
+                        word_index=index + 3,
+                    ),
                 )
             )
             index += 4
@@ -616,7 +637,7 @@ class _Lowerer:
             command=command,
             command_name=command_name,
             word_references=word_references,
-            body=self._lower_script_word(body_word),
+            body=self._lower_script_word(body_word, word_index=1),
             handlers=tuple(handlers),
             finally_body=finally_body,
         )
@@ -644,7 +665,10 @@ class _Lowerer:
         if layout.branch_list_word is not None:
             branch_patterns, branch_bodies = self._lower_switch_branch_list(layout.branch_list_word)
         else:
-            branch_patterns, branch_bodies = self._lower_switch_branch_words(layout.branch_words)
+            branch_patterns, branch_bodies = self._lower_switch_branch_words(
+                layout.branch_words,
+                start_index=command.words.index(layout.branch_words[0]),
+            )
 
         return LoweredSwitchCommand(
             command=command,
@@ -671,7 +695,10 @@ class _Lowerer:
             condition=self._lower_condition_word(
                 command.words[1] if len(command.words) > 1 else None
             ),
-            body=self._lower_script_word(command.words[2] if len(command.words) > 2 else None),
+            body=self._lower_script_word(
+                command.words[2] if len(command.words) > 2 else None,
+                word_index=2,
+            ),
         )
 
     def _lower_condition_word(self, word: Word | None) -> LoweredCondition | None:
@@ -697,7 +724,12 @@ class _Lowerer:
             command_substitutions=tuple(command_substitutions),
         )
 
-    def _lower_script_word(self, word: Word | None) -> LoweredScriptBody | None:
+    def _lower_script_word(
+        self,
+        word: Word | None,
+        *,
+        word_index: int | None = None,
+    ) -> LoweredScriptBody | None:
         if word is None:
             return None
         if isinstance(word, BracedWord) and not word.expanded:
@@ -705,12 +737,16 @@ class _Lowerer:
                 script=self._lower_embedded_script(
                     _braced_word_raw_content(word),
                     word.content_span.start,
-                )
+                ),
+                word_index=word_index,
             )
         text = word_static_text(word)
         if text is None:
             return None
-        return LoweredScriptBody(script=self._lower_embedded_script(text, word.content_span.start))
+        return LoweredScriptBody(
+            script=self._lower_embedded_script(text, word.content_span.start),
+            word_index=word_index,
+        )
 
     def _lower_embedded_script(self, text: str, start_position: Position) -> LoweredScript:
         if not self._collect_lexical_spans:
@@ -858,7 +894,8 @@ class _Lowerer:
             pending_patterns = []
             bodies.append(
                 LoweredScriptBody(
-                    script=self._lower_embedded_script(body_item.text, body_item.content_start)
+                    script=self._lower_embedded_script(body_item.text, body_item.content_start),
+                    word_index=None,
                 )
             )
         return tuple(branch_patterns), tuple(bodies)
@@ -866,6 +903,8 @@ class _Lowerer:
     def _lower_switch_branch_words(
         self,
         branch_words: tuple[Word, ...],
+        *,
+        start_index: int,
     ) -> tuple[tuple[tuple[str | None, ...], ...], tuple[LoweredScriptBody, ...]]:
         if len(branch_words) % 2 != 0:
             self._emit_analysis_diagnostic(
@@ -883,7 +922,10 @@ class _Lowerer:
             body_word = branch_words[index + 1]
             if word_static_text(body_word) == '-':
                 continue
-            lowered_body = self._lower_script_word(body_word)
+            lowered_body = self._lower_script_word(
+                body_word,
+                word_index=start_index + index + 1,
+            )
             if lowered_body is not None:
                 branch_patterns.append(tuple(pending_patterns))
                 bodies.append(lowered_body)

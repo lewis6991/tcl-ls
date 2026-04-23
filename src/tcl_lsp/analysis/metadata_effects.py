@@ -5,6 +5,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from tcl_lsp.analysis.facts import FactExtractor
+from tcl_lsp.analysis.facts.utils import normalize_command_name
 from tcl_lsp.analysis.index import WorkspaceIndex
 from tcl_lsp.analysis.metadata_commands import (
     MetadataCommand,
@@ -14,7 +15,7 @@ from tcl_lsp.analysis.metadata_commands import (
     MetadataSelector,
     MetadataSource,
     SourceBase,
-    all_metadata_commands,
+    file_scoped_annotated_metadata_commands,
     select_argument_indices,
 )
 from tcl_lsp.analysis.model import CommandCall, DocumentFacts, ProcDecl
@@ -22,7 +23,6 @@ from tcl_lsp.cache import metadata_lru_cache
 from tcl_lsp.metadata_paths import (
     DEFAULT_METADATA_REGISTRY,
     MetadataRegistry,
-    metadata_lookup_names,
 )
 from tcl_lsp.parser import Parser
 from tcl_lsp.project.paths import source_id_to_path
@@ -107,10 +107,10 @@ def dependency_required_packages(
 @metadata_lru_cache(maxsize=1)
 def _candidate_effect_command_names(metadata_registry: MetadataRegistry) -> frozenset[str]:
     candidates: set[str] = set()
-    for _, metadata_command in _metadata_command_effects(metadata_registry).items():
-        tail = metadata_command.name.rsplit('::', 1)[-1]
+    for _, command_name in _metadata_command_effects(metadata_registry).keys():
+        tail = command_name.rsplit('::', 1)[-1]
         candidates.add(tail)
-        candidates.add(metadata_command.name)
+        candidates.add(command_name)
     return frozenset(candidates)
 
 
@@ -118,27 +118,16 @@ def _candidate_effect_command_names(metadata_registry: MetadataRegistry) -> froz
 def _metadata_command_effects(
     metadata_registry: MetadataRegistry,
 ) -> dict[tuple[str, str], MetadataCommand]:
-    effects_by_key: dict[tuple[str, str], MetadataCommand] = {}
-    for metadata_command in all_metadata_commands(metadata_registry=metadata_registry):
-        if metadata_command.context_name is not None:
-            continue
-        if not any(
+    effects_by_key = {
+        key: metadata_command
+        for key, metadata_command in file_scoped_annotated_metadata_commands(
+            metadata_registry=metadata_registry
+        ).items()
+        if any(
             isinstance(annotation, (MetadataPackage, MetadataContext, MetadataSource))
             for annotation in metadata_command.annotations
-        ):
-            continue
-        for path_name in metadata_lookup_names(metadata_command.metadata_path):
-            key = (path_name, metadata_command.name)
-            existing = effects_by_key.get(key)
-            if existing is not None and (
-                existing.options != metadata_command.options
-                or existing.annotations != metadata_command.annotations
-            ):
-                raise RuntimeError(
-                    f'Conflicting metadata effects for `{metadata_command.name}` in '
-                    f'`{metadata_command.metadata_path.name}`.'
-                )
-            effects_by_key[key] = metadata_command
+        )
+    }
 
     if not effects_by_key:
         raise RuntimeError('No metadata effect entries were loaded.')
@@ -180,7 +169,7 @@ class _DependencyScanner:
             return
 
         metadata_command = _metadata_command_effects(self.metadata_registry).get(
-            (procedure_path.name, procedure.qualified_name)
+            (procedure_path.name, normalize_command_name(procedure.qualified_name))
         )
         if metadata_command is None:
             return

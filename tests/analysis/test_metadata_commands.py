@@ -325,7 +325,7 @@ def test_tcloo_metadata_parses_embedded_context_annotations() -> None:
         for command in commands
         if command.context_name == 'tcloo-method' and command.name == 'my'
     )
-    assert method_body_command.context_fallback == 'tcl'
+    assert method_body_command.context_extends == 'tcl'
 
 
 def test_tepam_metadata_parses_plugin_annotations() -> None:
@@ -357,6 +357,38 @@ def test_builtin_metadata_ignores_context_commands() -> None:
     assert 'tepam::procedure' in tepam_commands
 
 
+def test_project_metadata_allows_language_only_files(tmp_path: Path) -> None:
+    (tmp_path / 'lang.meta.tcl').write_text(
+        'meta module Tcl\nmeta language sample {\n    command step {name}\n}\n',
+        encoding='utf-8',
+    )
+    (tmp_path / 'wrap.meta.tcl').write_text(
+        'meta module Tcl\nmeta command wrapper {script} {\n    enter sample body 1\n}\n',
+        encoding='utf-8',
+    )
+
+    wrapper_command = builtin_command(
+        'wrapper', metadata_registry=create_metadata_registry((tmp_path,))
+    )
+
+    assert wrapper_command is not None
+    assert wrapper_command.metadata_path_name == 'wrap.meta.tcl'
+
+
+def test_project_metadata_allows_language_only_packages(tmp_path: Path) -> None:
+    (tmp_path / 'pkg.meta.tcl').write_text(
+        'meta module SamplePkg\nmeta language sample {\n    command step {name}\n}\n',
+        encoding='utf-8',
+    )
+
+    commands_by_package = builtin_commands_by_package(
+        metadata_registry=create_metadata_registry((tmp_path,))
+    )
+
+    assert 'SamplePkg' in commands_by_package
+    assert commands_by_package['SamplePkg'] == {}
+
+
 def test_metadata_rejects_spaced_top_level_command_names(tmp_path: Path) -> None:
     metadata_path = tmp_path / 'bad.meta.tcl'
     metadata_path.write_text(
@@ -381,6 +413,27 @@ def test_metadata_rejects_spaced_context_command_names(tmp_path: Path) -> None:
     with pytest.raises(
         RuntimeError,
         match='Metadata command entries must use single command names',
+    ):
+        load_metadata_commands(metadata_path)
+
+
+@pytest.mark.parametrize(
+    'metadata_text',
+    (
+        'proc helper {} {}\nmeta command demo {args}\n',
+        'mtea command demo {args}\n',
+    ),
+)
+def test_metadata_rejects_non_meta_top_level_entries(
+    tmp_path: Path,
+    metadata_text: str,
+) -> None:
+    metadata_path = tmp_path / 'bad.meta.tcl'
+    metadata_path.write_text(metadata_text, encoding='utf-8')
+
+    with pytest.raises(
+        RuntimeError,
+        match='Metadata top-level entries must be',
     ):
         load_metadata_commands(metadata_path)
 
@@ -454,10 +507,10 @@ def test_metadata_parses_language_entries_and_enter_annotations(tmp_path: Path) 
     assert language_command.signature == 'body'
 
 
-def test_metadata_parses_language_fallback_clauses(tmp_path: Path) -> None:
+def test_metadata_parses_language_extends_clauses(tmp_path: Path) -> None:
     metadata_path = tmp_path / 'sample.meta.tcl'
     metadata_path.write_text(
-        'meta language sample {\n    fallback tcl\n    command step {body}\n}\n',
+        'meta language sample {\n    extends tcl\n    command step {body}\n}\n',
         encoding='utf-8',
     )
 
@@ -468,7 +521,7 @@ def test_metadata_parses_language_fallback_clauses(tmp_path: Path) -> None:
         if command.context_name == 'sample' and command.name == 'step'
     )
 
-    assert language_command.context_fallback == 'tcl'
+    assert language_command.context_extends == 'tcl'
 
 
 def test_metadata_treats_form_as_regular_shape_without_variants(tmp_path: Path) -> None:

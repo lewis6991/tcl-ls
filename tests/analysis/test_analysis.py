@@ -4,6 +4,7 @@ from pathlib import Path
 
 from tcl_lsp.analysis import AnalysisResult, DocumentFacts, FactExtractor, Resolver, WorkspaceIndex
 from tcl_lsp.analysis.builtins import builtin_command
+from tcl_lsp.analysis.metadata_effects import dependency_required_packages
 from tcl_lsp.metadata_paths import DEFAULT_METADATA_REGISTRY, create_metadata_registry
 from tcl_lsp.parser import Parser
 
@@ -2420,6 +2421,118 @@ def test_analysis_does_not_guess_sibling_metadata_when_tcl_and_tm_both_exist(
         if diagnostic.code == 'unresolved-variable'
     }
     assert 'Unresolved variable `out`.' in unresolved_messages
+
+
+def test_analysis_later_metadata_roots_can_clear_sibling_bind_annotations(
+    parser: Parser,
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / 'main.tcl'
+    source_path.write_text(
+        'proc wrapper {x} {}\nproc use {} {\n    wrapper foo\n    puts $foo\n}\n',
+        encoding='utf-8',
+    )
+
+    early_root = tmp_path / 'early'
+    early_root.mkdir()
+    (early_root / 'main.meta.tcl').write_text(
+        'meta command wrapper {name} {\n    bind 1 set\n}\n',
+        encoding='utf-8',
+    )
+
+    late_root = tmp_path / 'late'
+    late_root.mkdir()
+    (late_root / 'main.meta.tcl').write_text(
+        'meta command wrapper {name}\n',
+        encoding='utf-8',
+    )
+
+    _, analysis = _analyze_path(parser, source_path, metadata_paths=(early_root, late_root))
+
+    unresolved_messages = {
+        diagnostic.message
+        for diagnostic in analysis.diagnostics
+        if diagnostic.code == 'unresolved-variable'
+    }
+    assert 'Unresolved variable `foo`.' in unresolved_messages
+
+
+def test_analysis_applies_unqualified_sibling_metadata_effects_to_local_procedures(
+    parser: Parser,
+    tmp_path: Path,
+) -> None:
+    metadata_registry = create_metadata_registry((tmp_path,))
+    extractor = FactExtractor(parser, metadata_registry=metadata_registry)
+    workspace = WorkspaceIndex()
+
+    source_path = tmp_path / 'main.tcl'
+    source_path.write_text(
+        'proc wrapper {pkg} {}\nwrapper foo\n',
+        encoding='utf-8',
+    )
+    (tmp_path / 'main.meta.tcl').write_text(
+        'meta command wrapper {pkg} {\n    package select 1\n}\n',
+        encoding='utf-8',
+    )
+
+    parse_result = parser.parse_document(
+        source_path.as_uri(),
+        source_path.read_text(encoding='utf-8'),
+    )
+    facts = extractor.extract(parse_result)
+    workspace.update(facts.uri, facts)
+
+    assert dependency_required_packages(
+        source_path,
+        facts,
+        workspace,
+        metadata_registry=metadata_registry,
+    ) == frozenset({'foo'})
+
+
+def test_analysis_later_metadata_roots_can_clear_sibling_metadata_effects(
+    parser: Parser,
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / 'main.tcl'
+    source_path.write_text(
+        'proc wrapper {script} {}\nwrapper {package require foo}\n',
+        encoding='utf-8',
+    )
+
+    early_root = tmp_path / 'early'
+    early_root.mkdir()
+    (early_root / 'main.meta.tcl').write_text(
+        'meta command ::wrapper {script} {\n    enter tcl body 1\n}\n',
+        encoding='utf-8',
+    )
+
+    late_root = tmp_path / 'late'
+    late_root.mkdir()
+    (late_root / 'main.meta.tcl').write_text(
+        'meta command ::wrapper {script}\n',
+        encoding='utf-8',
+    )
+
+    metadata_registry = create_metadata_registry((early_root, late_root))
+    extractor = FactExtractor(parser, metadata_registry=metadata_registry)
+    workspace = WorkspaceIndex()
+    parse_result = parser.parse_document(
+        source_path.as_uri(),
+        source_path.read_text(encoding='utf-8'),
+    )
+    facts = extractor.extract(parse_result)
+    workspace.update(facts.uri, facts)
+
+    assert (
+        dependency_required_packages(
+            source_path,
+            facts,
+            workspace,
+            metadata_registry=metadata_registry,
+        )
+        == frozenset()
+    )
 
 
 def test_analysis_keeps_option_aware_bindings_conservative_when_prefix_is_dynamic(
