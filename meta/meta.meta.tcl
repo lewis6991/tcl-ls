@@ -109,9 +109,18 @@ meta module Tcl
 #       _params-source select selector
 #
 # plugin script commandPrefix
-#   Run a Tcl plugin to produce dynamic metadata effects. Plugin procedure
-#   effects should use the same `select`/`literal` field vocabulary as the
-#   declarative `procedure` annotation.
+#   Run a Tcl plugin to produce dynamic metadata effects. Plugins may return
+#   only the dynamic effect subset:
+#       bind selector kind
+#       ref selector
+#       enter language body selector ? owner selector ?
+#       package literal packageName
+#       package select selector
+#       source selector caller|definition
+#       procedure { ... }
+#   Plugin `procedure` effects use the same `select`/`literal` field
+#   vocabulary as the declarative `procedure` annotation. Plugin selectors
+#   apply to the full command word list and do not support `after-options`.
 #
 # fallback tcl
 #   Allow the embedded language to fall back to ordinary Tcl command

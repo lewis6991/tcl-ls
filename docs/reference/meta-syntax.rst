@@ -739,13 +739,21 @@ Example:
 Plugin Return Format
 --------------------
 
-A plugin returns a Tcl list of effects. Effects should reuse the declarative
-metadata surface as much as possible.
+A plugin returns a Tcl list of effect clauses. Plugin effects reuse the same
+command-body clause surface as declarative metadata, but only for the dynamic
+effect subset.
 
-The current target effect shape is:
+Supported plugin effects are:
 
 .. code-block:: tcl
 
+   bind selector kind
+   ref selector
+   enter language body selector ?owner selector?
+   package literal packageName
+   package select selector
+   source selector caller
+   source selector definition
    procedure {
        name select 1
        params literal {left right}
@@ -756,9 +764,16 @@ The current target effect shape is:
 
 Effect rules:
 
-* plugin ``procedure`` effects should use the same field names and value kinds
-  as declarative ``procedure`` clauses
-* plugin positions are 1-based, not separate zero-based ``*-index`` fields
+* plugins may return ``bind``, ``ref``, ``enter``, ``package``, ``source``, and
+  ``procedure`` clauses
+* plugins may not return static declaration constructs like ``command``,
+  ``variants``, ``form``, ``option``, or nested ``plugin`` clauses
+* plugin selectors are 1-based and apply to the full command word list passed
+  to the plugin
+* plugin selectors do not support ``after-options`` because plugins do not
+  declare option tables for the generic selector machinery
+* plugin ``procedure`` effects use the same field names and value kinds as
+  declarative ``procedure`` clauses
 * ``_params-source`` is a provisional escape hatch for plugin-derived literal
   parameters whose source location still needs a coarse word anchor
 * ``_params-source`` is intentionally separate from ``params`` so it can be
@@ -769,13 +784,18 @@ Example plugin return:
 
 .. code-block:: tcl
 
-   return [list [list procedure {
-       name select 1
-       params literal {left right}
-       _params-source select 2
-       body select 3
-       language sample
-   }]]
+   return {
+       {bind 2 set}
+       {package literal TclOO}
+       {enter tcl body 3}
+       {procedure {
+           name select 1
+           params literal {left right}
+           _params-source select 2
+           body select 3
+           language sample
+       }}
+   }
 
 The plugin host runs each call in a fresh safe Tcl interpreter, so plugins do
 not share state between invocations and do not have access to unsafe Tcl

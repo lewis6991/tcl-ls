@@ -130,6 +130,58 @@ def _write_declaration_plugin_bundle(metadata_root: Path) -> Path:
     return plugin_path
 
 
+def _write_effect_clause_plugin_bundle(metadata_root: Path) -> Path:
+    metadata_root.mkdir(parents=True, exist_ok=True)
+    plugin_path = metadata_root / 'effects.tcl'
+    plugin_path.write_text(
+        'namespace eval ::tcl_lsp::plugins::sample {}\n'
+        'proc ::tcl_lsp::plugins::sample::effects {words info} {\n'
+        '    switch -- [dict get $info metadata-command] {\n'
+        '        dsl::run {\n'
+        '            if {[llength $words] < 4} {\n'
+        '                return {}\n'
+        '            }\n'
+        '            return [list \\\n'
+        '                [list bind 2 set] \\\n'
+        '                [list source 3 caller] \\\n'
+        '                [list package literal TclOO] \\\n'
+        '                [list enter tcl body 4] \\\n'
+        '            ]\n'
+        '        }\n'
+        '        dsl::use {\n'
+        '            if {[llength $words] < 2} {\n'
+        '                return {}\n'
+        '            }\n'
+        '            return [list [list ref 2]]\n'
+        '        }\n'
+        '        dsl::loadlist {\n'
+        '            if {[llength $words] < 2} {\n'
+        '                return {}\n'
+        '            }\n'
+        '            return [list [list source list 2 caller]]\n'
+        '        }\n'
+        '    }\n'
+        '    return {}\n'
+        '}\n',
+        encoding='utf-8',
+    )
+    (metadata_root / 'effects.meta.tcl').write_text(
+        '# Project metadata loaded from project-local plugin configuration.\n'
+        'meta module Tcl\n'
+        'meta command dsl::run {name helper body} {\n'
+        '    plugin effects.tcl ::tcl_lsp::plugins::sample::effects\n'
+        '}\n'
+        'meta command dsl::use {name} {\n'
+        '    plugin effects.tcl ::tcl_lsp::plugins::sample::effects\n'
+        '}\n'
+        'meta command dsl::loadlist {paths} {\n'
+        '    plugin effects.tcl ::tcl_lsp::plugins::sample::effects\n'
+        '}\n',
+        encoding='utf-8',
+    )
+    return plugin_path
+
+
 def test_check_project_resolves_cross_file_procedures(tmp_path: Path) -> None:
     project_root = tmp_path / 'workspace'
     project_root.mkdir()
@@ -147,6 +199,60 @@ def test_check_project_resolves_cross_file_procedures(tmp_path: Path) -> None:
     assert report.source_count == 2
     assert [item.diagnostic.code for item in report.diagnostics] == ['unresolved-command']
     assert report.diagnostics[0].path == (project_root / 'use.tcl').resolve(strict=False)
+
+
+def test_check_project_applies_dynamic_plugin_effect_clauses(tmp_path: Path) -> None:
+    project_root = tmp_path / 'workspace'
+    plugin_path = _write_effect_clause_plugin_bundle(project_root / '.tcl-ls')
+    (project_root / 'helper.tcl').write_text(
+        'proc helper_proc {} {return ok}\n',
+        encoding='utf-8',
+    )
+    (project_root / 'main.tcl').write_text(
+        'proc demo {} {\n'
+        '    dsl::run local helper.tcl {set nested 1}\n'
+        '    set ok 1\n'
+        '    dsl::use ok\n'
+        '    puts $local\n'
+        '    helper_proc\n'
+        '    oo::class create Demo {}\n'
+        '    puts $nested\n'
+        '}\n'
+        'demo\n',
+        encoding='utf-8',
+    )
+
+    report = check_project(project_root, plugin_paths=(plugin_path,))
+
+    assert report.diagnostics == ()
+
+
+def test_check_project_reports_plugin_ref_effect_references(tmp_path: Path) -> None:
+    project_root = tmp_path / 'workspace'
+    plugin_path = _write_effect_clause_plugin_bundle(project_root / '.tcl-ls')
+    (project_root / 'main.tcl').write_text(
+        'proc demo {} {\n    dsl::use missing\n}\ndemo\n',
+        encoding='utf-8',
+    )
+
+    report = check_project(project_root, plugin_paths=(plugin_path,))
+
+    assert [item.diagnostic.code for item in report.diagnostics] == ['unresolved-variable']
+
+
+def test_check_project_expands_plugin_source_list_selectors(tmp_path: Path) -> None:
+    project_root = tmp_path / 'workspace'
+    plugin_path = _write_effect_clause_plugin_bundle(project_root / '.tcl-ls')
+    (project_root / 'a.tcl').write_text('proc alpha {} {return ok}\n', encoding='utf-8')
+    (project_root / 'b.tcl').write_text('proc beta {} {return ok}\n', encoding='utf-8')
+    (project_root / 'main.tcl').write_text(
+        'dsl::loadlist {a.tcl b.tcl}\nalpha\nbeta\n',
+        encoding='utf-8',
+    )
+
+    report = check_project(project_root, plugin_paths=(plugin_path,))
+
+    assert report.diagnostics == ()
 
 
 def test_check_project_uses_pkgindex_metadata(tmp_path: Path) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from lsprotocol import types
 
@@ -69,10 +70,12 @@ from tcl_lsp.analysis.metadata_commands import (
     MetadataBind,
     MetadataCommand,
     MetadataContext,
+    MetadataPackage,
     MetadataPlugin,
     MetadataProcedure,
     MetadataRef,
     MetadataSelector,
+    MetadataSource,
     select_argument_indices,
 )
 from tcl_lsp.analysis.model import (
@@ -106,6 +109,7 @@ from tcl_lsp.parser.model import (
     Word,
 )
 from tcl_lsp.plugins.host import PluginProcedureEffect, TclPluginHost
+from tcl_lsp.project.paths import source_id_to_path
 
 
 @dataclass(frozen=True, slots=True)
@@ -632,7 +636,31 @@ class _FactCollector:
             },
         )
         for effect in effects:
-            self._collect_plugin_procedure(command, context, effect)
+            if isinstance(effect, PluginProcedureEffect):
+                self._collect_plugin_procedure(
+                    command,
+                    context,
+                    metadata_command=metadata_command,
+                    effect=effect,
+                )
+                continue
+            if isinstance(effect, MetadataContext):
+                entry = self._plugin_embedded_entry(command, context, effect)
+                if entry is not None:
+                    self._collect_embedded_entry(command, context, entry)
+                continue
+            if isinstance(effect, MetadataPackage):
+                self._collect_plugin_package(command, context, effect)
+                continue
+            if isinstance(effect, MetadataSource):
+                self._collect_plugin_source(
+                    command,
+                    context,
+                    metadata_command=metadata_command,
+                    effect=effect,
+                )
+                continue
+            self._collect_plugin_selected_effect(command, context, effect)
 
     def _collect_metadata_procedure(
         self,
@@ -718,47 +746,65 @@ class _FactCollector:
         self,
         command: Command,
         context: _ExtractionContext,
+        *,
+        metadata_command: MetadataCommand,
         effect: PluginProcedureEffect,
     ) -> None:
-        if effect.name_literal is not None:
-            procedure_name = effect.name_literal
+        procedure = effect.procedure
+        if procedure.member_name_selector is None and procedure.member_name_literal is None:
+            procedure_name = metadata_command.name.rsplit(' ', maxsplit=1)[-1]
+            name_span = command.words[0].content_span
+        elif procedure.member_name_literal is not None:
+            procedure_name = procedure.member_name_literal
             name_span = command.words[0].content_span
         else:
-            if effect.name_word_index is None or effect.name_word_index >= len(command.words):
+            name_word = self._selected_plugin_single_word(command, procedure.member_name_selector)
+            if name_word is None:
                 return
-            name_word = command.words[effect.name_word_index]
             procedure_name = word_static_text(name_word)
             if procedure_name is None:
                 return
             name_span = name_word.content_span
 
         body_word: Word | None = None
-        if effect.body_word_index is not None:
-            if effect.body_word_index >= len(command.words):
+        if procedure.body_selector is not None:
+            body_word = self._selected_plugin_single_word(command, procedure.body_selector)
+            if body_word is None:
                 return
-            body_word = command.words[effect.body_word_index]
             if self._embedded_script_text(body_word) is None:
                 return
 
         qualified_name = qualify_name(procedure_name, context.namespace)
         proc_id = proc_symbol_id(context.uri, qualified_name, name_span.start.offset)
-        if effect.parameter_names is not None:
+        if procedure.parameter_literal is not None:
+            source_word = (
+                self._selected_plugin_single_word(command, effect.parameter_source_selector)
+                if effect.parameter_source_selector is not None
+                else None
+            )
             parameters = self._parameter_decls_from_plugin_names(
-                effect.parameter_names,
-                source_span=(
-                    command.words[effect.parameter_word_index].content_span
-                    if effect.parameter_word_index is not None
-                    and effect.parameter_word_index < len(command.words)
-                    else name_span
+                tuple(
+                    item.text
+                    for item in split_tcl_list(
+                        procedure.parameter_literal,
+                        (
+                            source_word.content_span.start
+                            if source_word is not None
+                            else name_span.start
+                        ),
+                    )
                 ),
+                source_span=(source_word.content_span if source_word is not None else name_span),
                 uri=context.uri,
                 proc_symbol_id=proc_id,
             )
             arity = None
-        elif effect.parameter_word_index is not None:
-            if effect.parameter_word_index >= len(command.words):
+        elif procedure.parameter_selector is not None:
+            parameter_word = self._selected_plugin_single_word(
+                command, procedure.parameter_selector
+            )
+            if parameter_word is None:
                 return
-            parameter_word = command.words[effect.parameter_word_index]
             static_text = self._static_list_text(parameter_word)
             if static_text is None:
                 return
@@ -770,7 +816,8 @@ class _FactCollector:
             )
             arity = proc_parameter_arity(parameter_items)
         else:
-            return
+            parameters = ()
+            arity = None
 
         proc_decl = ProcDecl(
             symbol_id=proc_id,
@@ -795,12 +842,220 @@ class _FactCollector:
             namespace=proc_decl.namespace,
             scope_id=proc_decl.symbol_id,
             procedure_symbol_id=proc_decl.symbol_id,
-            embedded_language=effect.body_context,
+            embedded_language=procedure.body_context,
             embedded_owner_name=None,
             flow_state=VariableFlowState.empty(),
         )
         self._record_parameter_bindings(proc_decl.parameters, body_context)
         self._collect_script_body_word(body_word, body_context)
+
+    def _collect_plugin_selected_effect(
+        self,
+        command: Command,
+        context: _ExtractionContext,
+        effect: MetadataBind | MetadataRef,
+    ) -> None:
+        selected_words = self._selected_plugin_words(command, effect.selector)
+        if selected_words is None:
+            return
+
+        if isinstance(effect, MetadataBind):
+            assert effect.kind is not None
+            for selected_word in selected_words:
+                if effect.selector.list_mode:
+                    self._record_list_binding_word(selected_word, context, kind=effect.kind)
+                    continue
+                self._record_simple_binding_word(selected_word, context, kind=effect.kind)
+            return
+
+        for selected_word in selected_words:
+            if effect.selector.list_mode:
+                self._record_list_reference_word(selected_word, context)
+                continue
+            self._record_simple_reference_word(selected_word, context)
+
+    def _collect_plugin_package(
+        self,
+        command: Command,
+        context: _ExtractionContext,
+        effect: MetadataPackage,
+    ) -> None:
+        if effect.literal_package is not None:
+            self._record_plugin_package_require(
+                effect.literal_package,
+                span=command.words[0].span,
+                context=context,
+            )
+            return
+
+        selector = effect.selector
+        if selector is None:
+            return
+
+        selected_words = self._selected_plugin_words(command, selector)
+        if selected_words is None:
+            return
+        for selected_word in selected_words:
+            package_name = word_static_text(selected_word)
+            if package_name is None:
+                continue
+            self._record_plugin_package_require(
+                package_name, span=selected_word.span, context=context
+            )
+
+    def _collect_plugin_source(
+        self,
+        command: Command,
+        context: _ExtractionContext,
+        *,
+        metadata_command: MetadataCommand,
+        effect: MetadataSource,
+    ) -> None:
+        base_directory = self._plugin_source_base_directory(
+            effect.base,
+            call_uri=context.uri,
+            metadata_path=metadata_command.metadata_path,
+        )
+        if base_directory is None:
+            return
+
+        selected_words = self._selected_plugin_words(command, effect.selector)
+        if selected_words is None:
+            return
+        for selected_word in selected_words:
+            source_items = (
+                tuple((item.text, item.span) for item in self._static_list_items(selected_word))
+                if effect.selector.list_mode
+                else self._plugin_source_items(selected_word)
+            )
+            for path_text, path_span in source_items:
+                target_path = Path(path_text).expanduser()
+                if not target_path.is_absolute():
+                    target_path = base_directory / target_path
+                self._source_directives.append(
+                    SourceDirective(
+                        uri=context.uri,
+                        target_uri=target_path.resolve(strict=False).as_uri(),
+                        span=path_span,
+                    )
+                )
+
+    def _plugin_embedded_entry(
+        self,
+        command: Command,
+        context: _ExtractionContext,
+        effect: MetadataContext,
+    ) -> EmbeddedLanguageEntry | None:
+        owner_name: str | None = None
+        owner_namespace = context.namespace
+        if effect.owner_selector is not None:
+            owner_word = self._selected_plugin_single_word(command, effect.owner_selector)
+            if owner_word is None:
+                return None
+            owner_text = word_static_text(owner_word)
+            if owner_text is None:
+                return None
+            owner_name = qualify_name(owner_text, context.namespace)
+            owner_namespace = namespace_for_name(owner_name)
+
+        body_indices = self._selected_plugin_word_indices(command, effect.body_selector)
+        if body_indices is None or not body_indices:
+            return None
+        if body_indices != tuple(range(body_indices[0], body_indices[-1] + 1)):
+            return None
+
+        if len(body_indices) == 1:
+            return EmbeddedLanguageEntry(
+                language=effect.context_name,
+                owner_name=owner_name,
+                namespace=owner_namespace,
+                script_word_index=body_indices[0],
+                inline_command_start_index=None,
+            )
+
+        return EmbeddedLanguageEntry(
+            language=effect.context_name,
+            owner_name=owner_name,
+            namespace=owner_namespace,
+            script_word_index=None,
+            inline_command_start_index=body_indices[0],
+        )
+
+    def _selected_plugin_word_indices(
+        self,
+        command: Command,
+        selector: MetadataSelector,
+    ) -> tuple[int, ...] | None:
+        # Plugin selectors intentionally apply to the full command word list,
+        # not just post-prefix metadata arguments.
+        return select_argument_indices(
+            selector,
+            tuple(word_static_text(word) for word in command.words),
+            (),
+            tuple(word.expanded for word in command.words),
+        )
+
+    def _selected_plugin_words(
+        self,
+        command: Command,
+        selector: MetadataSelector,
+    ) -> tuple[Word, ...] | None:
+        selected_indices = self._selected_plugin_word_indices(command, selector)
+        if selected_indices is None:
+            return None
+        return tuple(
+            command.words[index] for index in selected_indices if index < len(command.words)
+        )
+
+    def _selected_plugin_single_word(
+        self,
+        command: Command,
+        selector: MetadataSelector | None,
+    ) -> Word | None:
+        if selector is None:
+            return None
+        selected_words = self._selected_plugin_words(command, selector)
+        if selected_words is None or len(selected_words) != 1:
+            return None
+        return selected_words[0]
+
+    def _plugin_source_items(self, word: Word) -> tuple[tuple[str, Span], ...]:
+        path_text = word_static_text(word)
+        if path_text is None:
+            return ()
+        return ((path_text, word.span),)
+
+    def _record_plugin_package_require(
+        self,
+        package_name: str,
+        *,
+        span: Span,
+        context: _ExtractionContext,
+    ) -> None:
+        if is_builtin_package(package_name, metadata_registry=self._metadata_registry):
+            self._active_builtin_packages.add(canonical_builtin_package_name(package_name))
+        self._package_requires.append(
+            PackageRequire(
+                uri=context.uri,
+                name=package_name,
+                version_constraints=(),
+                span=span,
+            )
+        )
+
+    def _plugin_source_base_directory(
+        self,
+        base: str,
+        *,
+        call_uri: str,
+        metadata_path: Path,
+    ) -> Path | None:
+        if base == 'definition':
+            return metadata_path.parent
+        source_path = source_id_to_path(call_uri)
+        if source_path is None:
+            return None
+        return source_path.parent
 
     def _collect_embedded_language_entry(
         self,
