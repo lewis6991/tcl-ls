@@ -152,6 +152,48 @@ def _braced_word_raw_content(word: BracedWord) -> str:
     return raw_text
 
 
+def collect_parse_result_lexical_spans(
+    parse_result: ParseResult,
+    *,
+    parser: Parser,
+) -> tuple[tuple[Span, ...], tuple[Span, ...], tuple[Span, ...]]:
+    comment_spans: list[Span] = []
+    string_spans: list[Span] = []
+    operator_spans: list[Span] = []
+    _collect_parse_result_lexical_spans(
+        parse_result,
+        parser=parser,
+        comment_spans=comment_spans,
+        string_spans=string_spans,
+        operator_spans=operator_spans,
+    )
+    return tuple(comment_spans), tuple(string_spans), tuple(operator_spans)
+
+
+def _collect_parse_result_lexical_spans(
+    parse_result: ParseResult,
+    *,
+    parser: Parser,
+    comment_spans: list[Span],
+    string_spans: list[Span],
+    operator_spans: list[Span],
+) -> None:
+    comment_spans.extend(token.span for token in parse_result.tokens if token.kind == 'comment')
+    operator_spans.extend(
+        token.span
+        for token in parse_result.tokens
+        if token.kind == 'separator' and token.text == ';'
+    )
+    _collect_script_lexical_spans(
+        parse_result.script,
+        parser=parser,
+        source_id=parse_result.source_id,
+        comment_spans=comment_spans,
+        string_spans=string_spans,
+        operator_spans=operator_spans,
+    )
+
+
 def _script_lexical_spans(
     script: Script,
     *,
@@ -160,16 +202,357 @@ def _script_lexical_spans(
 ) -> tuple[tuple[Span, ...], tuple[Span, ...]]:
     string_spans: list[Span] = []
     operator_spans: list[Span] = []
+    _collect_script_lexical_spans(
+        script,
+        parser=parser,
+        source_id=source_id,
+        comment_spans=None,
+        string_spans=string_spans,
+        operator_spans=operator_spans,
+    )
+    return tuple(string_spans), tuple(operator_spans)
+
+
+def _collect_script_lexical_spans(
+    script: Script,
+    *,
+    parser: Parser,
+    source_id: str,
+    comment_spans: list[Span] | None,
+    string_spans: list[Span],
+    operator_spans: list[Span],
+) -> None:
     for command in script.commands:
         for word in command.words:
             _collect_word_lexical_spans(
                 word,
                 parser=parser,
                 source_id=source_id,
+                comment_spans=comment_spans,
                 string_spans=string_spans,
                 operator_spans=operator_spans,
             )
-    return tuple(string_spans), tuple(operator_spans)
+        # Structured Tcl commands hide nested scripts inside body words, so the
+        # semantic-token fast path still needs to parse those slots explicitly.
+        if comment_spans is not None:
+            _collect_command_embedded_script_lexical_spans(
+                command,
+                parser=parser,
+                source_id=source_id,
+                comment_spans=comment_spans,
+                string_spans=string_spans,
+                operator_spans=operator_spans,
+            )
+
+
+def _collect_command_embedded_script_lexical_spans(
+    command: Command,
+    *,
+    parser: Parser,
+    source_id: str,
+    comment_spans: list[Span],
+    string_spans: list[Span],
+    operator_spans: list[Span],
+) -> None:
+    if not command.words:
+        return
+
+    command_name = word_static_text(command.words[0])
+    dispatch_name = normalize_command_name(command_name) if command_name is not None else None
+    if dispatch_name == 'proc':
+        _collect_embedded_script_word_lexical_spans(
+            command.words[3] if len(command.words) > 3 else None,
+            parser=parser,
+            source_id=source_id,
+            comment_spans=comment_spans,
+            string_spans=string_spans,
+            operator_spans=operator_spans,
+        )
+        return
+
+    if dispatch_name == 'namespace' and len(command.words) > 1:
+        if word_static_text(command.words[1]) == 'eval':
+            _collect_embedded_script_word_lexical_spans(
+                command.words[3] if len(command.words) > 3 else None,
+                parser=parser,
+                source_id=source_id,
+                comment_spans=comment_spans,
+                string_spans=string_spans,
+                operator_spans=operator_spans,
+            )
+        return
+
+    if dispatch_name == 'for':
+        for word_index in (1, 3, 4):
+            _collect_embedded_script_word_lexical_spans(
+                command.words[word_index] if len(command.words) > word_index else None,
+                parser=parser,
+                source_id=source_id,
+                comment_spans=comment_spans,
+                string_spans=string_spans,
+                operator_spans=operator_spans,
+            )
+        return
+
+    if dispatch_name == 'if':
+        index = 1
+        while index < len(command.words):
+            if index > 1:
+                keyword = word_static_text(command.words[index])
+                if keyword == 'elseif':
+                    index += 1
+                elif keyword == 'else':
+                    _collect_embedded_script_word_lexical_spans(
+                        command.words[index + 1] if index + 1 < len(command.words) else None,
+                        parser=parser,
+                        source_id=source_id,
+                        comment_spans=comment_spans,
+                        string_spans=string_spans,
+                        operator_spans=operator_spans,
+                    )
+                    return
+                else:
+                    return
+
+            body_index = _if_body_word_index(command.words, index + 1)
+            if body_index is None:
+                return
+            _collect_embedded_script_word_lexical_spans(
+                command.words[body_index],
+                parser=parser,
+                source_id=source_id,
+                comment_spans=comment_spans,
+                string_spans=string_spans,
+                operator_spans=operator_spans,
+            )
+            index = body_index + 1
+        return
+
+    if dispatch_name == 'catch':
+        _collect_embedded_script_word_lexical_spans(
+            command.words[1] if len(command.words) > 1 else None,
+            parser=parser,
+            source_id=source_id,
+            comment_spans=comment_spans,
+            string_spans=string_spans,
+            operator_spans=operator_spans,
+        )
+        return
+
+    if dispatch_name == 'try':
+        _collect_embedded_script_word_lexical_spans(
+            command.words[1] if len(command.words) > 1 else None,
+            parser=parser,
+            source_id=source_id,
+            comment_spans=comment_spans,
+            string_spans=string_spans,
+            operator_spans=operator_spans,
+        )
+
+        index = 2
+        while index < len(command.words):
+            clause_word = command.words[index]
+            if clause_word.expanded:
+                return
+
+            clause_name = word_static_text(clause_word)
+            if clause_name == 'finally':
+                _collect_embedded_script_word_lexical_spans(
+                    command.words[index + 1]
+                    if index + 1 < len(command.words) and not command.words[index + 1].expanded
+                    else None,
+                    parser=parser,
+                    source_id=source_id,
+                    comment_spans=comment_spans,
+                    string_spans=string_spans,
+                    operator_spans=operator_spans,
+                )
+                return
+
+            if clause_name not in {'on', 'trap'} or index + 3 >= len(command.words):
+                return
+            if any(command.words[offset].expanded for offset in range(index, index + 4)):
+                return
+            _collect_embedded_script_word_lexical_spans(
+                command.words[index + 3],
+                parser=parser,
+                source_id=source_id,
+                comment_spans=comment_spans,
+                string_spans=string_spans,
+                operator_spans=operator_spans,
+            )
+            index += 4
+        return
+
+    if dispatch_name == 'switch':
+        _collect_switch_embedded_script_lexical_spans(
+            command.words,
+            parser=parser,
+            source_id=source_id,
+            comment_spans=comment_spans,
+            string_spans=string_spans,
+            operator_spans=operator_spans,
+        )
+        return
+
+    if dispatch_name == 'while':
+        _collect_embedded_script_word_lexical_spans(
+            command.words[2] if len(command.words) > 2 else None,
+            parser=parser,
+            source_id=source_id,
+            comment_spans=comment_spans,
+            string_spans=string_spans,
+            operator_spans=operator_spans,
+        )
+
+
+def _collect_switch_embedded_script_lexical_spans(
+    words: tuple[Word, ...],
+    *,
+    parser: Parser,
+    source_id: str,
+    comment_spans: list[Span],
+    string_spans: list[Span],
+    operator_spans: list[Span],
+) -> None:
+    if len(words) < 3:
+        return
+
+    value_index = 1
+    while value_index < len(words):
+        option = word_static_text(words[value_index])
+        if option is None:
+            break
+        if option == '--':
+            value_index += 1
+            break
+        if option in {'-exact', '-glob', '-nocase', '-regexp'}:
+            value_index += 1
+            continue
+        if option in {'-matchvar', '-indexvar'} and value_index + 1 < len(words):
+            value_index += 2
+            continue
+        if option.startswith('-') and option != '-':
+            return
+        break
+
+    branch_words = words[value_index + 1 :]
+    if not branch_words:
+        return
+
+    if len(branch_words) == 1:
+        items = _parse_list_items_for_lexical_spans(branch_words[0])
+        if len(items) % 2 != 0:
+            return
+        for index in range(0, len(items), 2):
+            body_item = items[index + 1]
+            if body_item.text == '-':
+                continue
+            _collect_embedded_script_text_lexical_spans(
+                body_item.text,
+                body_item.content_start,
+                parser=parser,
+                source_id=source_id,
+                comment_spans=comment_spans,
+                string_spans=string_spans,
+                operator_spans=operator_spans,
+            )
+        return
+
+    if len(branch_words) % 2 != 0:
+        return
+
+    for index in range(0, len(branch_words), 2):
+        body_word = branch_words[index + 1]
+        if word_static_text(body_word) == '-':
+            continue
+        _collect_embedded_script_word_lexical_spans(
+            body_word,
+            parser=parser,
+            source_id=source_id,
+            comment_spans=comment_spans,
+            string_spans=string_spans,
+            operator_spans=operator_spans,
+        )
+
+
+def _collect_embedded_script_word_lexical_spans(
+    word: Word | None,
+    *,
+    parser: Parser,
+    source_id: str,
+    comment_spans: list[Span],
+    string_spans: list[Span],
+    operator_spans: list[Span],
+) -> None:
+    if word is None:
+        return
+    if isinstance(word, BracedWord) and not word.expanded:
+        _collect_embedded_script_text_lexical_spans(
+            _braced_word_raw_content(word),
+            word.content_span.start,
+            parser=parser,
+            source_id=source_id,
+            comment_spans=comment_spans,
+            string_spans=string_spans,
+            operator_spans=operator_spans,
+        )
+        return
+
+    text = word_static_text(word)
+    if text is None:
+        return
+    _collect_embedded_script_text_lexical_spans(
+        text,
+        word.content_span.start,
+        parser=parser,
+        source_id=source_id,
+        comment_spans=comment_spans,
+        string_spans=string_spans,
+        operator_spans=operator_spans,
+    )
+
+
+def _collect_embedded_script_text_lexical_spans(
+    text: str,
+    start_position: Position,
+    *,
+    parser: Parser,
+    source_id: str,
+    comment_spans: list[Span],
+    string_spans: list[Span],
+    operator_spans: list[Span],
+) -> None:
+    _collect_parse_result_lexical_spans(
+        parser.parse_embedded_script(
+            source_id=source_id,
+            text=text,
+            start_position=start_position,
+        ),
+        parser=parser,
+        comment_spans=comment_spans,
+        string_spans=string_spans,
+        operator_spans=operator_spans,
+    )
+
+
+def _parse_list_items_for_lexical_spans(word: Word | None) -> tuple[ListItem, ...]:
+    if word is None:
+        return ()
+    if isinstance(word, BracedWord) and not word.expanded:
+        return tuple(split_tcl_list(_braced_word_raw_content(word), word.content_span.start))
+    static_text = word_static_text(word)
+    if static_text is None:
+        return ()
+    return tuple(split_tcl_list(static_text, word.content_span.start))
+
+
+def _if_body_word_index(words: tuple[Word, ...], index: int) -> int | None:
+    if index < len(words) and word_static_text(words[index]) == 'then':
+        index += 1
+    if index >= len(words):
+        return None
+    return index
 
 
 def _collect_word_lexical_spans(
@@ -177,6 +560,7 @@ def _collect_word_lexical_spans(
     *,
     parser: Parser,
     source_id: str,
+    comment_spans: list[Span] | None,
     string_spans: list[Span],
     operator_spans: list[Span],
 ) -> None:
@@ -190,13 +574,22 @@ def _collect_word_lexical_spans(
                     text=_braced_word_raw_content(word),
                     start_position=word.content_span.start,
                 )
-                nested_strings, nested_operators = _script_lexical_spans(
-                    nested_parse_result.script,
-                    parser=parser,
-                    source_id=source_id,
-                )
-                string_spans.extend(nested_strings)
-                operator_spans.extend(nested_operators)
+                if comment_spans is not None:
+                    _collect_parse_result_lexical_spans(
+                        nested_parse_result,
+                        parser=parser,
+                        comment_spans=comment_spans,
+                        string_spans=string_spans,
+                        operator_spans=operator_spans,
+                    )
+                else:
+                    nested_strings, nested_operators = _script_lexical_spans(
+                        nested_parse_result.script,
+                        parser=parser,
+                        source_id=source_id,
+                    )
+                    string_spans.extend(nested_strings)
+                    operator_spans.extend(nested_operators)
         return
 
     if isinstance(word, QuotedWord):

@@ -22,6 +22,7 @@ class ManagedDocument:
     parse_result: ParseResult
     facts: DocumentFacts
     analysis: AnalysisResult
+    lexical_spans_included: bool
 
 
 @dataclass(frozen=True, slots=True)

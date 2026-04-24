@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Callable
+from pathlib import Path
 
 from tcl_lsp.analysis.model import (
     CommandImport,
@@ -10,11 +12,15 @@ from tcl_lsp.analysis.model import (
     ProcDecl,
 )
 
+type PackageIndexLoader = Callable[[Path], tuple[str, tuple[PackageIndexEntry, ...]] | None]
+
 
 class WorkspaceIndex:
     __slots__ = (
         '_command_imports_by_namespace',
         '_documents',
+        '_lazy_package_index_loaders',
+        '_lazy_package_index_paths_by_directory_name',
         '_package_index_entries_by_name',
         '_package_indexes_by_uri',
         '_procedures_by_qualified_name',
@@ -28,6 +34,8 @@ class WorkspaceIndex:
         self._command_imports_by_namespace: dict[str, list[CommandImport]] = defaultdict(list)
         self._provided_packages_by_name: dict[str, list[PackageProvide]] = defaultdict(list)
         self._package_index_entries_by_name: dict[str, list[PackageIndexEntry]] = defaultdict(list)
+        self._lazy_package_index_loaders: dict[Path, PackageIndexLoader] = {}
+        self._lazy_package_index_paths_by_directory_name: dict[str, list[Path]] = defaultdict(list)
 
     def update(self, uri: str, facts: DocumentFacts) -> None:
         self.remove(uri)
@@ -46,6 +54,25 @@ class WorkspaceIndex:
         self._package_indexes_by_uri[uri] = entries
         for entry in entries:
             self._package_index_entries_by_name.setdefault(entry.name, []).append(entry)
+
+    def register_lazy_package_indexes(
+        self,
+        package_index_paths: tuple[Path, ...],
+        *,
+        load_package_index: PackageIndexLoader,
+    ) -> None:
+        for package_index_path in package_index_paths:
+            resolved_path = package_index_path.resolve(strict=False)
+            if (
+                resolved_path.as_uri() in self._package_indexes_by_uri
+                or resolved_path in self._lazy_package_index_loaders
+            ):
+                continue
+            self._lazy_package_index_loaders[resolved_path] = load_package_index
+            self._lazy_package_index_paths_by_directory_name.setdefault(
+                resolved_path.parent.name,
+                [],
+            ).append(resolved_path)
 
     def remove(self, uri: str) -> None:
         existing = self._documents.pop(uri, None)
@@ -167,6 +194,7 @@ class WorkspaceIndex:
         return tuple(self._provided_packages_by_name.get(package_name, ()))
 
     def package_index_entries_for_name(self, package_name: str) -> tuple[PackageIndexEntry, ...]:
+        self._ensure_package_index_entries(package_name)
         return tuple(self._package_index_entries_by_name.get(package_name, ()))
 
     def package_source_uris(self, package_name: str) -> tuple[str, ...]:
@@ -178,16 +206,71 @@ class WorkspaceIndex:
         return tuple(source_uris)
 
     def package_indexes(self) -> tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...]:
+        self._materialize_all_package_indexes()
         return tuple(sorted(self._package_indexes_by_uri.items(), key=lambda item: item[0]))
 
     def has_package(self, package_name: str) -> bool:
         return bool(
             self._provided_packages_by_name.get(package_name)
-            or self._package_index_entries_by_name.get(package_name)
+            or self.package_index_entries_for_name(package_name)
         )
 
     def documents(self) -> tuple[DocumentFacts, ...]:
         return tuple(self._documents.values())
+
+    def clone(self, *, include_documents: bool = True) -> WorkspaceIndex:
+        cloned = WorkspaceIndex()
+        if include_documents:
+            for uri, facts in self._documents.items():
+                cloned.update(uri, facts)
+        for uri, entries in self._package_indexes_by_uri.items():
+            cloned.update_package_index(uri, entries)
+        cloned._lazy_package_index_loaders = dict(self._lazy_package_index_loaders)
+        cloned._lazy_package_index_paths_by_directory_name = {
+            directory_name: list(paths)
+            for directory_name, paths in self._lazy_package_index_paths_by_directory_name.items()
+        }
+        return cloned
+
+    def _ensure_package_index_entries(self, package_name: str) -> None:
+        if (
+            self._package_index_entries_by_name.get(package_name)
+            or not self._lazy_package_index_loaders
+        ):
+            return
+
+        for package_index_path in tuple(
+            self._lazy_package_index_paths_by_directory_name.get(package_name, ())
+        ):
+            self._materialize_package_index(package_index_path)
+
+        if self._package_index_entries_by_name.get(package_name):
+            return
+
+        self._materialize_all_package_indexes()
+
+    def _materialize_all_package_indexes(self) -> None:
+        for package_index_path in tuple(self._lazy_package_index_loaders):
+            self._materialize_package_index(package_index_path)
+
+    def _materialize_package_index(self, package_index_path: Path) -> None:
+        loader = self._lazy_package_index_loaders.pop(package_index_path, None)
+        if loader is None:
+            return
+
+        directory_name = package_index_path.parent.name
+        current_paths = self._lazy_package_index_paths_by_directory_name.get(directory_name)
+        if current_paths is not None:
+            self._lazy_package_index_paths_by_directory_name[directory_name] = [
+                candidate for candidate in current_paths if candidate != package_index_path
+            ]
+            if not self._lazy_package_index_paths_by_directory_name[directory_name]:
+                del self._lazy_package_index_paths_by_directory_name[directory_name]
+
+        indexed_entry = loader(package_index_path)
+        if indexed_entry is None:
+            return
+        self.update_package_index(*indexed_entry)
 
 
 def _procedure_candidates(raw_name: str, namespace: str) -> list[str]:

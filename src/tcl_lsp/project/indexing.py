@@ -3,12 +3,13 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from tcl_lsp.analysis.facts import FactExtractor
+from tcl_lsp.analysis.builtins import is_builtin_package
+from tcl_lsp.analysis.facts.utils import extract_ifneeded_source_uri
 from tcl_lsp.analysis.index import WorkspaceIndex
 from tcl_lsp.analysis.metadata_effects import metadata_dependency_overlay
 from tcl_lsp.analysis.model import DocumentFacts, PackageIndexEntry
 from tcl_lsp.metadata_paths import DEFAULT_METADATA_REGISTRY, MetadataRegistry
-from tcl_lsp.parser import Parser
+from tcl_lsp.parser import Parser, word_static_text
 from tcl_lsp.project.paths import candidate_package_roots, read_source_file
 
 type PackageIndexCatalog = tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...]
@@ -19,21 +20,18 @@ def build_package_index_catalog(
     target: Path,
     *,
     parser: Parser,
-    extractor: FactExtractor,
     library_paths: Sequence[Path] = (),
 ) -> PackageIndexCatalog:
     seen_paths: set[Path] = set()
     catalog_entries: list[tuple[str, tuple[PackageIndexEntry, ...]]] = []
     for root in _package_index_scan_roots(target, library_paths=library_paths):
-        for pkg_index_path in sorted(root.rglob('pkgIndex.tcl')):
-            resolved_path = pkg_index_path.resolve(strict=False)
-            if resolved_path in seen_paths:
+        for pkg_index_path in discover_package_index_paths(root):
+            if pkg_index_path in seen_paths:
                 continue
-            seen_paths.add(resolved_path)
-            indexed_entry = _index_package_index(
-                resolved_path,
+            seen_paths.add(pkg_index_path)
+            indexed_entry = load_package_index(
+                pkg_index_path,
                 parser=parser,
-                extractor=extractor,
             )
             if indexed_entry is not None:
                 catalog_entries.append(indexed_entry)
@@ -48,25 +46,53 @@ def apply_package_index_catalog(
         workspace_index.update_package_index(pkg_index_uri, package_index_entries)
 
 
-def scan_package_root(
+def discover_package_index_paths(
     package_root: Path,
+) -> tuple[Path, ...]:
+    return tuple(sorted(path.resolve(strict=False) for path in package_root.rglob('pkgIndex.tcl')))
+
+
+def load_package_index(
+    path: Path,
     *,
-    parser: Parser,
-    extractor: FactExtractor,
-    workspace_index: WorkspaceIndex,
-) -> PackageIndexCatalog:
-    indexed_entries: list[tuple[str, tuple[PackageIndexEntry, ...]]] = []
-    for pkg_index_path in sorted(package_root.rglob('pkgIndex.tcl')):
-        indexed_entry = _index_package_index(
-            pkg_index_path.resolve(strict=False),
-            parser=parser,
-            extractor=extractor,
-        )
-        if indexed_entry is None:
+    parser: Parser | None = None,
+) -> tuple[str, tuple[PackageIndexEntry, ...]] | None:
+    try:
+        text = read_source_file(path)
+    except OSError:
+        return None
+
+    pkg_index_uri = path.as_uri()
+    local_parser = Parser() if parser is None else parser
+    parse_result = local_parser.parse_document(path=pkg_index_uri, text=text)
+    entries: list[PackageIndexEntry] = []
+    for command in parse_result.script.commands:
+        if len(command.words) < 4:
             continue
-        indexed_entries.append(indexed_entry)
-        workspace_index.update_package_index(*indexed_entry)
-    return tuple(indexed_entries)
+        if word_static_text(command.words[0]) != 'package':
+            continue
+        if word_static_text(command.words[1]) != 'ifneeded':
+            continue
+
+        package_name = word_static_text(command.words[2])
+        version = word_static_text(command.words[3])
+        if package_name is None or version is None:
+            continue
+
+        entries.append(
+            PackageIndexEntry(
+                uri=pkg_index_uri,
+                name=package_name,
+                version=version,
+                source_uri=(
+                    extract_ifneeded_source_uri(command.words[4], pkg_index_uri)
+                    if len(command.words) >= 5
+                    else None
+                ),
+                span=command.words[2].span,
+            )
+        )
+    return (pkg_index_uri, tuple(entries))
 
 
 def dependency_source_uris_for_facts(
@@ -95,6 +121,8 @@ def dependency_source_uris_for_facts(
             uris.setdefault(source_uri, None)
 
     for package_name in required_packages:
+        if is_builtin_package(package_name, metadata_registry=metadata_registry):
+            continue
         for source_uri in workspace_index.package_source_uris(package_name):
             uris.setdefault(source_uri, None)
     return tuple(uris)
@@ -200,29 +228,13 @@ def _package_index_scan_roots(
     return tuple(roots)
 
 
-def _index_package_index(
-    path: Path,
-    *,
-    parser: Parser,
-    extractor: FactExtractor,
-) -> tuple[str, tuple[PackageIndexEntry, ...]] | None:
-    try:
-        text = read_source_file(path)
-    except OSError:
-        return None
-
-    pkg_index_uri = path.as_uri()
-    parse_result = parser.parse_document(path=pkg_index_uri, text=text)
-    facts = extractor.extract(parse_result, include_parse_result=False)
-    return (pkg_index_uri, facts.package_index_entries)
-
-
 __all__ = [
     'PackageIndexCatalog',
     'apply_package_index_catalog',
     'build_package_index_catalog',
     'dependency_source_uris_for_facts',
+    'discover_package_index_paths',
     'load_dependency_documents',
+    'load_package_index',
     'reachable_document_uris',
-    'scan_package_root',
 ]

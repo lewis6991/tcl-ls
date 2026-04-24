@@ -14,10 +14,13 @@ from pygls.protocol.json_rpc import RPCMessage
 from tests.lsp_service import LanguageService
 from tests.lsp_support import process_message
 
+from tcl_lsp.analysis import FactExtractor, Resolver
 from tcl_lsp.analysis.builtins import builtin_command
 from tcl_lsp.common import Diagnostic, Position, Span
 from tcl_lsp.lsp import LanguageServer
 from tcl_lsp.lsp import server as lsp_server
+from tcl_lsp.lsp import workspace_rebuild as lsp_workspace_rebuild
+from tcl_lsp.parser import ParseResult
 
 _MAIN_URI = 'file:///main.tcl'
 
@@ -462,6 +465,34 @@ def test_language_service_does_not_resolve_unrelated_open_documents(
     references = service.references('file:///defs.tcl', 0, 5)
     assert {(location.uri, location.range.start.line) for location in references} == {
         ('file:///defs.tcl', 0),
+    }
+
+
+def test_language_service_references_include_ambiguous_shared_procedure_calls(
+    service: LanguageService,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / 'workspace'
+    workspace.mkdir()
+    defs_a = workspace / 'defs_a.tcl'
+    defs_b = workspace / 'defs_b.tcl'
+    main = workspace / 'main.tcl'
+    defs_a.write_text('proc ::app::hook {} {return a}\n', encoding='utf-8')
+    defs_b.write_text('proc ::app::hook {} {return b}\n', encoding='utf-8')
+    main.write_text(
+        'source [file join [file dirname [info script]] defs_a.tcl]\n'
+        'source [file join [file dirname [info script]] defs_b.tcl]\n'
+        '::app::hook\n',
+        encoding='utf-8',
+    )
+
+    service.open_document(main.as_uri(), main.read_text(encoding='utf-8'), 1)
+    references = service.references(defs_a.as_uri(), 0, 12)
+
+    assert {(location.uri, location.range.start.line) for location in references} == {
+        (defs_a.as_uri(), 0),
+        (defs_b.as_uri(), 0),
+        (main.as_uri(), 2),
     }
 
 
@@ -1902,6 +1933,50 @@ def test_language_server_returns_semantic_tokens_for_semicolons(
     assert _semantic_token(line=0, character=11, length=1, token_type='operator') in decoded
 
 
+def test_language_server_collects_lexical_spans_lazily_for_semantic_tokens(
+    server: LanguageServer,
+) -> None:
+    _open_server_document(server, 'puts "hello"\n')
+
+    document = server.current_managed_document(_MAIN_URI)
+    assert document is not None
+    assert not document.lexical_spans_included
+
+    _server_document_request(server, method='textDocument/semanticTokens/full')
+
+    document = server.current_managed_document(_MAIN_URI)
+    assert document is not None
+    assert document.lexical_spans_included
+
+
+def test_language_server_semantic_tokens_do_not_reextract_facts(
+    server: LanguageServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    extract_count = 0
+    original_extract = FactExtractor.extract
+
+    def counting_extract(
+        self: FactExtractor,
+        parse_result: object,
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        nonlocal extract_count
+        extract_count += 1
+        return original_extract(self, cast(Any, parse_result), *args, **kwargs)
+
+    monkeypatch.setattr(FactExtractor, 'extract', counting_extract)
+
+    _open_server_document(server, 'puts "hello"\n')
+    initial_extract_count = extract_count
+    assert initial_extract_count > 0
+
+    _server_document_request(server, method='textDocument/semanticTokens/full')
+
+    assert extract_count == initial_extract_count
+
+
 def test_language_server_returns_semantic_tokens_for_nested_delimiters_in_braced_words(
     server: LanguageServer,
 ) -> None:
@@ -2178,6 +2253,278 @@ def test_language_service_infers_packages_from_pkgindex(
     hover = service.hover(main_uri, 1, 2)
     assert hover is not None
     assert hover.contents == 'proc ::helper::greet()'
+
+
+def test_language_service_only_loads_required_package_index(
+    service: LanguageService,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    modules_root = tmp_path / 'workspace' / 'modules'
+    helper_dir = modules_root / 'helper'
+    unused_dir = modules_root / 'unused'
+    app_dir = modules_root / 'app'
+    helper_dir.mkdir(parents=True)
+    unused_dir.mkdir()
+    app_dir.mkdir()
+
+    helper_pkg_index = helper_dir / 'pkgIndex.tcl'
+    helper_pkg_index.write_text(
+        'package ifneeded helper 1.0 [list source [file join $dir helper.tcl]]\n',
+        encoding='utf-8',
+    )
+    (helper_dir / 'helper.tcl').write_text(
+        'package provide helper 1.0\nproc helper::greet {} {return ok}\n',
+        encoding='utf-8',
+    )
+    unused_pkg_index = unused_dir / 'pkgIndex.tcl'
+    unused_pkg_index.write_text(
+        'package ifneeded unused 1.0 [list source [file join $dir unused.tcl]]\n',
+        encoding='utf-8',
+    )
+    (unused_dir / 'unused.tcl').write_text(
+        'package provide unused 1.0\nproc unused::noop {} {return ok}\n',
+        encoding='utf-8',
+    )
+
+    loaded_pkg_indexes: list[Path] = []
+    original_load_package_index = lsp_workspace_rebuild.load_package_index
+
+    def counting_load_package_index(
+        path: Path,
+        *,
+        parser: object | None = None,
+    ) -> object:
+        loaded_pkg_indexes.append(path.resolve(strict=False))
+        return original_load_package_index(path, parser=cast(Any, parser))
+
+    monkeypatch.setattr(lsp_workspace_rebuild, 'load_package_index', counting_load_package_index)
+
+    main_uri = (app_dir / 'main.tcl').as_uri()
+    diagnostics = service.open_document(main_uri, 'package require helper\nhelper::greet\n', 1)
+
+    assert diagnostics == ()
+    assert loaded_pkg_indexes == [helper_pkg_index.resolve(strict=False)]
+    assert unused_pkg_index.resolve(strict=False) not in loaded_pkg_indexes
+
+
+def test_language_service_open_document_only_fully_analyzes_open_documents(
+    service: LanguageService,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    modules_root = tmp_path / 'workspace' / 'modules'
+    helper_dir = modules_root / 'helper'
+    app_dir = modules_root / 'app'
+    helper_dir.mkdir(parents=True)
+    app_dir.mkdir()
+
+    (helper_dir / 'pkgIndex.tcl').write_text(
+        'package ifneeded helper 1.0 [list source [file join $dir helper.tcl]]\n',
+        encoding='utf-8',
+    )
+    helper_path = helper_dir / 'helper.tcl'
+    helper_path.write_text(
+        'package provide helper 1.0\nproc helper::greet {} {return ok}\n',
+        encoding='utf-8',
+    )
+
+    analyzed_uris: list[str] = []
+    original_analyze = Resolver.analyze
+
+    def counting_analyze(
+        self: Resolver,
+        uri: str,
+        facts: object,
+        workspace_index: object,
+        *,
+        additional_required_packages: frozenset[str] = frozenset(),
+    ) -> object:
+        analyzed_uris.append(uri)
+        return original_analyze(
+            self,
+            uri,
+            cast(Any, facts),
+            cast(Any, workspace_index),
+            additional_required_packages=additional_required_packages,
+        )
+
+    monkeypatch.setattr(Resolver, 'analyze', counting_analyze)
+
+    main_uri = (app_dir / 'main.tcl').as_uri()
+    diagnostics = service.open_document(main_uri, 'package require helper\nhelper::greet\n', 1)
+
+    assert diagnostics == ()
+    assert analyzed_uris == [main_uri]
+    definition_locations = service.definition(main_uri, 1, 2)
+    assert len(definition_locations) == 1
+    assert definition_locations[0].uri == helper_path.as_uri()
+
+
+def test_language_service_reuses_cached_background_documents_until_disk_content_changes(
+    service: LanguageService,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    modules_root = tmp_path / 'workspace' / 'modules'
+    helper_dir = modules_root / 'helper'
+    app_dir = modules_root / 'app'
+    helper_dir.mkdir(parents=True)
+    app_dir.mkdir()
+
+    (helper_dir / 'pkgIndex.tcl').write_text(
+        'package ifneeded helper 1.0 [list source [file join $dir helper.tcl]]\n',
+        encoding='utf-8',
+    )
+    helper_path = helper_dir / 'helper.tcl'
+    helper_path.write_text(
+        'package provide helper 1.0\nproc helper::greet {} {return ok}\n',
+        encoding='utf-8',
+    )
+
+    extract_counts: dict[str, int] = {}
+    original_extract = FactExtractor.extract
+
+    def counting_extract(
+        self: FactExtractor,
+        parse_result: object,
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        source_id = cast(ParseResult, parse_result).source_id
+        extract_counts[source_id] = extract_counts.get(source_id, 0) + 1
+        return original_extract(self, cast(Any, parse_result), *args, **kwargs)
+
+    monkeypatch.setattr(FactExtractor, 'extract', counting_extract)
+
+    main_uri = (app_dir / 'main.tcl').as_uri()
+    helper_uri = helper_path.as_uri()
+
+    assert service.open_document(main_uri, 'package require helper\nhelper::greet\n', 1) == ()
+    first_helper_extracts = extract_counts.get(helper_uri, 0)
+    assert first_helper_extracts > 0
+
+    service.close_document(main_uri)
+    assert service.open_document(main_uri, 'package require helper\nhelper::greet\n', 2) == ()
+    assert extract_counts.get(helper_uri, 0) == first_helper_extracts
+
+    service.close_document(main_uri)
+    helper_path.write_text(
+        'package provide helper 1.0\nproc helper::wave {} {return ok}\n',
+        encoding='utf-8',
+    )
+
+    assert service.open_document(main_uri, 'package require helper\nhelper::wave\n', 3) == ()
+    assert extract_counts.get(helper_uri, 0) == first_helper_extracts + 1
+
+
+def test_language_service_clears_cached_background_documents_when_plugin_paths_change(
+    tmp_path: Path,
+) -> None:
+    shared_root = tmp_path / 'shared'
+    helper_dir = shared_root / 'helper'
+    helper_dir.mkdir(parents=True)
+    (helper_dir / 'pkgIndex.tcl').write_text(
+        'package ifneeded helper 1.0 [list source [file join $dir helper.tcl]]\n',
+        encoding='utf-8',
+    )
+    (helper_dir / 'helper.tcl').write_text(
+        'package provide helper 1.0\ndsl::define greet {{name}} {puts $name}\n',
+        encoding='utf-8',
+    )
+
+    project_with_plugin = tmp_path / 'with-plugin'
+    project_without_plugin = tmp_path / 'without-plugin'
+    _write_sample_plugin_bundle(project_with_plugin / '.tcl-ls')
+    project_with_plugin.mkdir(exist_ok=True)
+    project_without_plugin.mkdir()
+
+    (project_with_plugin / 'tcllsrc.tcl').write_text(
+        'plugin-path .tcl-ls/sample.tcl\nlib-path ../shared\n',
+        encoding='utf-8',
+    )
+    (project_without_plugin / 'tcllsrc.tcl').write_text(
+        'lib-path ../shared\n',
+        encoding='utf-8',
+    )
+
+    source_text = 'package require helper\ngreet World\n'
+    source_with_plugin = project_with_plugin / 'main.tcl'
+    source_with_plugin.write_text(source_text, encoding='utf-8')
+    source_without_plugin = project_without_plugin / 'main.tcl'
+    source_without_plugin.write_text(source_text, encoding='utf-8')
+
+    service = LanguageService()
+    assert service.open_document(source_with_plugin.as_uri(), source_text, 1) == ()
+
+    service.close_document(source_with_plugin.as_uri())
+    diagnostics = service.open_document(source_without_plugin.as_uri(), source_text, 1)
+
+    assert [diagnostic.code for diagnostic in diagnostics] == ['unresolved-command']
+
+
+def test_language_service_file_targets_prefer_nearest_pkgindex_root(
+    service: LanguageService,
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / 'workspace'
+    package_root = workspace_root / 'tcl'
+    sibling_package_root = workspace_root / 'helper'
+    package_root.mkdir(parents=True)
+    sibling_package_root.mkdir()
+
+    (package_root / 'pkgIndex.tcl').write_text(
+        'package ifneeded demo 1.0 [list source [file join $dir demo.tcl]]\n',
+        encoding='utf-8',
+    )
+    (package_root / 'demo.tcl').write_text(
+        'package provide demo 1.0\nproc demo::run {} {return ok}\n',
+        encoding='utf-8',
+    )
+    (sibling_package_root / 'pkgIndex.tcl').write_text(
+        'package ifneeded helper 1.0 [list source [file join $dir helper.tcl]]\n',
+        encoding='utf-8',
+    )
+    (sibling_package_root / 'helper.tcl').write_text(
+        'package provide helper 1.0\nproc helper::greet {} {return ok}\n',
+        encoding='utf-8',
+    )
+
+    main_uri = (package_root / 'main.tcl').as_uri()
+    diagnostics = service.open_document(main_uri, 'package require helper\nhelper::greet\n', 1)
+
+    assert [diagnostic.code for diagnostic in diagnostics] == ['unresolved-package']
+    assert len(tuple(service.server.workspace_index.package_indexes())) == 1
+
+
+def test_language_service_prunes_unreachable_background_documents_on_change(
+    service: LanguageService,
+    tmp_path: Path,
+) -> None:
+    modules_root = tmp_path / 'workspace' / 'modules'
+    helper_dir = modules_root / 'helper'
+    app_dir = modules_root / 'app'
+    helper_dir.mkdir(parents=True)
+    app_dir.mkdir()
+
+    (helper_dir / 'pkgIndex.tcl').write_text(
+        'package ifneeded helper 1.0 [list source [file join $dir helper.tcl]]\n',
+        encoding='utf-8',
+    )
+    helper_path = helper_dir / 'helper.tcl'
+    helper_path.write_text(
+        'package provide helper 1.0\nproc helper::greet {} {return ok}\n',
+        encoding='utf-8',
+    )
+
+    main_uri = (app_dir / 'main.tcl').as_uri()
+    assert service.open_document(main_uri, 'package require helper\nhelper::greet\n', 1) == ()
+    assert helper_path.as_uri() in service.server.documents
+
+    diagnostics = service.change_document(main_uri, 'helper::greet\n', 2)
+
+    assert [diagnostic.code for diagnostic in diagnostics] == ['unresolved-command']
+    assert helper_path.as_uri() not in service.server.documents
 
 
 def test_language_service_definition_resolves_required_package_to_provider(

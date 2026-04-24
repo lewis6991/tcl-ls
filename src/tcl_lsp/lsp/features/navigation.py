@@ -140,6 +140,11 @@ def references(
     symbol_ids = symbol_ids_at_position(documents_by_uri, uri=uri, line=line, character=character)
     if not symbol_ids:
         return ()
+    symbol_ids = _reference_symbol_ids(
+        documents_by_uri,
+        metadata_registry=metadata_registry,
+        symbol_ids=symbol_ids,
+    )
 
     locations: list[types.Location] = []
     if include_declaration:
@@ -160,6 +165,21 @@ def references(
                 lsp_location(
                     resolved_reference.reference.uri,
                     resolved_reference.reference.span,
+                )
+            )
+        for resolution in document.analysis.resolutions:
+            if resolution.reference.kind != 'command':
+                continue
+            if resolution.uncertainty.state != 'ambiguous':
+                continue
+            if not resolution.target_symbol_ids or not set(resolution.target_symbol_ids).issubset(
+                symbol_ids
+            ):
+                continue
+            locations.append(
+                lsp_location(
+                    resolution.reference.uri,
+                    resolution.reference.span,
                 )
             )
 
@@ -236,6 +256,34 @@ def deduplicate_locations(locations: list[types.Location]) -> tuple[types.Locati
         )
         deduplicated.setdefault(key, location)
     return tuple(deduplicated.values())
+
+
+def _reference_symbol_ids(
+    documents_by_uri: Mapping[str, ManagedDocument],
+    *,
+    metadata_registry: MetadataRegistry,
+    symbol_ids: tuple[str, ...],
+) -> tuple[str, ...]:
+    definitions = definitions_for_symbols(
+        documents_by_uri.values(),
+        metadata_registry=metadata_registry,
+        symbol_ids=symbol_ids,
+    )
+    procedure_names = {
+        definition.name
+        for definition in definitions
+        if definition.kind == 'function' and not definition.symbol_id.startswith('builtin::')
+    }
+    if not procedure_names:
+        return symbol_ids
+
+    related_symbol_ids = dict.fromkeys(symbol_ids)
+    for document in documents_by_uri.values():
+        for definition in document.analysis.definitions:
+            if definition.kind != 'function' or definition.name not in procedure_names:
+                continue
+            related_symbol_ids.setdefault(definition.symbol_id, None)
+    return tuple(related_symbol_ids)
 
 
 def _procedure_locations_for_definitions(

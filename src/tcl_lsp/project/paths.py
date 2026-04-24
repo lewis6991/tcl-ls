@@ -19,17 +19,13 @@ def discover_tcl_sources(
 
 def candidate_package_roots(path: Path) -> tuple[Path, ...]:
     start_directory = path if path.is_dir() else path.parent
-    direct_package_root: Path | None = None
 
     for directory in (start_directory, *start_directory.parents):
+        if (directory / 'pkgIndex.tcl').is_file():
+            return (directory,)
         if _has_pkgindex_children(directory):
             return (directory,)
-        if direct_package_root is None and (directory / 'pkgIndex.tcl').is_file():
-            direct_package_root = directory
-
-    if direct_package_root is None:
-        return ()
-    return (direct_package_root,)
+    return ()
 
 
 def read_source_file(path: Path) -> str:

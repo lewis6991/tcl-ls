@@ -138,7 +138,6 @@ def _run_check(
     package_index_catalog = build_package_index_catalog(
         target,
         parser=parser,
-        extractor=extractor,
         library_paths=active_library_paths,
     )
 

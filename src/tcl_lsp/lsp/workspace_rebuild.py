@@ -15,13 +15,16 @@ from tcl_lsp.lsp.state import (
 from tcl_lsp.metadata_paths import MetadataRegistry, create_metadata_registry
 from tcl_lsp.parser import Parser
 from tcl_lsp.project.indexing import (
+    discover_package_index_paths,
     load_dependency_documents,
+    load_package_index,
     reachable_document_uris,
-    scan_package_root,
 )
 from tcl_lsp.project.paths import candidate_package_roots, read_source_file, source_id_to_path
 
 type CancelCallback = Callable[[], bool]
+type CachedDocumentLoader = Callable[[str, Resolver | None], ManagedDocument | None]
+type CachedDocumentSaver = Callable[[ManagedDocument], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +33,8 @@ class DocumentBuildSnapshot:
     open_document_uris: tuple[str, ...]
     plugin_paths_by_uri: dict[str, tuple[Path, ...]]
     library_paths_by_uri: dict[str, tuple[Path, ...]]
+    workspace_index: WorkspaceIndex
+    scanned_package_roots: tuple[Path, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +66,9 @@ class WorkspaceRebuilder:
         self,
         snapshot: DocumentBuildSnapshot,
         pending_documents: Iterable[tuple[str, str, int]] = (),
+        *,
+        load_cached_document: CachedDocumentLoader | None = None,
+        cache_document: CachedDocumentSaver | None = None,
     ) -> RebuildResult | None:
         target_metadata_registry = create_metadata_registry(self._active_plugin_paths(snapshot))
         parser = Parser()
@@ -97,8 +105,6 @@ class WorkspaceRebuilder:
                 workspace_index.update(uri, document.facts)
                 self._discover_package_roots(
                     uri=uri,
-                    parser=parser,
-                    extractor=extractor,
                     workspace_index=workspace_index,
                     scanned_package_roots=scanned_package_roots,
                     library_paths_by_uri=snapshot.library_paths_by_uri,
@@ -124,9 +130,103 @@ class WorkspaceRebuilder:
                 metadata_registry=target_metadata_registry,
                 start_percentage=50,
                 end_percentage=75,
+                load_cached_document=load_cached_document,
+                cache_document=cache_document,
             )
             self._recompute_workspace_analyses(
                 documents,
+                resolver=resolver,
+                workspace_index=workspace_index,
+                metadata_registry=target_metadata_registry,
+                start_percentage=75,
+                end_percentage=95,
+            )
+            self._raise_if_cancelled()
+            return RebuildResult(
+                documents=documents,
+                workspace_index=workspace_index,
+                scanned_package_roots=scanned_package_roots,
+                metadata_registry=target_metadata_registry,
+            )
+        except _AnalysisCancelled:
+            return None
+        finally:
+            extractor.close()
+
+    def incremental_rebuild(
+        self,
+        snapshot: DocumentBuildSnapshot,
+        pending_documents: Iterable[tuple[str, str, int]] = (),
+        *,
+        load_cached_document: CachedDocumentLoader | None = None,
+        cache_document: CachedDocumentSaver | None = None,
+    ) -> RebuildResult | None:
+        target_metadata_registry = create_metadata_registry(self._active_plugin_paths(snapshot))
+        parser = Parser()
+        extractor = FactExtractor(parser, metadata_registry=target_metadata_registry)
+        resolver = Resolver(metadata_registry=target_metadata_registry)
+
+        try:
+            self._raise_if_cancelled()
+
+            documents = dict(snapshot.documents)
+            workspace_index = _copy_workspace_index(snapshot.workspace_index)
+            scanned_package_roots = set(snapshot.scanned_package_roots)
+            pending_snapshots = tuple(pending_documents)
+
+            total_snapshots = len(pending_snapshots)
+            for index, (uri, text, version) in enumerate(pending_snapshots, start=1):
+                self._raise_if_cancelled()
+                document = self._build_document(
+                    parser=parser,
+                    extractor=extractor,
+                    uri=uri,
+                    text=text,
+                    version=version,
+                )
+                documents[uri] = document
+                workspace_index.update(uri, document.facts)
+                self._discover_package_roots(
+                    uri=uri,
+                    workspace_index=workspace_index,
+                    scanned_package_roots=scanned_package_roots,
+                    library_paths_by_uri=snapshot.library_paths_by_uri,
+                )
+                self._report_progress(
+                    f'Indexing workspace files ({index}/{total_snapshots})',
+                    _progress_percentage(
+                        index=index,
+                        total=total_snapshots,
+                        start=20,
+                        end=45,
+                    ),
+                )
+
+            self._prune_background_documents(
+                documents,
+                open_document_uris=snapshot.open_document_uris,
+                workspace_index=workspace_index,
+                metadata_registry=target_metadata_registry,
+            )
+
+            self._report_progress('Loading workspace dependencies', 50)
+            self._ensure_background_documents_loaded(
+                documents,
+                parser=parser,
+                extractor=extractor,
+                workspace_index=workspace_index,
+                scanned_package_roots=scanned_package_roots,
+                library_paths_by_uri=snapshot.library_paths_by_uri,
+                metadata_registry=target_metadata_registry,
+                start_percentage=50,
+                end_percentage=75,
+                background_resolver=resolver,
+                load_cached_document=load_cached_document,
+                cache_document=cache_document,
+            )
+            self._recompute_open_document_analyses(
+                documents,
+                open_document_uris=snapshot.open_document_uris,
                 resolver=resolver,
                 workspace_index=workspace_index,
                 metadata_registry=target_metadata_registry,
@@ -153,24 +253,32 @@ class WorkspaceRebuilder:
         uri: str,
         text: str,
         version: int,
+        background_resolver: Resolver | None = None,
+        include_lexical_spans: bool = False,
     ) -> ManagedDocument:
         parse_result = parser.parse_document(path=uri, text=text)
-        facts = extractor.extract(parse_result)
+        facts = extractor.extract(
+            parse_result,
+            include_lexical_spans=include_lexical_spans,
+        )
         return ManagedDocument(
             uri=uri,
             version=version,
             text=text,
             parse_result=parse_result,
             facts=facts,
-            analysis=empty_analysis(uri, facts.document_symbols),
+            analysis=(
+                empty_analysis(uri, facts.document_symbols)
+                if background_resolver is None
+                else background_resolver.facts_only_analysis(uri, facts)
+            ),
+            lexical_spans_included=include_lexical_spans,
         )
 
     def _discover_package_roots(
         self,
         *,
         uri: str,
-        parser: Parser,
-        extractor: FactExtractor,
         workspace_index: WorkspaceIndex,
         scanned_package_roots: set[Path],
         library_paths_by_uri: dict[str, tuple[Path, ...]],
@@ -188,11 +296,9 @@ class WorkspaceRebuilder:
             if resolved_root in scanned_package_roots:
                 continue
             scanned_package_roots.add(resolved_root)
-            scan_package_root(
-                resolved_root,
-                parser=parser,
-                extractor=extractor,
-                workspace_index=workspace_index,
+            workspace_index.register_lazy_package_indexes(
+                discover_package_index_paths(resolved_root),
+                load_package_index=load_package_index,
             )
 
     def _ensure_background_documents_loaded(
@@ -207,6 +313,9 @@ class WorkspaceRebuilder:
         metadata_registry: MetadataRegistry,
         start_percentage: int,
         end_percentage: int,
+        background_resolver: Resolver | None = None,
+        load_cached_document: CachedDocumentLoader | None = None,
+        cache_document: CachedDocumentSaver | None = None,
     ) -> None:
         def load_document(uri: str) -> ManagedDocument | None:
             self._raise_if_cancelled()
@@ -215,24 +324,32 @@ class WorkspaceRebuilder:
             if path is None:
                 return None
 
+            if load_cached_document is not None:
+                cached_document = load_cached_document(uri, background_resolver)
+                if cached_document is not None:
+                    return cached_document
+
             try:
                 text = read_source_file(path)
             except OSError:
                 return None
 
-            return self._build_document(
+            document = self._build_document(
                 parser=parser,
                 extractor=extractor,
                 uri=uri,
                 text=text,
                 version=0,
+                background_resolver=background_resolver,
+                include_lexical_spans=False,
             )
+            if cache_document is not None:
+                cache_document(document)
+            return document
 
         def on_document_loaded(document: ManagedDocument) -> None:
             self._discover_package_roots(
                 uri=document.uri,
-                parser=parser,
-                extractor=extractor,
                 workspace_index=workspace_index,
                 scanned_package_roots=scanned_package_roots,
                 library_paths_by_uri=library_paths_by_uri,
@@ -254,6 +371,88 @@ class WorkspaceRebuilder:
             self._report_progress(
                 f'Loading workspace dependencies ({loaded_background_documents})',
                 min(end_percentage, start_percentage + loaded_background_documents),
+            )
+
+    def _prune_background_documents(
+        self,
+        documents: dict[str, ManagedDocument],
+        *,
+        open_document_uris: tuple[str, ...],
+        workspace_index: WorkspaceIndex,
+        metadata_registry: MetadataRegistry,
+    ) -> None:
+        reachable_uris: dict[str, None] = {}
+        for uri in open_document_uris:
+            for reachable_uri in reachable_document_uris(
+                uri,
+                documents_by_uri=documents,
+                workspace_index=workspace_index,
+                describe_document=managed_document_details,
+                metadata_registry=metadata_registry,
+            ):
+                reachable_uris.setdefault(reachable_uri, None)
+
+        for uri in tuple(documents):
+            if uri in reachable_uris:
+                continue
+            documents.pop(uri, None)
+            workspace_index.remove(uri)
+
+    def _recompute_open_document_analyses(
+        self,
+        documents: dict[str, ManagedDocument],
+        *,
+        open_document_uris: tuple[str, ...],
+        resolver: Resolver,
+        workspace_index: WorkspaceIndex,
+        metadata_registry: MetadataRegistry,
+        start_percentage: int,
+        end_percentage: int,
+    ) -> None:
+        open_documents = [documents[uri] for uri in open_document_uris if uri in documents]
+        total_documents = len(open_documents)
+        for index, document in enumerate(open_documents, start=1):
+            self._raise_if_cancelled()
+            analysis_workspace_index = self._analysis_workspace_index(
+                root_uri=document.uri,
+                documents=documents,
+                workspace_index=workspace_index,
+                metadata_registry=metadata_registry,
+            )
+            source_path = source_id_to_path(document.uri)
+            additional_required_packages: frozenset[str]
+            if source_path is None:
+                additional_required_packages = frozenset()
+            else:
+                additional_required_packages = dependency_required_packages(
+                    source_path,
+                    document.facts,
+                    analysis_workspace_index,
+                    metadata_registry=metadata_registry,
+                )
+            analysis = resolver.analyze(
+                uri=document.uri,
+                facts=document.facts,
+                workspace_index=analysis_workspace_index,
+                additional_required_packages=additional_required_packages,
+            )
+            documents[document.uri] = ManagedDocument(
+                uri=document.uri,
+                version=document.version,
+                text=document.text,
+                parse_result=document.parse_result,
+                facts=document.facts,
+                analysis=analysis,
+                lexical_spans_included=document.lexical_spans_included,
+            )
+            self._report_progress(
+                f'Analyzing workspace ({index}/{total_documents})',
+                _progress_percentage(
+                    index=index,
+                    total=total_documents,
+                    start=start_percentage,
+                    end=end_percentage,
+                ),
             )
 
     def _recompute_workspace_analyses(
@@ -300,6 +499,7 @@ class WorkspaceRebuilder:
                 parse_result=document.parse_result,
                 facts=document.facts,
                 analysis=analysis,
+                lexical_spans_included=document.lexical_spans_included,
             )
             self._report_progress(
                 f'Analyzing workspace ({index}/{total_documents})',
@@ -357,9 +557,7 @@ def analysis_workspace_index(
     workspace_index: WorkspaceIndex,
     metadata_registry: MetadataRegistry,
 ) -> WorkspaceIndex:
-    analysis_index = WorkspaceIndex()
-    for pkg_index_uri, entries in workspace_index.package_indexes():
-        analysis_index.update_package_index(pkg_index_uri, entries)
+    analysis_index = workspace_index.clone(include_documents=False)
     for uri in reachable_document_uris(
         root_uri,
         documents_by_uri=documents,
@@ -372,3 +570,7 @@ def analysis_workspace_index(
             continue
         analysis_index.update(uri, document.facts)
     return analysis_index
+
+
+def _copy_workspace_index(workspace_index: WorkspaceIndex) -> WorkspaceIndex:
+    return workspace_index.clone()

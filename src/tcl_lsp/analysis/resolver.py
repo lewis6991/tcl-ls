@@ -78,6 +78,22 @@ class Resolver:
     def metadata_registry(self) -> MetadataRegistry:
         return self._metadata_registry
 
+    def facts_only_analysis(
+        self,
+        uri: str,
+        facts: DocumentFacts,
+    ) -> AnalysisResult:
+        definitions = self._build_definitions(facts, facts.variable_bindings)
+        return AnalysisResult(
+            uri=uri,
+            diagnostics=tuple(facts.diagnostics),
+            definitions=tuple(definitions),
+            resolutions=(),
+            resolved_references=(),
+            document_symbols=facts.document_symbols,
+            hovers=tuple(self._build_definition_hovers(definitions)),
+        )
+
     def analyze(
         self,
         uri: str,

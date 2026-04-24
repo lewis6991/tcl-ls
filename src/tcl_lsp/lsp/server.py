@@ -4,7 +4,7 @@ import threading
 from collections import OrderedDict
 from collections.abc import Callable, Iterable
 from concurrent.futures import Future
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -14,6 +14,7 @@ from pygls.protocol.language_server import LanguageServerProtocol
 
 from tcl_lsp import __version__
 from tcl_lsp.analysis import FactExtractor, Resolver, WorkspaceIndex
+from tcl_lsp.analysis.facts.lowering import collect_parse_result_lexical_spans
 from tcl_lsp.analysis.metadata_effects import dependency_required_packages
 from tcl_lsp.common import Diagnostic, lsp_range
 from tcl_lsp.lsp.document_changes import DocumentChangeWorker
@@ -41,12 +42,14 @@ from tcl_lsp.lsp.state import (
 )
 from tcl_lsp.lsp.workspace_rebuild import (
     DocumentBuildSnapshot,
+    RebuildResult,
     WorkspaceRebuilder,
     analysis_workspace_index,
 )
 from tcl_lsp.metadata_paths import (
     DEFAULT_METADATA_REGISTRY,
     MetadataRegistry,
+    create_metadata_registry,
 )
 from tcl_lsp.parser import Parser
 from tcl_lsp.project.config import configured_library_paths, configured_plugin_paths
@@ -62,6 +65,7 @@ _DIAGNOSTIC_TAG_MAP = {
     'deprecated': types.DiagnosticTag.Deprecated,
     'unnecessary': types.DiagnosticTag.Unnecessary,
 }
+_DISK_DOCUMENT_CACHE_LIMIT = 128
 _SEMANTIC_TOKEN_CACHE_LIMIT = 8
 
 
@@ -71,11 +75,27 @@ class _SemanticTokenResult:
     data: tuple[int, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _CachedDiskDocument:
+    mtime_ns: int
+    size: int
+    document: ManagedDocument
+
+
+def _active_plugin_paths(snapshot: DocumentBuildSnapshot) -> tuple[Path, ...]:
+    active_paths: dict[Path, None] = {}
+    for uri in snapshot.open_document_uris:
+        for plugin_path in snapshot.plugin_paths_by_uri.get(uri, ()):
+            active_paths.setdefault(plugin_path, None)
+    return tuple(active_paths)
+
+
 class LanguageServer(PyglsLanguageServer):
     documents: dict[str, ManagedDocument]
     _change_worker: DocumentChangeWorker
     _extractor: FactExtractor
     _indexing_notification_shown: bool
+    _disk_documents_by_path: OrderedDict[Path, _CachedDiskDocument]
     _library_paths_by_uri: dict[str, tuple[Path, ...]]
     _metadata_registry: MetadataRegistry
     _next_progress_token: int
@@ -207,12 +227,23 @@ class LanguageServer(PyglsLanguageServer):
             if uri not in self.documents:
                 return
 
-            self._open_document_uris.discard(uri)
-            self._plugin_paths_by_uri.pop(uri, None)
-            self._library_paths_by_uri.pop(uri, None)
+            open_document_uris = set(self._open_document_uris)
+            open_document_uris.discard(uri)
+            plugin_paths_by_uri = dict(self._plugin_paths_by_uri)
+            plugin_paths_by_uri.pop(uri, None)
+            library_paths_by_uri = dict(self._library_paths_by_uri)
+            library_paths_by_uri.pop(uri, None)
+            snapshot = DocumentBuildSnapshot(
+                documents=dict(self.documents),
+                open_document_uris=tuple(open_document_uris),
+                plugin_paths_by_uri=plugin_paths_by_uri,
+                library_paths_by_uri=library_paths_by_uri,
+                workspace_index=self._workspace_index,
+                scanned_package_roots=tuple(self._scanned_package_roots),
+            )
 
         self._change_worker.discard(uri)
-        self._load_documents(())
+        self._rebuild_documents(snapshot, ())
 
     @property
     def metadata_registry(self) -> MetadataRegistry:
@@ -311,6 +342,7 @@ class LanguageServer(PyglsLanguageServer):
         document = self.current_managed_document(uri)
         if document is None:
             return None
+        document = self._document_with_lexical_spans(document)
 
         data = encode_document_semantic_tokens(
             text=document.text,
@@ -323,6 +355,43 @@ class LanguageServer(PyglsLanguageServer):
             data=data,
         )
         return result_id, data
+
+    def _document_with_lexical_spans(self, document: ManagedDocument) -> ManagedDocument:
+        if document.lexical_spans_included:
+            return document
+
+        # Lexical spans only feed semantic tokens, so keep them lazy in the LSP path.
+        with self._toolkit_lock:
+            comment_spans, string_spans, operator_spans = collect_parse_result_lexical_spans(
+                document.parse_result,
+                parser=self._parser,
+            )
+        facts = replace(
+            document.facts,
+            comment_spans=comment_spans,
+            string_spans=string_spans,
+            operator_spans=operator_spans,
+        )
+
+        updated_document = ManagedDocument(
+            uri=document.uri,
+            version=document.version,
+            text=document.text,
+            parse_result=document.parse_result,
+            facts=facts,
+            analysis=document.analysis,
+            lexical_spans_included=True,
+        )
+
+        with self._state_lock:
+            current_document = self.documents.get(document.uri)
+            if (
+                current_document is not None
+                and current_document.version == document.version
+                and current_document.text == document.text
+            ):
+                self.documents[document.uri] = updated_document
+        return updated_document
 
     def _remember_semantic_tokens(
         self,
@@ -371,7 +440,10 @@ class LanguageServer(PyglsLanguageServer):
 
         try:
             parse_result = parser.parse_document(path=uri, text=text)
-            facts = extractor.extract(parse_result)
+            facts = extractor.extract(
+                parse_result,
+                include_lexical_spans=False,
+            )
             managed_document = ManagedDocument(
                 uri=uri,
                 version=version,
@@ -379,6 +451,7 @@ class LanguageServer(PyglsLanguageServer):
                 parse_result=parse_result,
                 facts=facts,
                 analysis=empty_analysis(uri, facts.document_symbols),
+                lexical_spans_included=False,
             )
 
             documents = dict(snapshot.documents)
@@ -415,6 +488,7 @@ class LanguageServer(PyglsLanguageServer):
                 parse_result=parse_result,
                 facts=facts,
                 analysis=analysis,
+                lexical_spans_included=False,
             )
         finally:
             extractor.close()
@@ -557,6 +631,7 @@ class LanguageServer(PyglsLanguageServer):
             else extractor
         )
         self._next_semantic_token_result_id = 1
+        self._disk_documents_by_path = OrderedDict()
         self._semantic_token_results_by_uri = {}
         self._workspace_index = WorkspaceIndex() if workspace_index is None else workspace_index
         self._resolver = (
@@ -571,11 +646,51 @@ class LanguageServer(PyglsLanguageServer):
     def _document_build_snapshot(self) -> DocumentBuildSnapshot:
         with self._state_lock:
             return DocumentBuildSnapshot(
-                documents=self.documents,
+                documents=dict(self.documents),
                 open_document_uris=tuple(self._open_document_uris),
                 plugin_paths_by_uri=dict(self._plugin_paths_by_uri),
                 library_paths_by_uri=dict(self._library_paths_by_uri),
+                workspace_index=self._workspace_index,
+                scanned_package_roots=tuple(self._scanned_package_roots),
             )
+
+    def _pending_document_build_snapshot(
+        self,
+        pending_documents: tuple[tuple[str, str, int], ...],
+    ) -> tuple[DocumentBuildSnapshot, MetadataRegistry, bool]:
+        with self._state_lock:
+            documents = dict(self.documents)
+            open_document_uris = set(self._open_document_uris)
+            existing_open_document_uris = set(open_document_uris)
+            plugin_paths_by_uri = dict(self._plugin_paths_by_uri)
+            library_paths_by_uri = dict(self._library_paths_by_uri)
+            workspace_index = self._workspace_index
+            scanned_package_roots = tuple(self._scanned_package_roots)
+
+        path_settings_changed = False
+        for uri, _, _ in pending_documents:
+            path = source_id_to_path(uri)
+            plugin_paths = () if path is None else configured_plugin_paths(path)
+            library_paths = () if path is None else configured_library_paths(path)
+            if uri in existing_open_document_uris and (
+                plugin_paths_by_uri.get(uri, ()) != plugin_paths
+                or library_paths_by_uri.get(uri, ()) != library_paths
+            ):
+                path_settings_changed = True
+            open_document_uris.add(uri)
+            plugin_paths_by_uri[uri] = plugin_paths
+            library_paths_by_uri[uri] = library_paths
+
+        snapshot = DocumentBuildSnapshot(
+            documents=documents,
+            open_document_uris=tuple(open_document_uris),
+            plugin_paths_by_uri=plugin_paths_by_uri,
+            library_paths_by_uri=library_paths_by_uri,
+            workspace_index=workspace_index,
+            scanned_package_roots=scanned_package_roots,
+        )
+        target_metadata_registry = create_metadata_registry(_active_plugin_paths(snapshot))
+        return snapshot, target_metadata_registry, path_settings_changed
 
     def _load_documents(
         self,
@@ -585,27 +700,85 @@ class LanguageServer(PyglsLanguageServer):
         should_cancel: Callable[[], bool] | None = None,
     ) -> bool:
         pending_documents = tuple(documents)
-        with self._state_lock:
-            for uri, _, _ in pending_documents:
-                self._open_document_uris.add(uri)
-                path = source_id_to_path(uri)
-                if path is None:
-                    self._plugin_paths_by_uri[uri] = ()
-                    self._library_paths_by_uri[uri] = ()
-                    continue
-                self._plugin_paths_by_uri[uri] = configured_plugin_paths(path)
-                self._library_paths_by_uri[uri] = configured_library_paths(path)
-
+        snapshot, target_metadata_registry, path_settings_changed = (
+            self._pending_document_build_snapshot(pending_documents)
+        )
+        metadata_registry_changed = target_metadata_registry != self._metadata_registry
+        if metadata_registry_changed:
+            self._clear_cached_disk_documents()
         if progress is not None:
             progress('Rebuilding workspace index', 10)
 
+        use_incremental = not path_settings_changed and (
+            not metadata_registry_changed or not snapshot.documents
+        )
+        if use_incremental:
+            return self._incremental_load_documents(
+                snapshot,
+                pending_documents,
+                progress=progress,
+                should_cancel=should_cancel,
+            )
+        return self._rebuild_documents(
+            snapshot,
+            pending_documents,
+            progress=progress,
+            should_cancel=should_cancel,
+        )
+
+    def _rebuild_documents(
+        self,
+        snapshot: DocumentBuildSnapshot,
+        pending_documents: tuple[tuple[str, str, int], ...],
+        *,
+        progress: IndexingProgressCallback | None = None,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> bool:
         rebuild_result = WorkspaceRebuilder(
             progress=progress,
             should_cancel=should_cancel,
         ).rebuild(
-            self._document_build_snapshot(),
+            snapshot,
             pending_documents,
+            load_cached_document=self._cached_disk_document,
+            cache_document=self._remember_disk_document,
         )
+        return self._apply_rebuild_result(
+            snapshot,
+            rebuild_result,
+            should_cancel=should_cancel,
+        )
+
+    def _incremental_load_documents(
+        self,
+        snapshot: DocumentBuildSnapshot,
+        pending_documents: tuple[tuple[str, str, int], ...],
+        *,
+        progress: IndexingProgressCallback | None = None,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> bool:
+        rebuild_result = WorkspaceRebuilder(
+            progress=progress,
+            should_cancel=should_cancel,
+        ).incremental_rebuild(
+            snapshot,
+            pending_documents,
+            load_cached_document=self._cached_disk_document,
+            cache_document=self._remember_disk_document,
+        )
+        return self._apply_rebuild_result(
+            snapshot,
+            rebuild_result,
+            should_cancel=should_cancel,
+        )
+
+    def _apply_rebuild_result(
+        self,
+        snapshot: DocumentBuildSnapshot,
+        rebuild_result: RebuildResult | None,
+        *,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> bool:
         if rebuild_result is None:
             return False
 
@@ -617,6 +790,9 @@ class LanguageServer(PyglsLanguageServer):
             self.documents = rebuild_result.documents
             self._workspace_index = rebuild_result.workspace_index
             self._scanned_package_roots = rebuild_result.scanned_package_roots
+            self._open_document_uris = set(snapshot.open_document_uris)
+            self._plugin_paths_by_uri = dict(snapshot.plugin_paths_by_uri)
+            self._library_paths_by_uri = dict(snapshot.library_paths_by_uri)
         return True
 
     def _publish_document_diagnostics(
@@ -645,10 +821,85 @@ class LanguageServer(PyglsLanguageServer):
         if metadata_registry == self._metadata_registry:
             return
 
+        self._clear_cached_disk_documents()
         self._extractor.close()
         self._metadata_registry = metadata_registry
         self._extractor = FactExtractor(self._parser, metadata_registry=metadata_registry)
         self._resolver = Resolver(metadata_registry=metadata_registry)
+
+    def _cached_disk_document(
+        self,
+        uri: str,
+        background_resolver: Resolver | None,
+    ) -> ManagedDocument | None:
+        path = source_id_to_path(uri)
+        if path is None:
+            return None
+
+        resolved_path = path.resolve(strict=False)
+        with self._state_lock:
+            cached = self._disk_documents_by_path.get(resolved_path)
+            if cached is None:
+                return None
+
+            try:
+                stat = resolved_path.stat()
+            except OSError:
+                self._disk_documents_by_path.pop(resolved_path, None)
+                return None
+
+            if cached.mtime_ns != stat.st_mtime_ns or cached.size != stat.st_size:
+                self._disk_documents_by_path.pop(resolved_path, None)
+                return None
+
+            self._disk_documents_by_path.move_to_end(resolved_path)
+            cached_document = cached.document
+        facts = cached_document.facts
+        analysis = (
+            empty_analysis(uri, facts.document_symbols)
+            if background_resolver is None
+            else background_resolver.facts_only_analysis(uri, facts)
+        )
+        return ManagedDocument(
+            uri=uri,
+            version=0,
+            text=cached_document.text,
+            parse_result=cached_document.parse_result,
+            facts=facts,
+            analysis=analysis,
+            lexical_spans_included=cached_document.lexical_spans_included,
+        )
+
+    def _remember_disk_document(self, document: ManagedDocument) -> None:
+        # Only cache disk-backed background documents. Open documents may have unsaved text.
+        if document.version != 0:
+            return
+
+        path = source_id_to_path(document.uri)
+        if path is None:
+            return
+
+        resolved_path = path.resolve(strict=False)
+        try:
+            stat = resolved_path.stat()
+        except OSError:
+            with self._state_lock:
+                self._disk_documents_by_path.pop(resolved_path, None)
+            return
+
+        with self._state_lock:
+            self._disk_documents_by_path[resolved_path] = _CachedDiskDocument(
+                mtime_ns=stat.st_mtime_ns,
+                size=stat.st_size,
+                document=document,
+            )
+            self._disk_documents_by_path.move_to_end(resolved_path)
+            while len(self._disk_documents_by_path) > _DISK_DOCUMENT_CACHE_LIMIT:
+                self._disk_documents_by_path.popitem(last=False)
+
+    def _clear_cached_disk_documents(self) -> None:
+        with self._state_lock:
+            self._disk_documents_by_path.clear()
 
 
 class _TclLanguageServerProtocol(LanguageServerProtocol):
