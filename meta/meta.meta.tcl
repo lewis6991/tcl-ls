@@ -4,7 +4,7 @@
 # executable behavior and conventionally use the `.meta.tcl` suffix.
 #
 # This comment block describes the current metadata syntax.
-# Optional outer grammar is described with prose or inline comments below.
+# Optional outer grammar is described with prose below.
 # Literal `?` words only appear inside `shape` lists.
 meta module Tcl
 #
@@ -26,7 +26,6 @@ meta module Tcl
 #       command name variants { ... }
 #   }
 #   meta language languageName {
-#       # optional: extends tcl
 #       command name {shape}
 #       command name {shape} {
 #           clause ...
@@ -70,7 +69,8 @@ meta module Tcl
 #   everyday command shapes.
 #   Generated metadata may normalize simple optional arguments to `? ... ?`.
 #   Handwritten metadata often keeps the Tcl-style spelling, while generated
-#   hover/signature text may show the normalized `? ... ?` form.
+#   hover/signature text may display a normalized `? ... ?` form for the same
+#   shape.
 #
 # Clause bodies:
 #   A command body is a static Tcl command list, usually written as a braced
@@ -155,10 +155,10 @@ meta module Tcl
 #           `literal` uses ordinary Tcl procedure parameter-list syntax:
 #           names, `{name default}` items, and optional trailing `args`.
 #           `-` means the emitted procedure has no parameters.
-#       optional:
-#           body select selector
-#               `select` must choose exactly one argument.
-#           language name        # only when `body` is present
+#   When the emitted procedure has a body, add:
+#       body select selector
+#           `select` must choose exactly one argument.
+#       language name            # only when `body` is present
 #
 # plugin script procName
 #   Run a Tcl plugin to produce dynamic metadata effects. Plugins may return

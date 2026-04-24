@@ -11,8 +11,8 @@ File-Level Declarations
 Metadata files use ordinary Tcl syntax, but ``tcl-ls`` only interprets a small
 declarative subset. The accepted file-level forms are:
 
-Outside command shapes, this page spells optional outer grammar with prose or
-inline comments. Literal ``?`` words only appear inside command-shape syntax.
+Outside command shapes, this page spells optional outer grammar with prose.
+Literal ``?`` words only appear inside command-shape syntax.
 
 .. code-block:: tcl
 
@@ -38,8 +38,6 @@ inline comments. Literal ``?`` words only appear inside command-shape syntax.
    }
 
    meta language languageName {
-       # optional: extends tcl
-
        command name {shape}
        command name {shape} {
            clause ...
@@ -224,8 +222,8 @@ Rules:
   bundled ``meta.meta.tcl`` grammar that documents metadata syntax itself;
   ordinary metadata does not use angle brackets in everyday command shapes
 
-Generated metadata and signature help use the same shape notation, so labels
-such as ``set {varName ? newValue ?}`` follow the same rules.
+Generated metadata and signature help describe the same shape model, even when
+their displayed notation differs.
 
 ``? ... ?`` is the general optional-group notation for command shapes.
 Generated metadata and signature help may normalize simple one-argument
@@ -751,15 +749,14 @@ Examples:
    procedure {
        name select selector
        params select selector
-
-       # optional:
-       body select selector
-       language body-language
    }
 
 Describes a procedure-like declaration emitted by the enclosing command.
 
 ``procedure`` remains block-shaped because it is genuinely a small record.
+
+When the emitted procedure has a body, add ``body select selector`` and
+optionally ``language body-language``.
 
 Rules:
 
