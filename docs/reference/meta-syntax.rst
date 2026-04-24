@@ -11,8 +11,8 @@ File-Level Declarations
 Metadata files use ordinary Tcl syntax, but ``tcl-ls`` only interprets a small
 declarative subset. The accepted file-level forms are:
 
-Outside command shapes, this page spells optional outer grammar as separate
-forms and prose. Literal ``?`` words only appear inside command-shape syntax.
+Outside command shapes, this page spells optional outer grammar with prose or
+inline comments. Literal ``?`` words only appear inside command-shape syntax.
 
 .. code-block:: tcl
 
@@ -38,6 +38,8 @@ forms and prose. Literal ``?`` words only appear inside command-shape syntax.
    }
 
    meta language languageName {
+       # optional: extends tcl
+
        command name {shape}
        command name {shape} {
            clause ...
@@ -229,6 +231,10 @@ such as ``set {varName ? newValue ?}`` follow the same rules.
 Generated metadata and signature help may normalize simple one-argument
 optionals to that form even when the underlying API is naturally written with
 the Tcl-style ``{name default}`` shorthand.
+
+In practice, handwritten metadata often keeps the Tcl-style spelling for Tcl
+APIs, while generated hover and signature labels may show the normalized
+``? ... ?`` form for the same optional argument.
 
 Example:
 
@@ -745,6 +751,8 @@ Examples:
    procedure {
        name select selector
        params select selector
+
+       # optional:
        body select selector
        language body-language
    }
@@ -766,6 +774,8 @@ Rules:
   positive-index-only syntax
 * ``name select SELECTOR``, ``params select SELECTOR``, and ``body select
   SELECTOR`` must each select exactly one argument
+* ``params select SELECTOR`` reads one runtime argument whose contents use
+  ordinary Tcl procedure parameter-list syntax
 * ``name -`` reuses the enclosing command name tail
 * ``params -`` means the emitted procedure has an empty parameter list
 * ``params literal PARAMETER_LIST`` uses ordinary Tcl procedure parameter-list
