@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,9 @@ from tcl_lsp.parser import Parser, word_static_text
 from tcl_lsp.parser.model import BareWord, BracedWord, Command, Token, Word
 
 _MISSING = object()
+_META_MODULE_PREFIX = 'meta module '
+_SIMPLE_META_MODULE_BRACED_RE = re.compile(r'^\{([^{}]*)\}$')
+_SIMPLE_META_MODULE_QUOTED_RE = re.compile(r'^"([^"\\]*)"$')
 
 type SourceBase = Literal['caller', 'definition']
 type MetadataOptionKind = Literal['flag', 'value', 'stop']
@@ -162,35 +166,70 @@ def metadata_file_summary(metadata_path: Path) -> MetadataFileSummary:
 def _metadata_file_module_info(
     metadata_path: Path,
 ) -> MetadataFileModuleInfo:
-    metadata_uri = metadata_path.as_uri()
     text = metadata_path.read_text(encoding='utf-8')
-    parse_result = Parser().parse_document(path=metadata_uri, text=text)
-    if parse_result.diagnostics:
-        message = '; '.join(diagnostic.message for diagnostic in parse_result.diagnostics)
-        raise RuntimeError(f'Invalid metadata file `{metadata_path.name}`: {message}')
-
     module_name: str | None = None
     module_declaration_count = 0
-    for command in parse_result.script.commands:
-        if len(command.words) < 2:
+    needs_parser_fallback = False
+    # Cold startup only needs the declared module/package name. Most metadata
+    # files use a simple literal `meta module ...` header, so avoid a full Tcl
+    # parse unless the header uses a more complex form.
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith('#'):
             continue
-        if word_static_text(command.words[0]) != 'meta':
+        if not stripped.startswith(_META_MODULE_PREFIX):
             continue
-        if word_static_text(command.words[1]) != 'module':
-            continue
-        declared_module_name = (
-            word_static_text(command.words[2]) if len(command.words) == 3 else None
-        )
+        declared_module_name = _simple_meta_module_name(stripped[len(_META_MODULE_PREFIX) :])
         if declared_module_name is None:
-            raise RuntimeError('Metadata module entries must be `meta module name`.')
+            needs_parser_fallback = True
+            break
         if module_name is None:
             module_name = declared_module_name
         module_declaration_count += 1
+
+    if needs_parser_fallback:
+        metadata_uri = metadata_path.as_uri()
+        parse_result = Parser().parse_document(path=metadata_uri, text=text)
+        if parse_result.diagnostics:
+            message = '; '.join(diagnostic.message for diagnostic in parse_result.diagnostics)
+            raise RuntimeError(f'Invalid metadata file `{metadata_path.name}`: {message}')
+
+        module_name = None
+        module_declaration_count = 0
+        for command in parse_result.script.commands:
+            if len(command.words) < 2:
+                continue
+            if word_static_text(command.words[0]) != 'meta':
+                continue
+            if word_static_text(command.words[1]) != 'module':
+                continue
+            declared_module_name = (
+                word_static_text(command.words[2]) if len(command.words) == 3 else None
+            )
+            if declared_module_name is None:
+                raise RuntimeError('Metadata module entries must be `meta module name`.')
+            if module_name is None:
+                module_name = declared_module_name
+            module_declaration_count += 1
 
     return MetadataFileModuleInfo(
         module_name=module_name,
         module_declaration_count=module_declaration_count,
     )
+
+
+def _simple_meta_module_name(text: str) -> str | None:
+    if not text:
+        return None
+    braced_match = _SIMPLE_META_MODULE_BRACED_RE.fullmatch(text)
+    if braced_match is not None:
+        return braced_match.group(1)
+    quoted_match = _SIMPLE_META_MODULE_QUOTED_RE.fullmatch(text)
+    if quoted_match is not None:
+        return quoted_match.group(1)
+    if any(character.isspace() or character in '${}[];"\\' for character in text):
+        return None
+    return text
 
 
 @metadata_lru_cache(maxsize=None)

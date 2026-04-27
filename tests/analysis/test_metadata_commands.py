@@ -266,6 +266,22 @@ def test_project_metadata_override_replaces_bundled_subcommand_tree(tmp_path: Pa
     assert namespace_eval is None
 
 
+def test_project_metadata_recursively_discovers_nested_override_files(tmp_path: Path) -> None:
+    nested_dir = tmp_path / 'nested'
+    nested_dir.mkdir()
+    override_path = nested_dir / 'override.meta.tcl'
+    override_path.write_text(
+        'meta module {Tcl}\nmeta command clock {args}\n',
+        encoding='utf-8',
+    )
+    metadata_registry = create_metadata_registry((tmp_path,))
+    builtin = builtin_command('clock', metadata_registry=metadata_registry)
+
+    assert builtin is not None
+    assert builtin.metadata_path_name == 'override.meta.tcl'
+    assert builtin.overloads[0].location.uri == override_path.as_uri()
+
+
 def test_project_metadata_same_root_rejects_conflicting_annotations(tmp_path: Path) -> None:
     (tmp_path / 'a.meta.tcl').write_text(
         'meta module Tcl\nmeta command regexp {args} {\n    bind 1 set\n}\n',

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -95,10 +96,16 @@ def source_name_for_metadata(path: Path) -> str:
 @metadata_lru_cache(maxsize=None)
 def _metadata_candidates(metadata_path: Path) -> tuple[Path, ...]:
     if metadata_path.is_dir():
-        return tuple(
-            candidate.resolve(strict=False)
-            for candidate in sorted(metadata_path.rglob(f'*{METADATA_FILE_SUFFIX}'))
-        )
+        candidates: list[Path] = []
+        # `os.walk()` is much cheaper than `Path.rglob()` on plugin roots that
+        # vendor large trees like tcllib under `.tcl-ls/`.
+        for root, dirnames, filenames in os.walk(metadata_path):
+            dirnames.sort()
+            for filename in sorted(filenames):
+                if not filename.endswith(METADATA_FILE_SUFFIX):
+                    continue
+                candidates.append((Path(root) / filename).resolve(strict=False))
+        return tuple(candidates)
     if metadata_path.is_file() and _is_metadata_file(metadata_path):
         return (metadata_path.resolve(strict=False),)
     return ()
