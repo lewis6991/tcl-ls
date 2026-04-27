@@ -15,7 +15,7 @@ from tcl_lsp.lsp.state import (
 from tcl_lsp.metadata_paths import MetadataRegistry, create_metadata_registry
 from tcl_lsp.parser import Parser
 from tcl_lsp.project.indexing import (
-    discover_package_index_paths,
+    discover_lazy_package_indexes,
     load_dependency_documents,
     load_package_index,
     reachable_document_uris,
@@ -297,7 +297,7 @@ class WorkspaceRebuilder:
                 continue
             scanned_package_roots.add(resolved_root)
             workspace_index.register_lazy_package_indexes(
-                discover_package_index_paths(resolved_root),
+                discover_lazy_package_indexes(resolved_root),
                 load_package_index=load_package_index,
             )
 

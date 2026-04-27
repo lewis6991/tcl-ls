@@ -563,9 +563,8 @@ def _package_completion_items(
         for package in document.facts.package_provides:
             package_candidates[package.name] = 'workspace package'
 
-    for _, entries in workspace_index.package_indexes():
-        for entry in entries:
-            package_candidates.setdefault(entry.name, 'workspace package')
+    for package_name in workspace_index.package_index_names():
+        package_candidates.setdefault(package_name, 'workspace package')
 
     items = [
         types.CompletionItem(

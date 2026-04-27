@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -14,6 +15,11 @@ from tcl_lsp.project.paths import candidate_package_roots, read_source_file
 
 type PackageIndexCatalog = tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...]
 type DocumentDescription = tuple[str, Path | None, DocumentFacts]
+type LazyPackageIndex = tuple[Path, tuple[str, ...]]
+
+_PACKAGE_IFNEEDED_NAME_RE = re.compile(
+    r'(?m)(?:^|;)\s*package\s+ifneeded\s+(\{[^}\n]*\}|"[^"\n]*"|[^\s{}"\[\];]+)'
+)
 
 
 def build_package_index_catalog(
@@ -50,6 +56,19 @@ def discover_package_index_paths(
     package_root: Path,
 ) -> tuple[Path, ...]:
     return tuple(sorted(path.resolve(strict=False) for path in package_root.rglob('pkgIndex.tcl')))
+
+
+def discover_lazy_package_indexes(
+    package_root: Path,
+) -> tuple[LazyPackageIndex, ...]:
+    package_indexes: list[LazyPackageIndex] = []
+    for pkg_index_path in discover_package_index_paths(package_root):
+        try:
+            text = read_source_file(pkg_index_path)
+        except OSError:
+            continue
+        package_indexes.append((pkg_index_path, _package_index_names(text)))
+    return tuple(package_indexes)
 
 
 def load_package_index(
@@ -228,11 +247,27 @@ def _package_index_scan_roots(
     return tuple(roots)
 
 
+def _package_index_names(text: str) -> tuple[str, ...]:
+    package_names: dict[str, None] = {}
+    for match in _PACKAGE_IFNEEDED_NAME_RE.finditer(text):
+        package_name = match.group(1).strip()
+        if (
+            len(package_name) >= 2
+            and package_name[0] == package_name[-1]
+            and package_name[0] in {'"', '{'}
+        ):
+            package_name = package_name[1:-1]
+        if package_name:
+            package_names.setdefault(package_name, None)
+    return tuple(package_names)
+
+
 __all__ = [
     'PackageIndexCatalog',
     'apply_package_index_catalog',
     'build_package_index_catalog',
     'dependency_source_uris_for_facts',
+    'discover_lazy_package_indexes',
     'discover_package_index_paths',
     'load_dependency_documents',
     'load_package_index',

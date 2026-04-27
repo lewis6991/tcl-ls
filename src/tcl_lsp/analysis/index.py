@@ -13,6 +13,7 @@ from tcl_lsp.analysis.model import (
 )
 
 type PackageIndexLoader = Callable[[Path], tuple[str, tuple[PackageIndexEntry, ...]] | None]
+type LazyPackageIndex = tuple[Path, tuple[str, ...]]
 
 
 class WorkspaceIndex:
@@ -20,7 +21,9 @@ class WorkspaceIndex:
         '_command_imports_by_namespace',
         '_documents',
         '_lazy_package_index_loaders',
-        '_lazy_package_index_paths_by_directory_name',
+        '_lazy_package_index_names_by_path',
+        '_lazy_package_index_paths_by_name',
+        '_lazy_package_index_paths_without_names',
         '_package_index_entries_by_name',
         '_package_indexes_by_uri',
         '_procedures_by_qualified_name',
@@ -35,7 +38,9 @@ class WorkspaceIndex:
         self._provided_packages_by_name: dict[str, list[PackageProvide]] = defaultdict(list)
         self._package_index_entries_by_name: dict[str, list[PackageIndexEntry]] = defaultdict(list)
         self._lazy_package_index_loaders: dict[Path, PackageIndexLoader] = {}
-        self._lazy_package_index_paths_by_directory_name: dict[str, list[Path]] = defaultdict(list)
+        self._lazy_package_index_names_by_path: dict[Path, tuple[str, ...]] = {}
+        self._lazy_package_index_paths_by_name: dict[str, list[Path]] = defaultdict(list)
+        self._lazy_package_index_paths_without_names: set[Path] = set()
 
     def update(self, uri: str, facts: DocumentFacts) -> None:
         self.remove(uri)
@@ -57,22 +62,28 @@ class WorkspaceIndex:
 
     def register_lazy_package_indexes(
         self,
-        package_index_paths: tuple[Path, ...],
+        package_indexes: tuple[LazyPackageIndex, ...],
         *,
         load_package_index: PackageIndexLoader,
     ) -> None:
-        for package_index_path in package_index_paths:
+        for package_index_path, package_names in package_indexes:
             resolved_path = package_index_path.resolve(strict=False)
             if (
                 resolved_path.as_uri() in self._package_indexes_by_uri
                 or resolved_path in self._lazy_package_index_loaders
             ):
                 continue
+
+            normalized_package_names = tuple(dict.fromkeys(package_names))
             self._lazy_package_index_loaders[resolved_path] = load_package_index
-            self._lazy_package_index_paths_by_directory_name.setdefault(
-                resolved_path.parent.name,
-                [],
-            ).append(resolved_path)
+            self._lazy_package_index_names_by_path[resolved_path] = normalized_package_names
+            if not normalized_package_names:
+                self._lazy_package_index_paths_without_names.add(resolved_path)
+                continue
+            for package_name in normalized_package_names:
+                self._lazy_package_index_paths_by_name.setdefault(package_name, []).append(
+                    resolved_path
+                )
 
     def remove(self, uri: str) -> None:
         existing = self._documents.pop(uri, None)
@@ -209,6 +220,12 @@ class WorkspaceIndex:
         self._materialize_all_package_indexes()
         return tuple(sorted(self._package_indexes_by_uri.items(), key=lambda item: item[0]))
 
+    def package_index_names(self) -> tuple[str, ...]:
+        package_names = dict.fromkeys(self._package_index_entries_by_name)
+        for package_name in self._lazy_package_index_paths_by_name:
+            package_names.setdefault(package_name, None)
+        return tuple(package_names)
+
     def has_package(self, package_name: str) -> bool:
         return bool(
             self._provided_packages_by_name.get(package_name)
@@ -226,10 +243,14 @@ class WorkspaceIndex:
         for uri, entries in self._package_indexes_by_uri.items():
             cloned.update_package_index(uri, entries)
         cloned._lazy_package_index_loaders = dict(self._lazy_package_index_loaders)
-        cloned._lazy_package_index_paths_by_directory_name = {
-            directory_name: list(paths)
-            for directory_name, paths in self._lazy_package_index_paths_by_directory_name.items()
+        cloned._lazy_package_index_names_by_path = dict(self._lazy_package_index_names_by_path)
+        cloned._lazy_package_index_paths_by_name = {
+            package_name: list(paths)
+            for package_name, paths in self._lazy_package_index_paths_by_name.items()
         }
+        cloned._lazy_package_index_paths_without_names = set(
+            self._lazy_package_index_paths_without_names
+        )
         return cloned
 
     def _ensure_package_index_entries(self, package_name: str) -> None:
@@ -240,14 +261,16 @@ class WorkspaceIndex:
             return
 
         for package_index_path in tuple(
-            self._lazy_package_index_paths_by_directory_name.get(package_name, ())
+            self._lazy_package_index_paths_by_name.get(package_name, ())
         ):
             self._materialize_package_index(package_index_path)
 
         if self._package_index_entries_by_name.get(package_name):
             return
 
-        self._materialize_all_package_indexes()
+        # Keep the slow fallback narrow: only manifests we could not classify.
+        for package_index_path in tuple(self._lazy_package_index_paths_without_names):
+            self._materialize_package_index(package_index_path)
 
     def _materialize_all_package_indexes(self) -> None:
         for package_index_path in tuple(self._lazy_package_index_loaders):
@@ -258,14 +281,17 @@ class WorkspaceIndex:
         if loader is None:
             return
 
-        directory_name = package_index_path.parent.name
-        current_paths = self._lazy_package_index_paths_by_directory_name.get(directory_name)
-        if current_paths is not None:
-            self._lazy_package_index_paths_by_directory_name[directory_name] = [
+        package_names = self._lazy_package_index_names_by_path.pop(package_index_path, ())
+        self._lazy_package_index_paths_without_names.discard(package_index_path)
+        for package_name in package_names:
+            current_paths = self._lazy_package_index_paths_by_name.get(package_name)
+            if current_paths is None:
+                continue
+            self._lazy_package_index_paths_by_name[package_name] = [
                 candidate for candidate in current_paths if candidate != package_index_path
             ]
-            if not self._lazy_package_index_paths_by_directory_name[directory_name]:
-                del self._lazy_package_index_paths_by_directory_name[directory_name]
+            if not self._lazy_package_index_paths_by_name[package_name]:
+                del self._lazy_package_index_paths_by_name[package_name]
 
         indexed_entry = loader(package_index_path)
         if indexed_entry is None:

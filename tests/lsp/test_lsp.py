@@ -1552,6 +1552,73 @@ def test_language_server_returns_package_completion_items(
     assert samplelib_item['detail'] == 'workspace package'
 
 
+def test_language_server_returns_package_completion_items_without_loading_package_indexes(
+    server: LanguageServer,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    modules_root = tmp_path / 'tcllib' / 'modules'
+    grammar_fa_dir = modules_root / 'grammar_fa'
+    unused_dir = modules_root / 'unused_dir'
+    grammar_fa_dir.mkdir(parents=True)
+    unused_dir.mkdir()
+
+    grammar_pkg_index = grammar_fa_dir / 'pkgIndex.tcl'
+    grammar_pkg_index.write_text(
+        'package ifneeded grammar::fa 1.0 [list source [file join $dir fa.tcl]]\n',
+        encoding='utf-8',
+    )
+    (grammar_fa_dir / 'fa.tcl').write_text(
+        'package provide grammar::fa 1.0\nproc grammar::fa::run {} {return ok}\n',
+        encoding='utf-8',
+    )
+    unused_pkg_index = unused_dir / 'pkgIndex.tcl'
+    unused_pkg_index.write_text(
+        'package ifneeded unused::pkg 1.0 [list source [file join $dir unused.tcl]]\n',
+        encoding='utf-8',
+    )
+    (unused_dir / 'unused.tcl').write_text(
+        'package provide unused::pkg 1.0\nproc unused::pkg::run {} {return ok}\n',
+        encoding='utf-8',
+    )
+
+    loaded_pkg_indexes: list[Path] = []
+    original_load_package_index = lsp_workspace_rebuild.load_package_index
+
+    def counting_load_package_index(
+        path: Path,
+        *,
+        parser: object | None = None,
+    ) -> object:
+        loaded_pkg_indexes.append(path.resolve(strict=False))
+        return original_load_package_index(path, parser=cast(Any, parser))
+
+    monkeypatch.setattr(lsp_workspace_rebuild, 'load_package_index', counting_load_package_index)
+
+    project_root = tmp_path / 'workspace'
+    project_root.mkdir()
+    (project_root / 'tcllsrc.tcl').write_text('lib-path ../tcllib/modules\n', encoding='utf-8')
+
+    source_path = project_root / 'main.tcl'
+    source_text = 'package require gra\n'
+    source_path.write_text(source_text, encoding='utf-8')
+
+    _open_server_document(server, source_text, uri=source_path.as_uri())
+
+    items = _completion_items(
+        server,
+        uri=source_path.as_uri(),
+        line=0,
+        character=len('package require gra'),
+    )
+    grammar_item = next(item for item in items if item['label'] == 'grammar::fa')
+
+    assert grammar_item['detail'] == 'workspace package'
+    assert loaded_pkg_indexes == []
+    assert grammar_pkg_index.resolve(strict=False) not in loaded_pkg_indexes
+    assert unused_pkg_index.resolve(strict=False) not in loaded_pkg_indexes
+
+
 def test_language_server_returns_proc_signature_help(server: LanguageServer) -> None:
     _open_server_document(server, 'proc greet {name times} {return ok}\ngreet \n')
 
@@ -2305,6 +2372,63 @@ def test_language_service_only_loads_required_package_index(
 
     assert diagnostics == ()
     assert loaded_pkg_indexes == [helper_pkg_index.resolve(strict=False)]
+    assert unused_pkg_index.resolve(strict=False) not in loaded_pkg_indexes
+
+
+def test_language_service_only_loads_required_package_index_when_package_name_differs_from_directory(
+    service: LanguageService,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    modules_root = tmp_path / 'workspace' / 'modules'
+    grammar_fa_dir = modules_root / 'grammar_fa'
+    unused_dir = modules_root / 'unused'
+    app_dir = modules_root / 'app'
+    grammar_fa_dir.mkdir(parents=True)
+    unused_dir.mkdir()
+    app_dir.mkdir()
+
+    grammar_pkg_index = grammar_fa_dir / 'pkgIndex.tcl'
+    grammar_pkg_index.write_text(
+        'package ifneeded grammar::fa 1.0 [list source [file join $dir fa.tcl]]\n',
+        encoding='utf-8',
+    )
+    (grammar_fa_dir / 'fa.tcl').write_text(
+        'package provide grammar::fa 1.0\nproc grammar::fa::run {} {return ok}\n',
+        encoding='utf-8',
+    )
+    unused_pkg_index = unused_dir / 'pkgIndex.tcl'
+    unused_pkg_index.write_text(
+        'package ifneeded unused::pkg 1.0 [list source [file join $dir unused.tcl]]\n',
+        encoding='utf-8',
+    )
+    (unused_dir / 'unused.tcl').write_text(
+        'package provide unused::pkg 1.0\nproc unused::pkg::run {} {return ok}\n',
+        encoding='utf-8',
+    )
+
+    loaded_pkg_indexes: list[Path] = []
+    original_load_package_index = lsp_workspace_rebuild.load_package_index
+
+    def counting_load_package_index(
+        path: Path,
+        *,
+        parser: object | None = None,
+    ) -> object:
+        loaded_pkg_indexes.append(path.resolve(strict=False))
+        return original_load_package_index(path, parser=cast(Any, parser))
+
+    monkeypatch.setattr(lsp_workspace_rebuild, 'load_package_index', counting_load_package_index)
+
+    main_uri = (app_dir / 'main.tcl').as_uri()
+    diagnostics = service.open_document(
+        main_uri,
+        'package require grammar::fa\ngrammar::fa::run\n',
+        1,
+    )
+
+    assert diagnostics == ()
+    assert loaded_pkg_indexes == [grammar_pkg_index.resolve(strict=False)]
     assert unused_pkg_index.resolve(strict=False) not in loaded_pkg_indexes
 
 
