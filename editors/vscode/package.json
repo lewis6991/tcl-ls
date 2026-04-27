@@ -2,7 +2,7 @@
   "name": "tcl-ls-vscode",
   "displayName": "tcl-ls-vscode",
   "description": "VS Code extension for the tcl-ls language server.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "publisher": "lewis6991",
   "license": "MIT",
