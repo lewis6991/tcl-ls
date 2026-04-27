@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+from typing import Any
+
+import pytest
+
+import tcl_lsp.analysis.facts.collector as collector_module
 from tcl_lsp.analysis import DocumentFacts, FactExtractor, Resolver, WorkspaceIndex
 from tcl_lsp.analysis.builtins import builtin_command
+from tcl_lsp.cache import clear_cache_group
 from tcl_lsp.metadata_paths import DEFAULT_METADATA_REGISTRY
 from tcl_lsp.parser import Parser
 
@@ -639,6 +645,80 @@ def test_analysis_supports_builtin_subcommand_hovers(parser: Parser) -> None:
         assert hover_by_offset[subcommands[name].name_span.start.offset] == (
             f'builtin command {heading}\n\n{overload.documentation}'
         )
+
+
+def test_extractor_builtin_subcommand_collection_skips_non_builtin_roots(
+    parser: Parser,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    extractor = FactExtractor(parser)
+    parse_result = parser.parse_document('file:///non_builtin_root.tcl', 'cfg_get coverage foo\n')
+    calls: list[str] = []
+    original = collector_module.builtin_commands_for_packages
+
+    def tracked(
+        name: str,
+        required_packages: frozenset[str],
+        *,
+        metadata_registry: Any,
+    ) -> tuple[Any, ...]:
+        calls.append(name)
+        return original(
+            name,
+            required_packages,
+            metadata_registry=metadata_registry,
+        )
+
+    clear_cache_group('metadata')
+    monkeypatch.setattr(collector_module, 'builtin_commands_for_packages', tracked)
+    try:
+        extractor.extract(parse_result)
+    finally:
+        clear_cache_group('metadata')
+
+    assert calls == ['cfg_get']
+
+
+def test_extractor_builtin_subcommand_collection_stops_at_builtin_leaves(
+    parser: Parser,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    extractor = FactExtractor(parser)
+    parse_result = parser.parse_document(
+        'file:///builtin_leaf_roots.tcl',
+        'set value 1\ndict get data key\nnamespace ensemble create\n',
+    )
+    calls: list[str] = []
+    original = collector_module.builtin_commands_for_packages
+
+    def tracked(
+        name: str,
+        required_packages: frozenset[str],
+        *,
+        metadata_registry: Any,
+    ) -> tuple[Any, ...]:
+        calls.append(name)
+        return original(
+            name,
+            required_packages,
+            metadata_registry=metadata_registry,
+        )
+
+    clear_cache_group('metadata')
+    monkeypatch.setattr(collector_module, 'builtin_commands_for_packages', tracked)
+    try:
+        extractor.extract(parse_result)
+    finally:
+        clear_cache_group('metadata')
+
+    assert calls == [
+        'set',
+        'dict',
+        'dict get',
+        'namespace',
+        'namespace ensemble',
+        'namespace ensemble create',
+    ]
 
 
 def test_analysis_treats_meta_command_as_builtin() -> None:

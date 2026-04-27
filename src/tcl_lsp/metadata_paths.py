@@ -4,6 +4,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+from tcl_lsp.cache import metadata_lru_cache
+
 _PACKAGE_META_DIR = Path(__file__).resolve().parent / 'meta'
 _REPO_META_DIR = Path(__file__).resolve().parents[2] / 'meta'
 METADATA_FILE_SUFFIX = '.meta.tcl'
@@ -90,6 +92,7 @@ def source_name_for_metadata(path: Path) -> str:
     return f'{stem}.tcl'
 
 
+@metadata_lru_cache(maxsize=None)
 def _metadata_candidates(metadata_path: Path) -> tuple[Path, ...]:
     if metadata_path.is_dir():
         return tuple(

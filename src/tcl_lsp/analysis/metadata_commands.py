@@ -132,14 +132,36 @@ class MetadataCommand:
     annotations: tuple[MetadataAnnotation, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class MetadataFileSummary:
+    module_name: str | None
+    module_declaration_count: int
+    commands: tuple[MetadataCommand, ...]
+    language_extends: tuple[tuple[str, bool], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class MetadataFileModuleInfo:
+    module_name: str | None
+    module_declaration_count: int
+
+
 def load_metadata_commands(metadata_path: Path) -> tuple[MetadataCommand, ...]:
-    return _load_metadata_entries(metadata_path)[0]
+    return metadata_file_summary(metadata_path).commands
+
+
+def metadata_file_module_info(metadata_path: Path) -> MetadataFileModuleInfo:
+    return _metadata_file_module_info(metadata_path)
+
+
+def metadata_file_summary(metadata_path: Path) -> MetadataFileSummary:
+    return _metadata_file_summary(metadata_path)
 
 
 @metadata_lru_cache(maxsize=None)
-def _load_metadata_entries(
+def _metadata_file_module_info(
     metadata_path: Path,
-) -> tuple[tuple[MetadataCommand, ...], tuple[tuple[str, bool], ...]]:
+) -> MetadataFileModuleInfo:
     metadata_uri = metadata_path.as_uri()
     text = metadata_path.read_text(encoding='utf-8')
     parse_result = Parser().parse_document(path=metadata_uri, text=text)
@@ -147,6 +169,43 @@ def _load_metadata_entries(
         message = '; '.join(diagnostic.message for diagnostic in parse_result.diagnostics)
         raise RuntimeError(f'Invalid metadata file `{metadata_path.name}`: {message}')
 
+    module_name: str | None = None
+    module_declaration_count = 0
+    for command in parse_result.script.commands:
+        if len(command.words) < 2:
+            continue
+        if word_static_text(command.words[0]) != 'meta':
+            continue
+        if word_static_text(command.words[1]) != 'module':
+            continue
+        declared_module_name = (
+            word_static_text(command.words[2]) if len(command.words) == 3 else None
+        )
+        if declared_module_name is None:
+            raise RuntimeError('Metadata module entries must be `meta module name`.')
+        if module_name is None:
+            module_name = declared_module_name
+        module_declaration_count += 1
+
+    return MetadataFileModuleInfo(
+        module_name=module_name,
+        module_declaration_count=module_declaration_count,
+    )
+
+
+@metadata_lru_cache(maxsize=None)
+def _metadata_file_summary(
+    metadata_path: Path,
+) -> MetadataFileSummary:
+    metadata_uri = metadata_path.as_uri()
+    text = metadata_path.read_text(encoding='utf-8')
+    parse_result = Parser().parse_document(path=metadata_uri, text=text)
+    if parse_result.diagnostics:
+        message = '; '.join(diagnostic.message for diagnostic in parse_result.diagnostics)
+        raise RuntimeError(f'Invalid metadata file `{metadata_path.name}`: {message}')
+
+    module_name: str | None = None
+    module_declaration_count = 0
     commands: list[MetadataCommand] = []
     language_extends: list[tuple[str, bool]] = []
     for command in parse_result.script.commands:
@@ -166,8 +225,14 @@ def _load_metadata_entries(
             )
         entry_kind = word_static_text(command.words[1])
         if entry_kind == 'module':
-            if len(command.words) != 3 or word_static_text(command.words[2]) is None:
+            declared_module_name = (
+                word_static_text(command.words[2]) if len(command.words) == 3 else None
+            )
+            if declared_module_name is None:
                 raise RuntimeError('Metadata module entries must be `meta module name`.')
+            if module_name is None:
+                module_name = declared_module_name
+            module_declaration_count += 1
             continue
         if entry_kind == 'command':
             commands.extend(
@@ -196,7 +261,12 @@ def _load_metadata_entries(
     metadata_commands = tuple(commands)
     if metadata_commands:
         metadata_commands = _commands_with_derived_subcommands(metadata_commands)
-    return metadata_commands, tuple(language_extends)
+    return MetadataFileSummary(
+        module_name=module_name,
+        module_declaration_count=module_declaration_count,
+        commands=metadata_commands,
+        language_extends=tuple(language_extends),
+    )
 
 
 def all_metadata_commands(
@@ -220,7 +290,7 @@ def all_metadata_language_extends(metadata_registry: MetadataRegistry) -> dict[s
     for _, layer_paths in metadata_registry.metadata_file_layers():
         layer_extends: dict[str, bool] = {}
         for metadata_path in layer_paths:
-            for language_name, extends_tcl in _load_metadata_entries(metadata_path)[1]:
+            for language_name, extends_tcl in metadata_file_summary(metadata_path).language_extends:
                 # Repeated `meta language name { ... }` blocks compose within
                 # one metadata root, so any extending block keeps the language
                 # open inside that layer.

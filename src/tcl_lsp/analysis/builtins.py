@@ -11,13 +11,13 @@ from tcl_lsp.analysis.metadata_commands import (
     MetadataCommand,
     MetadataOption,
     load_metadata_commands,
+    metadata_file_module_info,
 )
 from tcl_lsp.analysis.model import CommandArity, DefinitionTarget
 from tcl_lsp.analysis.signature_matching import display_metadata_signature
 from tcl_lsp.cache import metadata_lru_cache
 from tcl_lsp.common import Span, lsp_location
 from tcl_lsp.metadata_paths import DEFAULT_METADATA_REGISTRY, MetadataRegistry
-from tcl_lsp.parser import Parser, word_static_text
 
 _CORE_PACKAGE = 'Tcl'
 _PACKAGE_ALIASES = {
@@ -58,7 +58,7 @@ def builtin_commands(
 
 @metadata_lru_cache(maxsize=1)
 def _builtin_commands(metadata_registry: MetadataRegistry) -> dict[str, BuiltinCommand]:
-    return builtin_commands_by_package(metadata_registry=metadata_registry)[_CORE_PACKAGE]
+    return _builtin_commands_for_package(_CORE_PACKAGE, metadata_registry)
 
 
 def core_annotated_metadata_commands(
@@ -72,9 +72,7 @@ def core_annotated_metadata_commands(
 def _core_annotated_metadata_commands(
     metadata_registry: MetadataRegistry,
 ) -> dict[str, MetadataCommand]:
-    return annotated_metadata_commands_by_package(metadata_registry=metadata_registry)[
-        _CORE_PACKAGE
-    ]
+    return _annotated_metadata_commands_for_package(_CORE_PACKAGE, metadata_registry)
 
 
 def annotated_metadata_commands_by_package(
@@ -88,15 +86,26 @@ def annotated_metadata_commands_by_package(
 def _annotated_metadata_commands_by_package(
     metadata_registry: MetadataRegistry,
 ) -> dict[str, dict[str, MetadataCommand]]:
-    commands_by_package: dict[str, dict[str, MetadataCommand]] = {}
-    for package_name, metadata_path_layers in _builtin_metadata_path_layers_by_package(
-        metadata_registry
-    ).items():
-        commands_by_package[package_name] = _load_annotated_metadata_package(
-            package_name=package_name,
-            metadata_path_layers=metadata_path_layers,
-        )
-    return commands_by_package
+    return {
+        package_name: _annotated_metadata_commands_for_package(package_name, metadata_registry)
+        for package_name in _builtin_metadata_path_layers_by_package(metadata_registry)
+    }
+
+
+@metadata_lru_cache(maxsize=None)
+def _annotated_metadata_commands_for_package(
+    package_name: str,
+    metadata_registry: MetadataRegistry,
+) -> dict[str, MetadataCommand]:
+    metadata_path_layers = _builtin_metadata_path_layers_by_package(metadata_registry).get(
+        package_name
+    )
+    if metadata_path_layers is None:
+        return {}
+    return _load_annotated_metadata_package(
+        package_name=package_name,
+        metadata_path_layers=metadata_path_layers,
+    )
 
 
 def annotated_metadata_commands_for_packages(
@@ -113,13 +122,16 @@ def _annotated_metadata_commands_for_packages(
     metadata_registry: MetadataRegistry,
 ) -> dict[str, tuple[MetadataCommand, ...]]:
     matches_by_name: dict[str, list[MetadataCommand]] = {}
+    seen_packages: set[str] = set()
 
     def add_package(package_name: str) -> None:
-        for name, metadata_command in (
-            annotated_metadata_commands_by_package(metadata_registry=metadata_registry)
-            .get(package_name, {})
-            .items()
-        ):
+        if package_name in seen_packages:
+            return
+        seen_packages.add(package_name)
+        for name, metadata_command in _annotated_metadata_commands_for_package(
+            package_name,
+            metadata_registry,
+        ).items():
             matches_by_name.setdefault(name, []).append(metadata_command)
 
     add_package(_CORE_PACKAGE)
@@ -140,15 +152,26 @@ def builtin_commands_by_package(
 def _builtin_commands_by_package(
     metadata_registry: MetadataRegistry,
 ) -> dict[str, dict[str, BuiltinCommand]]:
-    commands_by_package: dict[str, dict[str, BuiltinCommand]] = {}
-    for package_name, metadata_path_layers in _builtin_metadata_path_layers_by_package(
-        metadata_registry
-    ).items():
-        commands_by_package[package_name] = _load_metadata_package(
-            package_name=package_name,
-            metadata_path_layers=metadata_path_layers,
-        )
-    return commands_by_package
+    return {
+        package_name: _builtin_commands_for_package(package_name, metadata_registry)
+        for package_name in _builtin_metadata_path_layers_by_package(metadata_registry)
+    }
+
+
+@metadata_lru_cache(maxsize=None)
+def _builtin_commands_for_package(
+    package_name: str,
+    metadata_registry: MetadataRegistry,
+) -> dict[str, BuiltinCommand]:
+    metadata_path_layers = _builtin_metadata_path_layers_by_package(metadata_registry).get(
+        package_name
+    )
+    if metadata_path_layers is None:
+        return {}
+    return _load_metadata_package(
+        package_name=package_name,
+        metadata_path_layers=metadata_path_layers,
+    )
 
 
 def builtin_command(
@@ -189,10 +212,11 @@ def builtin_commands_for_packages(
         matches.append(core_command)
 
     for package_name in sorted(required_packages):
-        package_commands = builtin_commands_by_package(metadata_registry=metadata_registry).get(
-            _canonical_package_name(package_name)
+        package_commands = _builtin_commands_for_package(
+            _canonical_package_name(package_name),
+            metadata_registry,
         )
-        if package_commands is None:
+        if not package_commands:
             continue
         package_command = package_commands.get(name)
         if package_command is None or package_command.package in seen_packages:
@@ -224,7 +248,7 @@ def is_builtin_package(
     *,
     metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
 ) -> bool:
-    return canonical_builtin_package_name(package_name) in builtin_commands_by_package(
+    return canonical_builtin_package_name(package_name) in _builtin_metadata_path_layers_by_package(
         metadata_registry=metadata_registry
     )
 
@@ -371,7 +395,12 @@ def _builtin_metadata_path_layers_by_package(
     for _, layer_paths in metadata_registry.metadata_file_layers():
         layer_paths_by_package: dict[str, list[Path]] = {}
         for metadata_path in layer_paths:
-            package_name = _declared_builtin_module_name(metadata_path)
+            module_info = metadata_file_module_info(metadata_path)
+            if module_info.module_declaration_count > 1:
+                raise RuntimeError(
+                    f'Builtin metadata file `{metadata_path.name}` declares multiple module names.'
+                )
+            package_name = module_info.module_name
             if package_name is None:
                 continue
             layer_paths_by_package.setdefault(package_name, []).append(metadata_path)
@@ -398,44 +427,6 @@ def _discard_overridden_commands(
             for override_name in override_names
         ):
             commands.pop(existing_name, None)
-
-
-@metadata_lru_cache(maxsize=None)
-def _declared_builtin_module_name(metadata_path: Path) -> str | None:
-    parse_result = Parser().parse_document(
-        path=metadata_path.as_uri(),
-        text=metadata_path.read_text(encoding='utf-8'),
-    )
-    if parse_result.diagnostics:
-        message = '; '.join(diagnostic.message for diagnostic in parse_result.diagnostics)
-        raise RuntimeError(f'Invalid metadata file `{metadata_path.name}`: {message}')
-
-    declared_name: str | None = None
-    for command in parse_result.script.commands:
-        if len(command.words) < 2:
-            continue
-        if word_static_text(command.words[0]) != 'meta':
-            continue
-        if word_static_text(command.words[1]) != 'module':
-            continue
-        if len(command.words) != 3:
-            raise RuntimeError(
-                f'Builtin metadata file `{metadata_path.name}` must declare modules as '
-                '`meta module name`.'
-            )
-
-        module_name = word_static_text(command.words[2])
-        if module_name is None:
-            raise RuntimeError(
-                f'Builtin metadata file `{metadata_path.name}` must declare a static module name.'
-            )
-        if declared_name is not None:
-            raise RuntimeError(
-                f'Builtin metadata file `{metadata_path.name}` declares multiple module names.'
-            )
-        declared_name = module_name
-
-    return declared_name
 
 
 def _annotated_entries_for_file(

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
+import tcl_lsp.analysis.builtins as builtins_module
+import tcl_lsp.analysis.metadata_commands as metadata_commands_module
 from tcl_lsp.analysis.builtins import (
     annotated_metadata_commands_for_packages,
     builtin_command,
+    builtin_command_for_packages,
     builtin_commands_by_package,
 )
 from tcl_lsp.analysis.metadata_commands import (
@@ -20,6 +24,7 @@ from tcl_lsp.analysis.metadata_commands import (
     load_metadata_commands,
     select_argument_indices,
 )
+from tcl_lsp.cache import clear_cache_group
 from tcl_lsp.metadata_paths import bundled_metadata_dir, create_metadata_registry
 
 
@@ -355,6 +360,130 @@ def test_builtin_metadata_ignores_context_commands() -> None:
     assert 'method' not in tcloo_commands
     assert 'my variable' not in tcloo_commands
     assert 'tepam::procedure' in tepam_commands
+
+
+def test_builtin_command_core_lookup_only_loads_tcl_package(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loaded_packages: list[str] = []
+    builtins_any = cast(Any, builtins_module)
+    original = builtins_any._load_metadata_package
+
+    def tracked_load_metadata_package(
+        *,
+        package_name: str,
+        metadata_path_layers: tuple[tuple[Path, ...], ...],
+    ) -> dict[str, builtins_module.BuiltinCommand]:
+        loaded_packages.append(package_name)
+        return original(
+            package_name=package_name,
+            metadata_path_layers=metadata_path_layers,
+        )
+
+    clear_cache_group('metadata')
+    monkeypatch.setattr(builtins_module, '_load_metadata_package', tracked_load_metadata_package)
+    try:
+        builtin = builtin_command('set')
+        assert builtin is not None
+        assert loaded_packages == ['Tcl']
+    finally:
+        clear_cache_group('metadata')
+
+
+def test_builtin_command_package_lookup_only_loads_requested_package_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loaded_packages: list[str] = []
+    builtins_any = cast(Any, builtins_module)
+    original = builtins_any._load_metadata_package
+
+    def tracked_load_metadata_package(
+        *,
+        package_name: str,
+        metadata_path_layers: tuple[tuple[Path, ...], ...],
+    ) -> dict[str, builtins_module.BuiltinCommand]:
+        loaded_packages.append(package_name)
+        return original(
+            package_name=package_name,
+            metadata_path_layers=metadata_path_layers,
+        )
+
+    clear_cache_group('metadata')
+    monkeypatch.setattr(builtins_module, '_load_metadata_package', tracked_load_metadata_package)
+    try:
+        builtin = builtin_command_for_packages('oo::define', frozenset({'TclOO'}))
+        assert builtin is not None
+        assert loaded_packages == ['Tcl', 'TclOO']
+    finally:
+        clear_cache_group('metadata')
+
+
+def test_annotated_metadata_lookup_only_loads_requested_package_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loaded_packages: list[str] = []
+    builtins_any = cast(Any, builtins_module)
+    original = builtins_any._load_annotated_metadata_package
+
+    def tracked_load_annotated_metadata_package(
+        *,
+        package_name: str,
+        metadata_path_layers: tuple[tuple[Path, ...], ...],
+    ) -> dict[str, Any]:
+        loaded_packages.append(package_name)
+        return original(
+            package_name=package_name,
+            metadata_path_layers=metadata_path_layers,
+        )
+
+    clear_cache_group('metadata')
+    monkeypatch.setattr(
+        builtins_module,
+        '_load_annotated_metadata_package',
+        tracked_load_annotated_metadata_package,
+    )
+    try:
+        commands_by_name = annotated_metadata_commands_for_packages(frozenset({'TclOO'}))
+        assert 'append' in commands_by_name
+        assert 'oo::define' in commands_by_name
+        assert loaded_packages == ['Tcl', 'TclOO']
+    finally:
+        clear_cache_group('metadata')
+
+
+def test_is_builtin_package_does_not_materialize_builtin_command_packages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loaded_packages: list[str] = []
+    builtins_any = cast(Any, builtins_module)
+    original = builtins_any._load_metadata_package
+
+    def tracked_load_metadata_package(
+        *,
+        package_name: str,
+        metadata_path_layers: tuple[tuple[Path, ...], ...],
+    ) -> dict[str, builtins_module.BuiltinCommand]:
+        loaded_packages.append(package_name)
+        return original(
+            package_name=package_name,
+            metadata_path_layers=metadata_path_layers,
+        )
+
+    def fail_metadata_file_summary(_metadata_path: Path) -> Any:
+        raise AssertionError('builtin package discovery should not use metadata_file_summary')
+
+    clear_cache_group('metadata')
+    monkeypatch.setattr(builtins_module, '_load_metadata_package', tracked_load_metadata_package)
+    monkeypatch.setattr(
+        metadata_commands_module,
+        'metadata_file_summary',
+        fail_metadata_file_summary,
+    )
+    try:
+        assert builtins_module.is_builtin_package('TclOO') is True
+        assert loaded_packages == []
+    finally:
+        clear_cache_group('metadata')
 
 
 def test_project_metadata_allows_language_only_files(tmp_path: Path) -> None:
