@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from pathlib import Path
 
 from tcl_lsp.analysis import (
     AnalysisResult,
@@ -29,6 +30,29 @@ def analyze_document(parser: Parser, uri: str, text: str) -> AnalysisSnapshot:
     workspace.update(facts.uri, facts)
     analysis = resolver.analyze(facts.uri, facts, workspace)
     return AnalysisSnapshot(facts=facts, analysis=analysis)
+
+
+def analyze_path(
+    parser: Parser,
+    source_path: Path,
+    *,
+    metadata_paths: tuple[Path, ...] = (),
+) -> tuple[DocumentFacts, AnalysisResult]:
+    from tcl_lsp.metadata_paths import create_metadata_registry
+
+    metadata_registry = create_metadata_registry(metadata_paths)
+    extractor = FactExtractor(parser, metadata_registry=metadata_registry)
+    resolver = Resolver(metadata_registry=metadata_registry)
+    workspace = WorkspaceIndex()
+
+    parse_result = parser.parse_document(
+        source_path.as_uri(),
+        source_path.read_text(encoding='utf-8'),
+    )
+    facts = extractor.extract(parse_result)
+    workspace.update(facts.uri, facts)
+    analysis = resolver.analyze(facts.uri, facts, workspace)
+    return facts, analysis
 
 
 def analyze_workspace(

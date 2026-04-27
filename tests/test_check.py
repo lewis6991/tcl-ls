@@ -7,179 +7,13 @@ from pathlib import Path
 import pytest
 
 from tcl_lsp.checker import check_project, format_report, main
-
-
-def _write_sample_plugin_bundle(metadata_root: Path) -> Path:
-    metadata_root.mkdir(parents=True, exist_ok=True)
-    plugin_path = metadata_root / 'sample.tcl'
-    plugin_path.write_text(
-        'namespace eval ::tcl_lsp::plugins::sample {}\n'
-        'proc ::tcl_lsp::plugins::sample::procedure {words info} {\n'
-        '    if {[llength $words] < 4} {\n'
-        '        return {}\n'
-        '    }\n'
-        '    return [list [list procedure [format {\n'
-        '        name select 2\n'
-        '        params literal %s\n'
-        '        _params-source select 3\n'
-        '        body select 4\n'
-        '    } [list [::tcl_lsp::plugins::sample::parameterNames [lindex $words 2]]]]]]\n'
-        '}\n'
-        'proc ::tcl_lsp::plugins::sample::parameterNames {parameter_list} {\n'
-        '    set names {}\n'
-        '    if {[catch {\n'
-        '        foreach arg_def $parameter_list {\n'
-        '            set name [lindex $arg_def 0]\n'
-        '            if {$name eq ""} {\n'
-        '                continue\n'
-        '            }\n'
-        '            lappend names $name\n'
-        '        }\n'
-        '    }]} {\n'
-        '        return {}\n'
-        '    }\n'
-        '    return $names\n'
-        '}\n',
-        encoding='utf-8',
-    )
-    (metadata_root / 'sample.meta.tcl').write_text(
-        '# Project metadata loaded from project-local plugin configuration.\n'
-        'meta module Tcl\n'
-        '# Define a procedure using a project-local wrapper command.\n'
-        'meta command dsl::define {name params body} {\n'
-        '    plugin sample.tcl ::tcl_lsp::plugins::sample::procedure\n'
-        '}\n',
-        encoding='utf-8',
-    )
-    return plugin_path
-
-
-def _write_sample_library_root(library_root: Path) -> Path:
-    package_root = library_root / 'modules' / 'samplelib'
-    package_root.mkdir(parents=True, exist_ok=True)
-    (package_root / 'pkgIndex.tcl').write_text(
-        'package ifneeded samplelib 1.0 [list source [file join $dir samplelib.tcl]]\n',
-        encoding='utf-8',
-    )
-    (package_root / 'samplelib.tcl').write_text(
-        'package provide samplelib 1.0\nproc samplelib::greet {} {return ok}\n',
-        encoding='utf-8',
-    )
-    return package_root
-
-
-def _write_transitive_package_workspace(workspace_root: Path) -> Path:
-    workspace_root.mkdir(parents=True, exist_ok=True)
-    (workspace_root / 'pkgIndex.tcl').write_text(
-        'package ifneeded helper 1.0 [list source [file join $dir helper.tcl]]\n',
-        encoding='utf-8',
-    )
-    (workspace_root / 'helper.tcl').write_text(
-        'package require json\npackage provide helper 1.0\n',
-        encoding='utf-8',
-    )
-    source_path = workspace_root / 'main.tcl'
-    source_path.write_text(
-        'package require helper\njson::json2dict {}\n',
-        encoding='utf-8',
-    )
-    return source_path
-
-
-def _write_declaration_plugin_bundle(metadata_root: Path) -> Path:
-    metadata_root.mkdir(parents=True, exist_ok=True)
-    plugin_path = metadata_root / 'declaration.tcl'
-    plugin_path.write_text(
-        'namespace eval ::tcl_lsp::plugins::sample {}\n'
-        'proc ::tcl_lsp::plugins::sample::declaration {words info} {\n'
-        '    if {[llength $words] < 3} {\n'
-        '        return {}\n'
-        '    }\n'
-        '    return [list [list procedure [format {\n'
-        '        name select 2\n'
-        '        params literal %s\n'
-        '        _params-source select 3\n'
-        '    } [list [::tcl_lsp::plugins::sample::parameterNames [lindex $words 2]]]]]]\n'
-        '}\n'
-        'proc ::tcl_lsp::plugins::sample::parameterNames {parameter_list} {\n'
-        '    set names {}\n'
-        '    if {[catch {\n'
-        '        foreach arg_def $parameter_list {\n'
-        '            set name [lindex $arg_def 0]\n'
-        '            if {$name eq ""} {\n'
-        '                continue\n'
-        '            }\n'
-        '            lappend names $name\n'
-        '        }\n'
-        '    }]} {\n'
-        '        return {}\n'
-        '    }\n'
-        '    return $names\n'
-        '}\n',
-        encoding='utf-8',
-    )
-    (metadata_root / 'declaration.meta.tcl').write_text(
-        '# Project metadata loaded from project-local plugin configuration.\n'
-        'meta module Tcl\n'
-        '# Declare a procedure using a project-local wrapper command.\n'
-        'meta command dsl::declare {name params} {\n'
-        '    plugin declaration.tcl ::tcl_lsp::plugins::sample::declaration\n'
-        '}\n',
-        encoding='utf-8',
-    )
-    return plugin_path
-
-
-def _write_effect_clause_plugin_bundle(metadata_root: Path) -> Path:
-    metadata_root.mkdir(parents=True, exist_ok=True)
-    plugin_path = metadata_root / 'effects.tcl'
-    plugin_path.write_text(
-        'namespace eval ::tcl_lsp::plugins::sample {}\n'
-        'proc ::tcl_lsp::plugins::sample::effects {words info} {\n'
-        '    switch -- [dict get $info metadata-command] {\n'
-        '        dsl::run {\n'
-        '            if {[llength $words] < 4} {\n'
-        '                return {}\n'
-        '            }\n'
-        '            return [list \\\n'
-        '                [list bind 2 set] \\\n'
-        '                [list source 3 caller] \\\n'
-        '                [list package literal TclOO] \\\n'
-        '                [list enter tcl body 4] \\\n'
-        '            ]\n'
-        '        }\n'
-        '        dsl::use {\n'
-        '            if {[llength $words] < 2} {\n'
-        '                return {}\n'
-        '            }\n'
-        '            return [list [list ref 2]]\n'
-        '        }\n'
-        '        dsl::loadlist {\n'
-        '            if {[llength $words] < 2} {\n'
-        '                return {}\n'
-        '            }\n'
-        '            return [list [list source list 2 caller]]\n'
-        '        }\n'
-        '    }\n'
-        '    return {}\n'
-        '}\n',
-        encoding='utf-8',
-    )
-    (metadata_root / 'effects.meta.tcl').write_text(
-        '# Project metadata loaded from project-local plugin configuration.\n'
-        'meta module Tcl\n'
-        'meta command dsl::run {name helper body} {\n'
-        '    plugin effects.tcl ::tcl_lsp::plugins::sample::effects\n'
-        '}\n'
-        'meta command dsl::use {name} {\n'
-        '    plugin effects.tcl ::tcl_lsp::plugins::sample::effects\n'
-        '}\n'
-        'meta command dsl::loadlist {paths} {\n'
-        '    plugin effects.tcl ::tcl_lsp::plugins::sample::effects\n'
-        '}\n',
-        encoding='utf-8',
-    )
-    return plugin_path
+from tests.project_support import (
+    write_declaration_plugin_bundle,
+    write_effect_clause_plugin_bundle,
+    write_sample_library_root,
+    write_sample_plugin_bundle,
+    write_transitive_package_workspace,
+)
 
 
 def test_check_project_resolves_cross_file_procedures(tmp_path: Path) -> None:
@@ -203,7 +37,7 @@ def test_check_project_resolves_cross_file_procedures(tmp_path: Path) -> None:
 
 def test_check_project_applies_dynamic_plugin_effect_clauses(tmp_path: Path) -> None:
     project_root = tmp_path / 'workspace'
-    plugin_path = _write_effect_clause_plugin_bundle(project_root / '.tcl-ls')
+    plugin_path = write_effect_clause_plugin_bundle(project_root / '.tcl-ls')
     (project_root / 'helper.tcl').write_text(
         'proc helper_proc {} {return ok}\n',
         encoding='utf-8',
@@ -229,7 +63,7 @@ def test_check_project_applies_dynamic_plugin_effect_clauses(tmp_path: Path) -> 
 
 def test_check_project_reports_plugin_ref_effect_references(tmp_path: Path) -> None:
     project_root = tmp_path / 'workspace'
-    plugin_path = _write_effect_clause_plugin_bundle(project_root / '.tcl-ls')
+    plugin_path = write_effect_clause_plugin_bundle(project_root / '.tcl-ls')
     (project_root / 'main.tcl').write_text(
         'proc demo {} {\n    dsl::use missing\n}\ndemo\n',
         encoding='utf-8',
@@ -242,7 +76,7 @@ def test_check_project_reports_plugin_ref_effect_references(tmp_path: Path) -> N
 
 def test_check_project_expands_plugin_source_list_selectors(tmp_path: Path) -> None:
     project_root = tmp_path / 'workspace'
-    plugin_path = _write_effect_clause_plugin_bundle(project_root / '.tcl-ls')
+    plugin_path = write_effect_clause_plugin_bundle(project_root / '.tcl-ls')
     (project_root / 'a.tcl').write_text('proc alpha {} {return ok}\n', encoding='utf-8')
     (project_root / 'b.tcl').write_text('proc beta {} {return ok}\n', encoding='utf-8')
     (project_root / 'main.tcl').write_text(
@@ -419,7 +253,7 @@ def test_check_project_loads_transitive_static_source_commands(tmp_path: Path) -
 
 def test_check_project_loads_external_plugin_metadata_from_plugin_path(tmp_path: Path) -> None:
     metadata_root = tmp_path / 'metadata'
-    plugin_path = _write_sample_plugin_bundle(metadata_root)
+    plugin_path = write_sample_plugin_bundle(metadata_root)
 
     project_root = tmp_path / 'workspace'
     project_root.mkdir()
@@ -445,7 +279,7 @@ def test_check_project_loads_external_plugin_metadata_from_plugin_path(tmp_path:
 
 def test_check_project_loads_external_declaration_plugin_metadata(tmp_path: Path) -> None:
     metadata_root = tmp_path / 'metadata'
-    plugin_path = _write_declaration_plugin_bundle(metadata_root)
+    plugin_path = write_declaration_plugin_bundle(metadata_root)
 
     project_root = tmp_path / 'workspace'
     project_root.mkdir()
@@ -468,8 +302,8 @@ def test_check_project_prefers_plugin_implementations_over_declarations(
     tmp_path: Path,
 ) -> None:
     metadata_root = tmp_path / 'metadata'
-    plugin_path = _write_sample_plugin_bundle(metadata_root)
-    _write_declaration_plugin_bundle(metadata_root)
+    plugin_path = write_sample_plugin_bundle(metadata_root)
+    write_declaration_plugin_bundle(metadata_root)
 
     project_root = tmp_path / 'workspace'
     project_root.mkdir()
@@ -494,7 +328,7 @@ def test_check_project_prefers_plugin_implementations_over_declarations(
 def test_check_project_loads_plugin_metadata_from_tcllsrc(tmp_path: Path) -> None:
     project_root = tmp_path / 'workspace'
     package_root = project_root / 'pkg'
-    plugin_path = _write_sample_plugin_bundle(project_root / '.tcl-ls')
+    plugin_path = write_sample_plugin_bundle(project_root / '.tcl-ls')
     package_root.mkdir(parents=True)
 
     (project_root / 'tcllsrc.tcl').write_text(
@@ -515,7 +349,7 @@ def test_check_project_loads_plugin_metadata_from_tcllsrc(tmp_path: Path) -> Non
 def test_check_project_loads_package_indexes_from_tcllsrc_lib_path(tmp_path: Path) -> None:
     project_root = tmp_path / 'workspace'
     package_root = project_root / 'pkg'
-    _write_sample_library_root(tmp_path / 'tcllib')
+    write_sample_library_root(tmp_path / 'tcllib')
     package_root.mkdir(parents=True)
 
     (project_root / 'tcllsrc.tcl').write_text(
@@ -533,7 +367,7 @@ def test_check_project_loads_package_indexes_from_tcllsrc_lib_path(tmp_path: Pat
 
 
 def test_check_project_resolves_transitive_required_packages(tmp_path: Path) -> None:
-    source_path = _write_transitive_package_workspace(tmp_path / 'workspace')
+    source_path = write_transitive_package_workspace(tmp_path / 'workspace')
 
     report = check_project(source_path)
 
@@ -543,7 +377,7 @@ def test_check_project_resolves_transitive_required_packages(tmp_path: Path) -> 
 def test_check_project_loads_generated_project_metadata_without_docs(tmp_path: Path) -> None:
     project_root = tmp_path / 'workspace'
     package_root = project_root / 'pkg'
-    _write_sample_plugin_bundle(project_root / '.tcl-ls')
+    write_sample_plugin_bundle(project_root / '.tcl-ls')
     (project_root / '.tcl-ls' / 'generated.meta.tcl').write_text(
         'meta module Tcl\nmeta command external {args}\n',
         encoding='utf-8',
@@ -567,7 +401,7 @@ def test_check_project_loads_generated_project_metadata_without_docs(tmp_path: P
 def test_check_project_restores_project_metadata_between_calls(tmp_path: Path) -> None:
     project_with_plugin = tmp_path / 'with-plugin'
     project_without_plugin = tmp_path / 'without-plugin'
-    _write_sample_plugin_bundle(project_with_plugin / '.tcl-ls')
+    write_sample_plugin_bundle(project_with_plugin / '.tcl-ls')
     (project_with_plugin / 'tcllsrc.tcl').write_text(
         'plugin-path .tcl-ls/sample.tcl\n',
         encoding='utf-8',
@@ -593,7 +427,7 @@ def test_check_project_repo_root_uses_pkgindex_workspaces_and_shared_tcllsrc(
 ) -> None:
     project_root = tmp_path / 'workspace'
     package_root = project_root / 'pkg'
-    plugin_path = _write_sample_plugin_bundle(project_root / '.tcl-ls')
+    plugin_path = write_sample_plugin_bundle(project_root / '.tcl-ls')
     package_root.mkdir(parents=True)
 
     (project_root / 'tcllsrc.tcl').write_text(

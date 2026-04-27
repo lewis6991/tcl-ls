@@ -6,12 +6,12 @@ import pytest
 from lsprotocol import types
 from pygls.exceptions import JsonRpcInvalidParams
 from pygls.protocol.json_rpc import RPCMessage
-from tests.lsp_service import LanguageService
-from tests.lsp_support import process_message
 
 from tcl_lsp.common import Position, Span, lsp_range
 from tcl_lsp.lsp import LanguageServer
 from tcl_lsp.lsp import server as lsp_server
+from tests.lsp_service import LanguageService
+from tests.lsp_support import process_message
 
 
 def _fresh_server() -> LanguageServer:
