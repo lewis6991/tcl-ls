@@ -2,6 +2,8 @@ SHELL := /bin/sh
 
 ROOT_DIR := $(CURDIR)
 PYTHON ?= python3
+UV ?= uv
+DIST_DIR ?= dist
 
 # Tcllib checkout and tests.
 TCLLIB_REPO ?= https://github.com/tcltk/tcllib.git
@@ -42,6 +44,10 @@ check:
 docs:
 	uv run sphinx-build -b html "$(DOCS_DIR)" "$(DOCS_BUILD_DIR)/html"
 
+.PHONY: build
+build:
+	$(UV) build --out-dir "$(DIST_DIR)"
+
 # Tcl checker.
 TCL_CHECK_ARGS ?=
 
@@ -68,7 +74,6 @@ release-stamp:
 
 # PyInstaller packaging.
 BUILD_DIR ?= build
-DIST_DIR ?= dist
 PYINSTALLER_CONFIG_DIR ?= $(BUILD_DIR)/pyinstaller-config
 PYINSTALLER_DIST_DIR ?= $(BUILD_DIR)/release
 PYINSTALLER_WORK_DIR ?= $(BUILD_DIR)/pyinstaller

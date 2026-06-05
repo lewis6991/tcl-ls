@@ -9,11 +9,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT_PATH = ROOT / 'pyproject.toml'
 PACKAGE_INIT_PATH = ROOT / 'src' / 'tcl_lsp' / '__init__.py'
+UV_LOCK_PATH = ROOT / 'uv.lock'
 VSCODE_PACKAGE_JSON_PATH = ROOT / 'editors' / 'vscode' / 'package.json'
 VSCODE_PACKAGE_LOCK_PATH = ROOT / 'editors' / 'vscode' / 'package-lock.json'
 
 _PYPROJECT_VERSION_PATTERN = re.compile(r'(?m)^(version\s*=\s*)"[^"]+"$')
 _INIT_VERSION_PATTERN = re.compile(r"(?m)^__version__ = '[^']+'$")
+_UV_LOCK_VERSION_PATTERN = re.compile(
+    r'(?m)(^\[\[package\]\]\nname = "tcl-ls"\nversion\s*=\s*)"[^"]+"$'
+)
 _STABLE_VERSION_PATTERN = re.compile(r'^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$')
 _PRERELEASE_VERSION_PATTERN = re.compile(
     r'^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-pre\.([1-9]\d*)$'
@@ -25,7 +29,7 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest='command', required=True)
 
     compute_parser = subparsers.add_parser('compute', help='Compute the release version.')
-    compute_parser.add_argument('--channel', choices=('stable', 'prerelease'), required=True)
+    compute_parser.add_argument('--channel', choices=('stable', 'nightly'), required=True)
     compute_parser.add_argument('--run-number', type=int, default=0)
 
     stamp_parser = subparsers.add_parser('stamp', help='Stamp files with a release version.')
@@ -60,7 +64,7 @@ def compute_release_version(base_version: str, channel: str, run_number: int) ->
     if channel == 'stable':
         return f'{major}.{minor}.{patch}'
     if run_number <= 0:
-        raise ValueError('prerelease builds require a positive run number')
+        raise ValueError('nightly builds require a positive run number')
 
     # Target the next patch as a prerelease so any later stable release sorts after it.
     return f'{major}.{minor}.{patch + 1}-pre.{run_number}'
@@ -70,6 +74,7 @@ def stamp_version(version: str) -> None:
     _validate_release_version(version)
     _replace_pattern(PYPROJECT_PATH, _PYPROJECT_VERSION_PATTERN, rf'\1"{version}"')
     _replace_pattern(PACKAGE_INIT_PATH, _INIT_VERSION_PATTERN, f"__version__ = '{version}'")
+    _replace_pattern(UV_LOCK_PATH, _UV_LOCK_VERSION_PATTERN, rf'\1"{version}"')
     _update_json_versions(version)
 
 
