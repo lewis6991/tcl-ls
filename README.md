@@ -5,7 +5,7 @@ Python.
 
 ## Install
 
-`tcl-ls` currently targets Python 3.14 or newer.
+`tcl-ls` currently targets Python 3.12 or newer.
 
 Install from PyPI with:
 

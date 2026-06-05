@@ -277,7 +277,7 @@ class TclPluginHost:
                 else:
                     process.terminate()
                     process.wait(timeout=0.2)
-            except BrokenPipeError, OSError, subprocess.TimeoutExpired:
+            except (BrokenPipeError, OSError, subprocess.TimeoutExpired):
                 process.kill()
                 process.wait()
         else:
@@ -650,7 +650,7 @@ def _setrlimit(limit: int, value: int) -> None:
         return
     try:
         current_soft, current_hard = resource.getrlimit(limit)
-    except OSError, ValueError:
+    except (OSError, ValueError):
         return
 
     soft_limit = _bounded_limit(value, current_soft)
@@ -661,7 +661,7 @@ def _setrlimit(limit: int, value: int) -> None:
         soft_limit = hard_limit
     try:
         resource.setrlimit(limit, (soft_limit, hard_limit))
-    except OSError, ValueError:
+    except (OSError, ValueError):
         return
 
 

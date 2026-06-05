@@ -137,7 +137,7 @@ def _regexp_compile_error(pattern: str, *, expanded: bool) -> str | None:
             },
             check=False,
         )
-    except OSError, ValueError, subprocess.TimeoutExpired:
+    except (OSError, ValueError, subprocess.TimeoutExpired):
         return None
 
     if completed.returncode == 0:

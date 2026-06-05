@@ -3,7 +3,7 @@ name = "tcl-ls"
 version = "0.2.1"
 description = "Tcl language server, checker, and metadata toolkit."
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 authors = [
     { name = "Lewis Russell", email = "lewis6991@gmail.com" },
 ]
@@ -17,6 +17,8 @@ classifiers = [
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Topic :: Software Development",
     "Topic :: Software Development :: Quality Assurance",
@@ -61,7 +63,7 @@ packages = ["src/tcl_lsp"]
 "src/tcl_lsp/tools/tcl_meta.tcl" = "tcl_lsp/tools/tcl_meta.tcl"
 
 [tool.ruff]
-target-version = "py314"
+target-version = "py312"
 line-length = 100
 src = ["src", "tests"]
 
@@ -87,7 +89,7 @@ known-first-party = ["tcl_lsp"]
 
 [tool.basedpyright]
 include = ["src", "tests"]
-pythonVersion = "3.14"
+pythonVersion = "3.12"
 typeCheckingMode = "strict"
 reportMissingTypeStubs = "none"
 

@@ -10,7 +10,7 @@ Getting Started
 Prerequisites
 -------------
 
-* Python 3.14 or newer
+* Python 3.12 or newer
 * ``uv`` for local development and repeatable tool execution
 * ``tclsh`` if you want to run ``tcl-meta``
 * an editor with LSP support if you want interactive language-server features
