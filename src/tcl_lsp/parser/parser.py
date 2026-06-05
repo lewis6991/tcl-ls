@@ -291,6 +291,8 @@ class _ParserImplementation:
                 parts.append(self._parse_variable_substitution())
                 continue
             if current_char == '\\':
+                if self._starts_line_continuation():
+                    break
                 self._append_escape_sequence(buffer)
                 continue
             self._append_text(buffer, current_char)

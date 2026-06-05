@@ -60,6 +60,16 @@ def test_analysis_accepts_unique_builtin_subcommand_abbreviations(parser: Parser
     assert snapshot.analysis.diagnostics == ()
 
 
+def test_analysis_accepts_subcommands_before_line_continuations(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///continued_string_map.tcl',
+        'string map\\\n    {\n        [ \\[\n        ] \\]\n        . /\n    }\\\n    hello\n',
+    )
+
+    assert snapshot.analysis.diagnostics == ()
+
+
 def test_analysis_keeps_unknown_subcommand_checks_for_stable_positions(
     parser: Parser,
 ) -> None:

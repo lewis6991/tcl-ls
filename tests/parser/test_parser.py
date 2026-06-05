@@ -135,6 +135,21 @@ def test_parser_handles_line_continuations_in_comments_and_commands(parser: Pars
     ]
 
 
+def test_parser_splits_bare_words_at_line_continuations(parser: Parser) -> None:
+    result = parser.parse_document(
+        'continued-words.tcl',
+        'list foo\\\n    {bar baz}\n',
+    )
+
+    assert result.diagnostics == ()
+    assert len(result.script.commands) == 1
+    assert [word_static_text(word) for word in result.script.commands[0].words] == [
+        'list',
+        'foo',
+        'bar baz',
+    ]
+
+
 def test_parser_marks_argument_expansion_words(parser: Parser) -> None:
     result = parser.parse_document('expand.tcl', 'show {*}$args {*}{a b} {*}"x y"\n')
 
