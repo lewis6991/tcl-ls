@@ -123,6 +123,20 @@ def test_bundled_tcl_helper_keeps_generic_signatures_for_non_proc_commands(
     assert metadata == _METADATA_HEADER + 'meta command aliasList args\n'
 
 
+def test_bundled_tcl_helper_emits_overridden_baseline_commands(tmp_path: Path) -> None:
+    metadata = _build_metadata_with_tcl(
+        tmp_path,
+        '\n'.join(
+            (
+                'rename clock {}',
+                'proc clock {args} {}',
+            )
+        ),
+    )
+
+    assert metadata == _METADATA_HEADER + 'meta command clock args\n'
+
+
 def test_bundled_tcl_helper_uses_proc_signature_when_subcommands_are_discovered(
     tmp_path: Path,
 ) -> None:

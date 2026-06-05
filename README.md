@@ -140,5 +140,9 @@ Then, inside that tool Tcl shell, write metadata directly with:
 tcl-meta build-file output.meta.tcl
 ```
 
+The helper compares the tool shell against a plain `tclsh`, so it emits
+metadata for commands that are new in the tool shell and for baseline Tcl
+commands whose introspected shape differs in the tool shell.
+
 For local development in this repository, use `uv run ...` when you want to
 run the CLI without installing it first.

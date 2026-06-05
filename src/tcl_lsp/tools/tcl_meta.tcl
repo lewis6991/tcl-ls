@@ -3,9 +3,9 @@
 # Source this file inside a tool Tcl interpreter and run:
 #     tcl-meta build-file path/to/metadata.meta.tcl
 #
-# The helper introspects the current Tcl environment, diffs its command set
-# against a plain child `tclsh`, and writes generic `meta command` /
-# `command` declarations for the newly introduced command roots.
+# The helper introspects the current Tcl environment, compares it against a
+# plain child `tclsh`, and writes generic `meta command` / `command`
+# declarations for newly introduced or shape-changing command roots.
 
 namespace eval ::tcl_meta {
     variable script_path [file normalize [info script]]
@@ -13,7 +13,7 @@ namespace eval ::tcl_meta {
     variable max_depth 6
 
     proc usage {} {
-        error "usage: tcl-meta command-list | build-file output-path"
+        error "usage: tcl-meta command-list | command-info | build-file output-path"
     }
 
     proc normalize_command_name {name} {
@@ -166,18 +166,45 @@ namespace eval ::tcl_meta {
         return $mapping
     }
 
-    proc new_command_set {baseline_commands current_commands} {
-        set baseline_lookup {}
-        foreach command $baseline_commands {
-            dict set baseline_lookup $command 1
+    proc command_info {} {
+        set result {}
+        foreach command [command_list] {
+            dict set result $command [command_descriptor $command]
+        }
+        return $result
+    }
+
+    proc command_descriptor {name} {
+        set command [absolute_command_name $name]
+        set descriptor {}
+
+        if {[proc_signature $name signature]} {
+            lappend descriptor proc $signature
+        } else {
+            lappend descriptor proc {}
         }
 
+        if {[catch {interp alias {} $command} alias]} {
+            lappend descriptor alias {}
+        } else {
+            lappend descriptor alias $alias
+        }
+
+        if {[catch {namespace ensemble configure $command} ensemble]} {
+            lappend descriptor ensemble {}
+        } else {
+            lappend descriptor ensemble $ensemble
+        }
+
+        return $descriptor
+    }
+
+    proc changed_command_set {baseline_info current_info} {
         set result {}
-        foreach command $current_commands {
-            if {[dict exists $baseline_lookup $command]} {
-                continue
+        dict for {command descriptor} $current_info {
+            if {![dict exists $baseline_info $command] || [dict get $baseline_info $command] ne $descriptor} {
+                dict set result $command 1
             }
-            dict set result $command 1
         }
         return $result
     }
@@ -305,12 +332,27 @@ namespace eval ::tcl_meta {
         return [exec {*}$command]
     }
 
+    proc baseline_command_info {} {
+        variable script_path
+        if {$script_path eq ""} {
+            error "tcl-meta build-file requires this helper to be sourced from a file"
+        }
+
+        set tclsh_cmd [auto_execok tclsh]
+        if {$tclsh_cmd eq ""} {
+            error "tcl-meta build-file requires `tclsh` on PATH"
+        }
+
+        set command [concat $tclsh_cmd [list $script_path command-info]]
+        return [exec {*}$command]
+    }
+
     proc build_file {output_path} {
-        set current_commands [command_list]
-        set baseline_commands [baseline_commands]
-        set new_commands [new_command_set $baseline_commands $current_commands]
-        set subcommand_map [subcommand_map [lsort -dictionary [dict keys $new_commands]]]
-        write_metadata $output_path $new_commands $subcommand_map
+        set current_info [command_info]
+        set baseline_info [baseline_command_info]
+        set output_commands [changed_command_set $baseline_info $current_info]
+        set subcommand_map [subcommand_map [lsort -dictionary [dict keys $output_commands]]]
+        write_metadata $output_path $output_commands $subcommand_map
     }
 
     proc dispatch {subcommand args} {
@@ -320,6 +362,12 @@ namespace eval ::tcl_meta {
                     usage
                 }
                 puts [command_list]
+            }
+            command-info {
+                if {[llength $args] != 0} {
+                    usage
+                }
+                puts [command_info]
             }
             build-file {
                 if {[llength $args] != 1} {
@@ -340,7 +388,7 @@ proc tcl-meta {subcommand args} {
 
 if {[info exists ::argv0] && [file normalize $::argv0] eq $::tcl_meta::script_path} {
     if {$::argc < 1} {
-        puts stderr "usage: tcl_meta.tcl command-list | build-file output-path"
+        puts stderr "usage: tcl_meta.tcl command-list | command-info | build-file output-path"
         exit 2
     }
 
