@@ -1,11 +1,17 @@
 from __future__ import annotations
 
-from tcl_lsp.lsp import server
+INTERRUPTED_EXIT_CODE = 130
 
 
-def main() -> None:
-    server.start_io()
+def main() -> int:
+    try:
+        from tcl_lsp.lsp import server
+
+        server.start_io()
+    except KeyboardInterrupt:
+        return INTERRUPTED_EXIT_CODE
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())
