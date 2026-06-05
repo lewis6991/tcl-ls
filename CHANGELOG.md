@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## [0.2.1](https://github.com/lewis6991/tcl-ls/compare/v0.2.0...v0.2.1) (2026-06-05)
+
+
+### Bug Fixes
+
+* **release:** enable PyPI publishing ([f989881](https://github.com/lewis6991/tcl-ls/commit/f989881225fe256d0e7fd2499ff1dad9d1a97e3a))
+
 ## [0.2.0](https://github.com/lewis6991/tcl-ls/compare/v0.1.0...v0.2.0) (2026-04-27)
 
 

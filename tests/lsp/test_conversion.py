@@ -7,6 +7,7 @@ from lsprotocol import types
 from pygls.exceptions import JsonRpcInvalidParams
 from pygls.protocol.json_rpc import RPCMessage
 
+from tcl_lsp import __version__
 from tcl_lsp.common import Position, Span, lsp_range
 from tcl_lsp.lsp import LanguageServer
 from tcl_lsp.lsp import server as lsp_server
@@ -96,7 +97,7 @@ def test_language_server_initialize_serializes_protocol_models() -> None:
     assert legend['tokenModifiers'] == ['declaration', 'defaultLibrary']
     assert semantic_tokens['full'] == {'delta': True}
     server_info = cast(dict[str, object], result['serverInfo'])
-    assert server_info == {'name': 'tcl-ls', 'version': '0.1.0'}
+    assert server_info == {'name': 'tcl-ls', 'version': __version__}
 
 
 def test_language_server_initialize_advertises_prepare_rename_when_supported() -> None:
