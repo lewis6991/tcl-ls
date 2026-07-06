@@ -56,6 +56,14 @@ def normalize_command_name(name: str) -> str:
     return name[2:] if name.startswith('::') else name
 
 
+def command_lookup_names(name: str, namespace: str) -> tuple[str, ...]:
+    """Look in the current namespace, then the global namespace."""
+    normalized = normalize_command_name(name)
+    if name.startswith('::') or namespace == '::':
+        return (normalized,)
+    return (f'{normalize_command_name(namespace)}::{name}', normalized)
+
+
 def _normalize_qualified_name(name: str) -> str:
     segments = [segment for segment in name.split('::') if segment]
     if not segments:

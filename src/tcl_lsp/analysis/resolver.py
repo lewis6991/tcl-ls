@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from tcl_lsp.analysis.builtins import (
     BuiltinCommand,
@@ -24,7 +24,12 @@ from tcl_lsp.analysis.embedded_languages import (
     contextual_resolution_reason,
 )
 from tcl_lsp.analysis.facts.parsing import is_simple_name, split_tcl_list
-from tcl_lsp.analysis.facts.utils import name_tail, variable_symbol_id
+from tcl_lsp.analysis.facts.utils import (
+    command_lookup_names,
+    name_tail,
+    qualify_name,
+    variable_symbol_id,
+)
 from tcl_lsp.analysis.index import WorkspaceIndex
 from tcl_lsp.analysis.metadata_commands import (
     MetadataBind,
@@ -58,7 +63,23 @@ from tcl_lsp.metadata_paths import (
 )
 from tcl_lsp.project.paths import source_id_to_path
 
-_COMMAND_RENAME_MAX_DEPTH = 8
+
+@dataclass(frozen=True, slots=True)
+class _CommandBinding:
+    resolution: ResolutionResult
+    hover: HoverInfo | None
+    target: ResolvedCommandTarget | None
+    qualified_name: str | None = None
+
+    def at(self, command_call: CommandCall) -> _CommandBinding:
+        return replace(
+            self,
+            resolution=replace(self.resolution, reference=_command_reference(command_call)),
+            hover=replace(self.hover, span=command_call.name_span) if self.hover else None,
+        )
+
+
+type _CommandTable = dict[str, ProcDecl | _CommandBinding | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,54 +156,76 @@ class Resolver:
         resolved_command_targets: list[tuple[CommandCall, ResolvedCommandTarget]] = []
         command_hovers: list[HoverInfo] = []
 
-        for command_call in facts.command_calls:
-            resolution, command_hover, command_target = self._resolve_command(
+        commands: _CommandTable = {}
+        rename_index = workspace_index
+        if facts.command_renames:
+            # Rename sources see prior local definitions from the table, plus
+            # dependencies. Ordinary calls can still find forward definitions.
+            rename_index = workspace_index.clone()
+            rename_index.update(uri, replace(facts, procedures=()))
+        events = (
+            sorted(
+                (*facts.command_calls, *facts.procedures, *facts.command_renames),
+                key=lambda event: event.span.start.offset,
+            )
+            if facts.command_renames
+            else facts.command_calls
+        )
+        for event in events:
+            if isinstance(event, ProcDecl):
+                commands[event.qualified_name] = event
+                continue
+            command_call = _rename_source_call(event) if isinstance(event, CommandRename) else event
+            binding = self._resolve_command(
                 command_call,
-                workspace_index,
+                rename_index if isinstance(event, CommandRename) else workspace_index,
                 required_packages,
                 transitive_required_packages,
                 hover_trace_parents,
+                commands,
             )
-            resolutions.append(resolution)
-            command_resolutions.append(
-                ResolvedCommand(
-                    command_call=command_call,
-                    resolution=resolution,
+            resolution, command_hover, command_target = (
+                binding.resolution,
+                binding.hover,
+                binding.target,
+            )
+            if isinstance(event, CommandRename):
+                if (
+                    resolution.uncertainty.state == 'resolved'
+                    and binding.qualified_name is not None
+                ):
+                    commands[binding.qualified_name] = None
+                    if event.new_qualified_name is not None and event.symbol_id is not None:
+                        detail = f'renamed command {event.new_qualified_name} from {event.old_name}'
+                        if command_hover is not None:
+                            detail += f'\n\n---\n\n{command_hover.contents}'
+                        commands[event.new_qualified_name] = replace(
+                            binding,
+                            qualified_name=event.new_qualified_name,
+                            resolution=replace(
+                                resolution,
+                                uncertainty=AnalysisUncertainty(
+                                    state='resolved', reason='Resolved via a static command rename.'
+                                ),
+                                target_symbol_ids=(event.symbol_id,),
+                            ),
+                            hover=HoverInfo(span=event.new_name_span, contents=detail),
+                        )
+            else:
+                command_resolutions.append(
+                    ResolvedCommand(command_call=command_call, resolution=resolution)
                 )
-            )
-            if command_target is not None:
-                command_targets[command_call_key(command_call)] = command_target
-                resolved_command_targets.append((command_call, command_target))
-            if command_hover is not None:
-                command_hovers.append(command_hover)
-            if resolution.uncertainty.state == 'resolved':
-                for symbol_id in resolution.target_symbol_ids:
-                    resolved_references.append(
-                        ResolvedReference(
-                            symbol_id=symbol_id,
-                            reference=resolution.reference,
-                        )
-                    )
-
-        for command_rename in facts.command_renames:
-            resolution, command_hover, _ = self._resolve_command_rename_source(
-                command_rename,
-                workspace_index,
-                required_packages,
-                transitive_required_packages,
-                hover_trace_parents,
-            )
+                if command_target is not None:
+                    command_targets[command_call_key(command_call)] = command_target
+                    resolved_command_targets.append((command_call, command_target))
             resolutions.append(resolution)
             if command_hover is not None:
                 command_hovers.append(command_hover)
             if resolution.uncertainty.state == 'resolved':
-                for symbol_id in resolution.target_symbol_ids:
-                    resolved_references.append(
-                        ResolvedReference(
-                            symbol_id=symbol_id,
-                            reference=resolution.reference,
-                        )
-                    )
+                resolved_references.extend(
+                    ResolvedReference(symbol_id=symbol_id, reference=resolution.reference)
+                    for symbol_id in resolution.target_symbol_ids
+                )
 
         metadata_bindings = self._metadata_bindings(
             facts.variable_bindings,
@@ -431,14 +474,12 @@ class Resolver:
         required_packages: frozenset[str],
         transitive_required_packages: frozenset[str],
         hover_trace_parents: dict[tuple[str, str], tuple[str, str]],
-        *,
-        command_rename_depth: int = 0,
-        lookup_offset: int | None = None,
-    ) -> tuple[ResolutionResult, HoverInfo | None, ResolvedCommandTarget | None]:
+        commands: _CommandTable,
+    ) -> _CommandBinding:
         reference = _command_reference(command_call)
 
         if command_call.dynamic or command_call.name is None:
-            return (
+            return _CommandBinding(
                 ResolutionResult(
                     reference=reference,
                     uncertainty=AnalysisUncertainty(
@@ -452,16 +493,13 @@ class Resolver:
             )
 
         builtin_name = _normalize_command_name(command_call.name)
-        effective_lookup_offset = (
-            command_call.name_span.start.offset if lookup_offset is None else lookup_offset
-        )
         contextual_target = contextual_command_target(
             command_call.embedded_language,
             builtin_name,
             metadata_registry=self._metadata_registry,
         )
         if contextual_target is not None:
-            return (
+            return _CommandBinding(
                 ResolutionResult(
                     reference=reference,
                     uncertainty=AnalysisUncertainty(
@@ -485,7 +523,7 @@ class Resolver:
                 metadata_registry=self._metadata_registry,
             )
         ):
-            return (
+            return _CommandBinding(
                 ResolutionResult(
                     reference=reference,
                     uncertainty=AnalysisUncertainty(
@@ -501,26 +539,33 @@ class Resolver:
                 None,
             )
 
-        matches = workspace_index.resolve_procedure(
-            command_call.name,
-            command_call.namespace,
-            uri=command_call.uri,
-            offset=effective_lookup_offset,
+        lookup_names = tuple(
+            name
+            for name in command_lookup_names(command_call.name, command_call.namespace)
+            if not _command_is_deleted(name, commands)
         )
+        matches = ()
+        for name in lookup_names:
+            qualified_name = f'::{name}'
+            binding = commands.get(qualified_name)
+            if isinstance(binding, _CommandBinding):
+                return binding.at(command_call)
+            matches = _procedures_for_command(qualified_name, workspace_index, commands)
+            if matches:
+                break
         resolved_import: CommandImport | None = None
         if not matches:
             imported_proc_matches = self._resolve_imported_procedures(
                 command_call.name,
                 command_call.namespace,
                 workspace_index,
-                uri=command_call.uri,
-                offset=effective_lookup_offset,
+                commands,
             )
             if len(imported_proc_matches) == 1:
                 resolved_import, proc = imported_proc_matches[0]
                 matches = (proc,)
             elif len(imported_proc_matches) > 1:
-                return (
+                return _CommandBinding(
                     ResolutionResult(
                         reference=reference,
                         uncertainty=AnalysisUncertainty(
@@ -536,7 +581,7 @@ class Resolver:
                 )
 
         if len(matches) > 1:
-            return (
+            return _CommandBinding(
                 ResolutionResult(
                     reference=reference,
                     uncertainty=AnalysisUncertainty(
@@ -567,7 +612,7 @@ class Resolver:
                     hover_trace_parents,
                 ),
             )
-            return (
+            return _CommandBinding(
                 ResolutionResult(
                     reference=reference,
                     uncertainty=AnalysisUncertainty(
@@ -582,50 +627,23 @@ class Resolver:
                 ),
                 HoverInfo(span=command_call.name_span, contents=detail),
                 proc,
+                qualify_name(command_call.name, resolved_import.namespace)
+                if resolved_import is not None
+                else proc.qualified_name,
             )
 
-        command_renames = workspace_index.resolve_command_renames(
-            command_call.name,
-            command_call.namespace,
-            uri=command_call.uri,
-            offset=effective_lookup_offset,
-        )
-        if len(command_renames) == 1:
-            return self._resolve_command_rename_alias(
-                command_call,
-                command_renames[0],
-                workspace_index,
+        builtin_matches = ()
+        for candidate_name in lookup_names:
+            builtin_matches = builtin_commands_for_packages(
+                candidate_name,
                 required_packages,
-                transitive_required_packages,
-                hover_trace_parents,
-                command_rename_depth=command_rename_depth,
+                metadata_registry=self._metadata_registry,
             )
-        if len(command_renames) > 1:
-            return (
-                ResolutionResult(
-                    reference=reference,
-                    uncertainty=AnalysisUncertainty(
-                        state='ambiguous',
-                        reason='Multiple static command renames match this command name.',
-                    ),
-                    target_symbol_ids=tuple(
-                        command_rename.symbol_id
-                        for command_rename in command_renames
-                        if command_rename.symbol_id is not None
-                    ),
-                ),
-                None,
-                None,
-            )
-
-        builtin_matches = builtin_commands_for_packages(
-            builtin_name,
-            required_packages,
-            metadata_registry=self._metadata_registry,
-        )
+            if builtin_matches:
+                break
         if len(builtin_matches) == 1:
             builtin = builtin_matches[0]
-            return (
+            return _CommandBinding(
                 ResolutionResult(
                     reference=reference,
                     uncertainty=AnalysisUncertainty(
@@ -646,9 +664,10 @@ class Resolver:
                     ),
                 ),
                 builtin,
+                f'::{builtin.name}',
             )
         if len(builtin_matches) > 1:
-            return (
+            return _CommandBinding(
                 ResolutionResult(
                     reference=reference,
                     uncertainty=AnalysisUncertainty(
@@ -664,14 +683,14 @@ class Resolver:
                 None,
                 None,
             )
-        if '::' in builtin_name:
+        if '::' in builtin_name and not _command_is_deleted(builtin_name, commands):
             qualified_builtin_matches = builtin_commands_any(
                 builtin_name,
                 metadata_registry=self._metadata_registry,
             )
             if len(qualified_builtin_matches) == 1:
                 builtin = qualified_builtin_matches[0]
-                return (
+                return _CommandBinding(
                     ResolutionResult(
                         reference=reference,
                         uncertainty=AnalysisUncertainty(
@@ -690,9 +709,10 @@ class Resolver:
                         contents=_command_hover(_builtin_hover(builtin)),
                     ),
                     builtin,
+                    f'::{builtin.name}',
                 )
             if len(qualified_builtin_matches) > 1:
-                return (
+                return _CommandBinding(
                     ResolutionResult(
                         reference=reference,
                         uncertainty=AnalysisUncertainty(
@@ -717,11 +737,12 @@ class Resolver:
             command_call.name,
             command_call.namespace,
             workspace_index,
+            commands,
         )
         if len(imported_builtin_matches) == 1:
             imported_builtin_match = imported_builtin_matches[0]
         elif len(imported_builtin_matches) > 1:
-            return (
+            return _CommandBinding(
                 ResolutionResult(
                     reference=reference,
                     uncertainty=AnalysisUncertainty(
@@ -739,7 +760,7 @@ class Resolver:
             )
         if imported_builtin_match is not None:
             resolved_import, builtin_from_import = imported_builtin_match
-            return (
+            return _CommandBinding(
                 ResolutionResult(
                     reference=reference,
                     uncertainty=AnalysisUncertainty(
@@ -769,12 +790,13 @@ class Resolver:
                     ),
                 ),
                 builtin_from_import,
+                qualify_name(command_call.name, resolved_import.namespace),
             )
 
         implicit_test_builtins = self._resolve_implicit_test_builtins(command_call)
         if len(implicit_test_builtins) == 1:
             builtin = implicit_test_builtins[0]
-            return (
+            return _CommandBinding(
                 ResolutionResult(
                     reference=reference,
                     uncertainty=AnalysisUncertainty(
@@ -788,9 +810,10 @@ class Resolver:
                     contents=_command_hover(_builtin_hover(builtin)),
                 ),
                 builtin,
+                f'::{builtin.name}',
             )
         if len(implicit_test_builtins) > 1:
-            return (
+            return _CommandBinding(
                 ResolutionResult(
                     reference=reference,
                     uncertainty=AnalysisUncertainty(
@@ -809,7 +832,7 @@ class Resolver:
 
         package_name = _matching_required_package(command_call.name, required_packages)
         if package_name is not None:
-            return (
+            return _CommandBinding(
                 ResolutionResult(
                     reference=reference,
                     uncertainty=AnalysisUncertainty(
@@ -822,7 +845,7 @@ class Resolver:
                 None,
             )
 
-        return (
+        return _CommandBinding(
             ResolutionResult(
                 reference=reference,
                 uncertainty=AnalysisUncertainty(
@@ -833,169 +856,6 @@ class Resolver:
             ),
             None,
             None,
-        )
-
-    def _resolve_command_rename_alias(
-        self,
-        command_call: CommandCall,
-        command_rename: CommandRename,
-        workspace_index: WorkspaceIndex,
-        required_packages: frozenset[str],
-        transitive_required_packages: frozenset[str],
-        hover_trace_parents: dict[tuple[str, str], tuple[str, str]],
-        *,
-        command_rename_depth: int,
-    ) -> tuple[ResolutionResult, HoverInfo | None, ResolvedCommandTarget | None]:
-        reference = _command_reference(command_call)
-        if command_rename.symbol_id is None or command_rename.new_qualified_name is None:
-            return (
-                ResolutionResult(
-                    reference=reference,
-                    uncertainty=AnalysisUncertainty(
-                        state='unresolved',
-                        reason='Static command rename deletes this command name.',
-                    ),
-                    target_symbol_ids=(),
-                ),
-                None,
-                None,
-            )
-
-        target_resolution, target_hover, command_target = self._resolve_command_rename_source(
-            command_rename,
-            workspace_index,
-            required_packages,
-            transitive_required_packages,
-            hover_trace_parents,
-            command_rename_depth=command_rename_depth + 1,
-        )
-        if target_resolution.uncertainty.state != 'resolved' or command_target is None:
-            return (
-                ResolutionResult(
-                    reference=reference,
-                    uncertainty=AnalysisUncertainty(
-                        state='unresolved',
-                        reason=(
-                            'Static command rename target '
-                            f'`{command_rename.old_name}` could not be resolved.'
-                        ),
-                    ),
-                    target_symbol_ids=(),
-                ),
-                None,
-                None,
-            )
-
-        detail = (
-            f'renamed command {command_rename.new_qualified_name} from {command_rename.old_name}'
-        )
-        if target_hover is not None:
-            detail = f'{detail}\n\n---\n\n{target_hover.contents}'
-        return (
-            ResolutionResult(
-                reference=reference,
-                uncertainty=AnalysisUncertainty(
-                    state='resolved',
-                    reason='Resolved via a static command rename.',
-                ),
-                target_symbol_ids=(command_rename.symbol_id,),
-            ),
-            HoverInfo(span=command_call.name_span, contents=detail),
-            command_target,
-        )
-
-    def _resolve_command_rename_source(
-        self,
-        command_rename: CommandRename,
-        workspace_index: WorkspaceIndex,
-        required_packages: frozenset[str],
-        transitive_required_packages: frozenset[str],
-        hover_trace_parents: dict[tuple[str, str], tuple[str, str]],
-        *,
-        command_rename_depth: int = 0,
-    ) -> tuple[ResolutionResult, HoverInfo | None, ResolvedCommandTarget | None]:
-        command_call = CommandCall(
-            uri=command_rename.uri,
-            name=command_rename.old_name,
-            arg_texts=(),
-            arg_spans=(),
-            arg_expanded=(),
-            arg_grouped=(),
-            namespace=command_rename.namespace,
-            scope_id=command_rename.scope_id,
-            procedure_symbol_id=command_rename.procedure_symbol_id,
-            embedded_language=command_rename.embedded_language,
-            span=command_rename.old_name_span,
-            name_span=command_rename.old_name_span,
-            dynamic=False,
-        )
-        reference = _command_reference(command_call)
-
-        matches = workspace_index.resolve_procedure_before(
-            command_rename.old_name,
-            command_rename.namespace,
-            uri=command_rename.uri,
-            offset=command_rename.span.start.offset,
-        )
-        if len(matches) > 1:
-            return (
-                ResolutionResult(
-                    reference=reference,
-                    uncertainty=AnalysisUncertainty(
-                        state='ambiguous',
-                        reason='Multiple procedures match this command rename source.',
-                    ),
-                    target_symbol_ids=tuple(match.symbol_id for match in matches),
-                ),
-                None,
-                None,
-            )
-        if len(matches) == 1:
-            proc = matches[0]
-            detail = _command_hover(
-                _proc_hover(proc),
-                transitive_trace=_source_transitive_trace(
-                    proc.uri,
-                    workspace_index,
-                    transitive_required_packages,
-                    hover_trace_parents,
-                ),
-            )
-            return (
-                ResolutionResult(
-                    reference=reference,
-                    uncertainty=AnalysisUncertainty(
-                        state='resolved',
-                        reason='Resolved static command rename source to a procedure.',
-                    ),
-                    target_symbol_ids=(proc.symbol_id,),
-                ),
-                HoverInfo(span=command_rename.old_name_span, contents=detail),
-                proc,
-            )
-
-        if command_rename_depth >= _COMMAND_RENAME_MAX_DEPTH:
-            return (
-                ResolutionResult(
-                    reference=reference,
-                    uncertainty=AnalysisUncertainty(
-                        state='dynamic',
-                        reason='Static command rename chain is too deep.',
-                    ),
-                    target_symbol_ids=(),
-                ),
-                None,
-                None,
-            )
-
-        return self._resolve_command(
-            command_call,
-            workspace_index,
-            required_packages,
-            transitive_required_packages,
-            hover_trace_parents,
-            command_rename_depth=command_rename_depth,
-            lookup_offset=command_rename.span.start.offset,
         )
 
     def _resolve_variable(
@@ -1065,20 +925,16 @@ class Resolver:
         raw_name: str,
         namespace: str,
         workspace_index: WorkspaceIndex,
-        *,
-        uri: str | None = None,
-        offset: int | None = None,
+        commands: _CommandTable,
     ) -> tuple[tuple[CommandImport, ProcDecl], ...]:
         matches: dict[str, tuple[CommandImport, ProcDecl]] = {}
         for command_import, target_name in workspace_index.matching_command_imports(
             raw_name,
             namespace,
         ):
-            for proc in workspace_index.procedures_for_name(
-                target_name,
-                uri=uri,
-                offset=offset,
-            ):
+            if qualify_name(raw_name, command_import.namespace) in commands:
+                continue
+            for proc in _procedures_for_command(target_name, workspace_index, commands):
                 matches.setdefault(proc.symbol_id, (command_import, proc))
         return tuple(matches.values())
 
@@ -1087,12 +943,15 @@ class Resolver:
         raw_name: str,
         namespace: str,
         workspace_index: WorkspaceIndex,
+        commands: _CommandTable,
     ) -> tuple[tuple[CommandImport, BuiltinCommand], ...]:
         matches: dict[str, tuple[CommandImport, BuiltinCommand]] = {}
         for command_import, target_name in workspace_index.matching_command_imports(
             raw_name,
             namespace,
         ):
+            if qualify_name(raw_name, command_import.namespace) in commands:
+                continue
             normalized_target_name = _normalize_command_name(target_name)
             for builtin in builtin_commands_any(
                 normalized_target_name,
@@ -1117,6 +976,41 @@ class Resolver:
             f'tcltest::{_normalize_command_name(command_call.name)}',
             metadata_registry=self._metadata_registry,
         )
+
+
+def _command_is_deleted(name: str, commands: _CommandTable) -> bool:
+    qualified_name = f'::{name.split(" ", 1)[0]}'
+    return qualified_name in commands and commands[qualified_name] is None
+
+
+def _procedures_for_command(
+    qualified_name: str, workspace_index: WorkspaceIndex, commands: _CommandTable
+) -> tuple[ProcDecl, ...]:
+    matches = workspace_index.procedures_for_name(qualified_name)
+    if qualified_name not in commands:
+        return matches
+    binding = commands[qualified_name]
+    if not isinstance(binding, ProcDecl):
+        return ()
+    return (binding, *(proc for proc in matches if proc.uri != binding.uri))
+
+
+def _rename_source_call(command_rename: CommandRename) -> CommandCall:
+    return CommandCall(
+        uri=command_rename.uri,
+        name=command_rename.old_name,
+        arg_texts=(),
+        arg_spans=(),
+        arg_expanded=(),
+        arg_grouped=(),
+        namespace=command_rename.namespace,
+        scope_id=command_rename.scope_id,
+        procedure_symbol_id=command_rename.procedure_symbol_id,
+        embedded_language=command_rename.embedded_language,
+        span=command_rename.old_name_span,
+        name_span=command_rename.old_name_span,
+        dynamic=False,
+    )
 
 
 def _command_reference(command_call: CommandCall) -> ReferenceSite:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from lsprotocol import types
@@ -264,7 +264,9 @@ class _FactCollector:
         self._linked_variables_by_scope: dict[str, dict[str, _VariableTarget]] = {}
 
     def collect(self) -> DocumentFacts:
-        root_context = self._namespace_context(self._parse_result.source_id, '::')
+        root_context = self._namespace_context(
+            self._parse_result.source_id, '::', command_renames_enabled=True
+        )
         self._collect_lowered_script(self._lowered_script, root_context)
         return DocumentFacts(
             uri=self._parse_result.source_id,
@@ -2145,7 +2147,11 @@ class _FactCollector:
         self._collect_special_lowered_body(
             command,
             command.body,
-            self._namespace_context(context.uri, namespace_scope.qualified_name),
+            self._namespace_context(
+                context.uri,
+                namespace_scope.qualified_name,
+                command_renames_enabled=context.command_renames_enabled,
+            ),
             entry_by_script_word_index=entry_by_script_word_index,
         )
 
@@ -2647,7 +2653,9 @@ class _FactCollector:
         for script in condition.command_substitutions:
             self._collect_lowered_script(script, self._context_without_command_renames(context))
 
-    def _namespace_context(self, uri: str, namespace: str) -> _ExtractionContext:
+    def _namespace_context(
+        self, uri: str, namespace: str, *, command_renames_enabled: bool
+    ) -> _ExtractionContext:
         return _ExtractionContext(
             uri=uri,
             namespace=namespace,
@@ -2655,7 +2663,7 @@ class _FactCollector:
             procedure_symbol_id=None,
             embedded_language=None,
             embedded_owner_name=None,
-            command_renames_enabled=True,
+            command_renames_enabled=command_renames_enabled,
             flow_state=VariableFlowState.empty(),
         )
 
@@ -2697,30 +2705,12 @@ class _FactCollector:
     ) -> _ExtractionContext:
         if flow_state == context.flow_state:
             return context
-        return _ExtractionContext(
-            uri=context.uri,
-            namespace=context.namespace,
-            scope_id=context.scope_id,
-            procedure_symbol_id=context.procedure_symbol_id,
-            embedded_language=context.embedded_language,
-            embedded_owner_name=context.embedded_owner_name,
-            command_renames_enabled=context.command_renames_enabled,
-            flow_state=flow_state,
-        )
+        return replace(context, flow_state=flow_state)
 
     def _context_without_command_renames(self, context: _ExtractionContext) -> _ExtractionContext:
         if not context.command_renames_enabled:
             return context
-        return _ExtractionContext(
-            uri=context.uri,
-            namespace=context.namespace,
-            scope_id=context.scope_id,
-            procedure_symbol_id=context.procedure_symbol_id,
-            embedded_language=context.embedded_language,
-            embedded_owner_name=context.embedded_owner_name,
-            command_renames_enabled=False,
-            flow_state=context.flow_state,
-        )
+        return replace(context, command_renames_enabled=False)
 
     def _if_clause_contexts(
         self,

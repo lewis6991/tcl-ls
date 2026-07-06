@@ -574,20 +574,157 @@ def test_language_service_static_command_rename_resolves_builtin_alias(
     assert definition[0].range.start.character == 12
 
 
-def test_language_service_static_command_rename_moves_old_proc_name(
+def test_language_service_static_command_rename_keeps_original_signature(
     service: LanguageService,
 ) -> None:
     diagnostics = service.open_document(
         MAIN_URI,
-        'proc helper {} {return old}\n'
-        'rename helper alias\n'
-        'proc helper {} {return new}\n'
-        'alias\n'
-        'helper\n',
+        'proc helper {value} {return $value}\n'
+        'rename helper saved_helper\n'
+        'proc helper {first second} {return [list $first $second]}\n'
+        'saved_helper one\n'
+        'helper one two\n'
+        'saved_helper one two\n',
+        1,
+    )
+
+    assert [(diagnostic.code, diagnostic.span.start.line) for diagnostic in diagnostics] == [
+        ('wrong-argument-count', 5),
+    ]
+    hover = service.hover(MAIN_URI, 3, 1)
+    assert hover is not None
+    assert 'proc ::helper(value)' in hover.contents
+    definition = service.definition(MAIN_URI, 1, 8)
+    assert len(definition) == 1
+    assert definition[0].range.start.line == 0
+
+
+def test_language_service_static_command_rename_does_not_use_future_definition(
+    service: LanguageService,
+) -> None:
+    diagnostics = service.open_document(
+        MAIN_URI,
+        'rename helper saved_helper\nproc helper {} {return ok}\nsaved_helper\nhelper\n',
+        1,
+    )
+
+    assert [(diagnostic.code, diagnostic.span.start.line) for diagnostic in diagnostics] == [
+        ('unresolved-command', 2),
+    ]
+    assert service.definition(MAIN_URI, 0, 8) == ()
+
+
+@pytest.mark.parametrize('source_name', ['helper', '::n::helper'])
+def test_language_service_static_command_rename_keeps_other_namespaces(
+    service: LanguageService,
+    source_name: str,
+) -> None:
+    diagnostics = service.open_document(
+        MAIN_URI,
+        'proc helper {global_value} {return $global_value}\n'
+        'namespace eval n {\n'
+        '    proc helper {local_value} {return $local_value}\n'
+        f'    rename {source_name} saved_helper\n'
+        '}\n'
+        'helper global\n'
+        'n::saved_helper local\n',
         1,
     )
 
     assert diagnostics == ()
+    global_definition = service.definition(MAIN_URI, 5, 1)
+    assert len(global_definition) == 1
+    assert global_definition[0].range.start.line == 0
+    local_definition = service.definition(MAIN_URI, 3, 12)
+    assert len(local_definition) == 1
+    assert local_definition[0].range.start.line == 2
+    hover = service.hover(MAIN_URI, 6, 1)
+    assert hover is not None
+    assert 'proc ::n::helper(local_value)' in hover.contents
+
+
+@pytest.mark.parametrize(
+    'global_definition',
+    [
+        '',
+        'proc saved {value} {return $value}',
+        'proc helper {value} {return $value}; rename helper saved',
+    ],
+)
+def test_language_service_static_command_rename_keeps_scoped_alias_chains(
+    service: LanguageService,
+    global_definition: str,
+) -> None:
+    diagnostics = service.open_document(
+        MAIN_URI,
+        f'{global_definition}\n'
+        'namespace eval n {\n'
+        '    proc helper {first second} {return [list $first $second]}\n'
+        '    rename helper saved\n'
+        '    saved one two\n'
+        '    rename saved worker\n'
+        '}\n'
+        'n::worker one two\n' + ('saved one\n' if global_definition else ''),
+        1,
+    )
+
+    assert diagnostics == ()
+    definition = service.definition(MAIN_URI, 7, 1)
+    assert len(definition) == 1
+    assert definition[0].range.start.line == 5
+    assert definition[0].range.start.character == 17
+    hover = service.hover(MAIN_URI, 7, 1)
+    assert hover is not None
+    assert 'proc ::n::helper(first, second)' in hover.contents
+
+
+def test_language_service_static_command_rename_updates_source_after_edit(
+    service: LanguageService,
+) -> None:
+    text = (
+        'proc helper {global_value} {return $global_value}\n'
+        'namespace eval n {\n'
+        '    proc helper {local_value} {return $local_value}\n'
+        '    rename helper saved\n'
+        '}\n'
+        'helper global\n'
+        'n::saved local\n'
+    )
+    assert service.open_document(MAIN_URI, text, 1) == ()
+
+    diagnostics = service.change_document(
+        MAIN_URI, text.replace('proc helper {local_value}', 'proc worker {local_value}'), 2
+    )
+
+    assert [(diagnostic.code, diagnostic.span.start.line) for diagnostic in diagnostics] == [
+        ('unresolved-command', 5),
+    ]
+    hover = service.hover(MAIN_URI, 6, 1)
+    assert hover is not None
+    assert 'proc ::helper(global_value)' in hover.contents
+    assert service.change_document(MAIN_URI, text, 3) == ()
+
+
+def test_language_service_static_command_rename_moves_import_only(
+    service: LanguageService,
+) -> None:
+    diagnostics = service.open_document(
+        MAIN_URI,
+        'namespace eval api {namespace export helper; proc helper {value} {return $value}}\n'
+        'namespace import api::helper\n'
+        'rename helper saved\n'
+        'saved ok\n'
+        'api::helper ok\n'
+        'helper ok\n',
+        1,
+    )
+
+    assert [(diagnostic.code, diagnostic.span.start.line) for diagnostic in diagnostics] == [
+        ('unresolved-command', 5),
+    ]
+    definition = service.definition(MAIN_URI, 3, 1)
+    assert len(definition) == 1
+    assert definition[0].range.start.line == 2
 
 
 def test_language_service_static_command_rename_does_not_affect_prior_calls(
@@ -627,28 +764,21 @@ def test_language_service_static_command_rename_ignores_proc_body_effect(
     assert definition[0].range.start.character == 5
 
 
-def test_language_service_static_command_rename_chains_aliases(
-    service: LanguageService,
-) -> None:
-    diagnostics = service.open_document(
-        MAIN_URI,
-        'proc helper {} {return ok}\nrename helper alias\nrename alias worker\nworker\n',
-        1,
-    )
-
-    assert diagnostics == ()
-    definition = service.definition(MAIN_URI, 3, 1)
-    assert len(definition) == 1
-    assert definition[0].range.start.line == 2
-    assert definition[0].range.start.character == 13
-
-
+@pytest.mark.parametrize(
+    'body',
+    [
+        'rename helper alias',
+        'namespace eval :: {rename helper alias}',
+        'namespace eval outer {namespace eval inner {rename ::helper alias}}',
+    ],
+)
 def test_language_service_static_command_rename_ignores_unreachable_if_effect(
     service: LanguageService,
+    body: str,
 ) -> None:
     diagnostics = service.open_document(
         MAIN_URI,
-        'proc helper {} {return ok}\nif {0} {rename helper alias}\nhelper\n',
+        f'proc helper {{}} {{return ok}}\nif {{0}} {{{body}}}\nhelper\n',
         1,
     )
 

@@ -240,15 +240,11 @@ def _resolve_unique_procedure(
     matches = workspace_index.resolve_procedure(
         command_call.name,
         command_call.namespace,
-        uri=command_call.uri,
-        offset=command_call.name_span.start.offset,
     )
     if not matches:
         matches = workspace_index.imported_procedures_for_name(
             command_call.name,
             command_call.namespace,
-            uri=command_call.uri,
-            offset=command_call.name_span.start.offset,
         )
     if len(matches) != 1:
         return None

@@ -17,7 +17,6 @@ class DuplicateProcChecker(DiagnosticChecker):
         for proc in context.facts.procedures:
             duplicates = context.workspace_index.procedures_for_name(
                 proc.qualified_name,
-                uri=proc.uri,
             )
             if len(duplicates) <= 1:
                 continue
