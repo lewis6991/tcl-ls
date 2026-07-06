@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## [0.3.0](https://github.com/lewis6991/tcl-ls/compare/v0.2.1...v0.3.0) (2026-07-06)
+
+
+### Features
+
+* detect changed Tcl command shapes ([20386cc](https://github.com/lewis6991/tcl-ls/commit/20386cc674177502e77f9fd40dd5fc3f9c1ffee7))
+* support Python 3.12 ([9983faa](https://github.com/lewis6991/tcl-ls/commit/9983faa5b4d7f05f142664c5633216f2237a5a46))
+* support static Tcl command renames ([4c23304](https://github.com/lewis6991/tcl-ls/commit/4c233045e2aa50706e36afa68e515528c7943c6c))
+
+
+### Bug Fixes
+
+* handle tcl-ls interrupts cleanly ([c0bd1dd](https://github.com/lewis6991/tcl-ls/commit/c0bd1dd0c0ed1693ac292a43265b7dc81488b87d))
+* split bare words at continuations ([a6a2da4](https://github.com/lewis6991/tcl-ls/commit/a6a2da445212cf2526be749a7ace6901a4e85ee5))
+
 ## [0.2.1](https://github.com/lewis6991/tcl-ls/compare/v0.2.0...v0.2.1) (2026-06-05)
 
 
