@@ -56,6 +56,20 @@ def rename(
                         new_name,
                     ),
                 )
+            for command_rename in document.facts.command_renames:
+                if command_rename.symbol_id != symbol_id:
+                    continue
+                add_rename_edit(
+                    edits_by_uri,
+                    uri=document.uri,
+                    span=command_rename.new_name_span,
+                    new_text=rename_command_text(
+                        document.text[
+                            command_rename.new_name_span.start.offset : command_rename.new_name_span.end.offset
+                        ],
+                        new_name,
+                    ),
+                )
         else:
             for binding in document.facts.variable_bindings:
                 if binding.symbol_id != symbol_id:
@@ -241,6 +255,15 @@ def _command_occurrence_at_position(
             procedure.name_span,
             document.text[procedure.name_span.start.offset : procedure.name_span.end.offset],
         )
+
+    for command_rename in document.facts.command_renames:
+        if command_rename.symbol_id != symbol_id or not command_rename.new_name_span.contains(
+            line,
+            character,
+        ):
+            continue
+        span = command_rename.new_name_span
+        return (span, document.text[span.start.offset : span.end.offset])
 
     for resolved_reference in document.analysis.resolved_references:
         if (

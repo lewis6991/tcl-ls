@@ -44,6 +44,7 @@ from tcl_lsp.analysis.facts.parsing import ListItem, is_simple_name, split_tcl_l
 from tcl_lsp.analysis.facts.utils import (
     body_span,
     command_documentation,
+    command_rename_symbol_id,
     extract_ifneeded_source_uri,
     extract_static_source_uri,
     name_tail,
@@ -84,6 +85,7 @@ from tcl_lsp.analysis.model import (
     BindingKind,
     CommandCall,
     CommandImport,
+    CommandRename,
     DocumentFacts,
     NamespaceScope,
     PackageIndexEntry,
@@ -129,6 +131,7 @@ class _ExtractionContext:
     procedure_symbol_id: str | None
     embedded_language: EmbeddedLanguageName | None
     embedded_owner_name: str | None
+    command_renames_enabled: bool
     flow_state: VariableFlowState
 
 
@@ -197,6 +200,7 @@ class _FactCollector:
         '_active_builtin_packages',
         '_command_calls',
         '_command_imports',
+        '_command_renames',
         '_comment_spans',
         '_diagnostics',
         '_include_lexical_spans',
@@ -250,6 +254,7 @@ class _FactCollector:
         self._procedures: list[ProcDecl] = []
         self._source_directives: list[SourceDirective] = []
         self._command_imports: list[CommandImport] = []
+        self._command_renames: list[CommandRename] = []
         self._package_requires: list[PackageRequire] = []
         self._package_provides: list[PackageProvide] = []
         self._package_index_entries: list[PackageIndexEntry] = []
@@ -272,6 +277,7 @@ class _FactCollector:
             procedures=tuple(self._procedures),
             source_directives=tuple(self._source_directives),
             command_imports=tuple(self._command_imports),
+            command_renames=tuple(self._command_renames),
             package_requires=tuple(self._package_requires),
             package_provides=tuple(self._package_provides),
             package_index_entries=tuple(self._package_index_entries),
@@ -623,6 +629,62 @@ class _FactCollector:
                 span=command_span,
                 name_span=name_span,
                 dynamic=command_name is None,
+            )
+        )
+        self._collect_command_rename(
+            command_name=command_name,
+            command_span=command_span,
+            arg_texts=arg_texts,
+            arg_spans=arg_spans,
+            arg_expanded=arg_expanded,
+            context=context,
+        )
+
+    def _collect_command_rename(
+        self,
+        *,
+        command_name: str | None,
+        command_span: Span,
+        arg_texts: tuple[str | None, ...],
+        arg_spans: tuple[Span, ...],
+        arg_expanded: tuple[bool, ...],
+        context: _ExtractionContext,
+    ) -> None:
+        if not context.command_renames_enabled:
+            return
+        if command_name is None or normalize_command_name(command_name) != 'rename':
+            return
+        if len(arg_texts) != 2 or len(arg_spans) != 2:
+            return
+        if arg_expanded[0] or arg_expanded[1]:
+            return
+
+        old_name, new_name = arg_texts
+        if old_name is None or new_name is None or not old_name:
+            return
+
+        new_qualified_name = qualify_name(new_name, context.namespace) if new_name else None
+        self._command_renames.append(
+            CommandRename(
+                symbol_id=(
+                    None
+                    if new_qualified_name is None
+                    else command_rename_symbol_id(
+                        context.uri,
+                        new_qualified_name,
+                        arg_spans[1].start.offset,
+                    )
+                ),
+                uri=context.uri,
+                namespace=context.namespace,
+                scope_id=context.scope_id,
+                procedure_symbol_id=context.procedure_symbol_id,
+                embedded_language=context.embedded_language,
+                old_name=old_name,
+                new_qualified_name=new_qualified_name,
+                span=command_span,
+                old_name_span=arg_spans[0],
+                new_name_span=arg_spans[1],
             )
         )
 
@@ -981,6 +1043,7 @@ class _FactCollector:
             procedure_symbol_id=proc_decl.symbol_id,
             embedded_language=procedure.body_context,
             embedded_owner_name=None,
+            command_renames_enabled=False,
             flow_state=VariableFlowState.empty(),
         )
         self._record_parameter_bindings(proc_decl.parameters, body_context)
@@ -1088,6 +1151,7 @@ class _FactCollector:
             procedure_symbol_id=proc_decl.symbol_id,
             embedded_language=procedure.body_context,
             embedded_owner_name=None,
+            command_renames_enabled=False,
             flow_state=VariableFlowState.empty(),
         )
         self._record_parameter_bindings(proc_decl.parameters, body_context)
@@ -1438,6 +1502,7 @@ class _FactCollector:
             procedure_symbol_id=parent_context.procedure_symbol_id,
             embedded_language=entry.language,
             embedded_owner_name=entry.owner_name,
+            command_renames_enabled=False,
             flow_state=next_flow_state,
         )
 
@@ -1549,6 +1614,7 @@ class _FactCollector:
             procedure_symbol_id=proc_decl.symbol_id,
             embedded_language=procedure.body_context,
             embedded_owner_name=owner_name,
+            command_renames_enabled=False,
             flow_state=VariableFlowState.empty(),
         )
         self._record_parameter_bindings(proc_decl.parameters, body_context)
@@ -2544,7 +2610,11 @@ class _FactCollector:
         if body is None:
             return
 
-        body_context = context
+        body_context = (
+            context
+            if isinstance(command, LoweredNamespaceEvalCommand)
+            else self._context_without_command_renames(context)
+        )
         if body.word_index is not None:
             entry = entry_by_script_word_index.get(body.word_index)
             if entry is not None and body.word_index < len(command.command.words):
@@ -2575,7 +2645,7 @@ class _FactCollector:
                 context=context,
             )
         for script in condition.command_substitutions:
-            self._collect_lowered_script(script, context)
+            self._collect_lowered_script(script, self._context_without_command_renames(context))
 
     def _namespace_context(self, uri: str, namespace: str) -> _ExtractionContext:
         return _ExtractionContext(
@@ -2585,6 +2655,7 @@ class _FactCollector:
             procedure_symbol_id=None,
             embedded_language=None,
             embedded_owner_name=None,
+            command_renames_enabled=True,
             flow_state=VariableFlowState.empty(),
         )
 
@@ -2596,6 +2667,7 @@ class _FactCollector:
             procedure_symbol_id=proc_decl.symbol_id,
             embedded_language=None,
             embedded_owner_name=None,
+            command_renames_enabled=False,
             flow_state=VariableFlowState.empty(),
         )
 
@@ -2632,7 +2704,22 @@ class _FactCollector:
             procedure_symbol_id=context.procedure_symbol_id,
             embedded_language=context.embedded_language,
             embedded_owner_name=context.embedded_owner_name,
+            command_renames_enabled=context.command_renames_enabled,
             flow_state=flow_state,
+        )
+
+    def _context_without_command_renames(self, context: _ExtractionContext) -> _ExtractionContext:
+        if not context.command_renames_enabled:
+            return context
+        return _ExtractionContext(
+            uri=context.uri,
+            namespace=context.namespace,
+            scope_id=context.scope_id,
+            procedure_symbol_id=context.procedure_symbol_id,
+            embedded_language=context.embedded_language,
+            embedded_owner_name=context.embedded_owner_name,
+            command_renames_enabled=False,
+            flow_state=context.flow_state,
         )
 
     def _if_clause_contexts(

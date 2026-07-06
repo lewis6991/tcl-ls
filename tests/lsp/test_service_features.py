@@ -491,6 +491,174 @@ def test_language_service_rename_updates_variable_bindings_and_references(
     ]
 
 
+def test_language_service_static_command_rename_creates_alias_symbol(
+    service: LanguageService,
+) -> None:
+    diagnostics = service.open_document(
+        MAIN_URI,
+        'proc helper {value} {return $value}\nrename helper alias\nalias ok\n',
+        1,
+    )
+
+    assert diagnostics == ()
+    alias_definition = service.definition(MAIN_URI, 2, 1)
+    assert len(alias_definition) == 1
+    assert alias_definition[0].uri == MAIN_URI
+    assert alias_definition[0].range.start.line == 1
+    assert alias_definition[0].range.start.character == 14
+
+    alias_references = service.references(MAIN_URI, 2, 1)
+    assert [
+        (location.range.start.line, location.range.start.character) for location in alias_references
+    ] == [
+        (1, 14),
+        (2, 0),
+    ]
+
+    helper_references = service.references(MAIN_URI, 0, 6)
+    assert [
+        (location.range.start.line, location.range.start.character)
+        for location in helper_references
+    ] == [
+        (0, 5),
+        (1, 7),
+    ]
+
+
+def test_language_service_rename_keeps_command_rename_alias_independent(
+    service: LanguageService,
+) -> None:
+    service.open_document(
+        MAIN_URI,
+        'proc helper {value} {return $value}\nrename helper alias\nalias ok\n',
+        1,
+    )
+
+    alias_edits = service.rename(MAIN_URI, 2, 1, 'worker')
+
+    assert alias_edits is not None
+    assert [
+        (edit.span.start.line, edit.span.start.character, edit.new_text)
+        for edit in alias_edits[MAIN_URI]
+    ] == [
+        (1, 14, 'worker'),
+        (2, 0, 'worker'),
+    ]
+
+    helper_edits = service.rename(MAIN_URI, 0, 6, 'worker')
+
+    assert helper_edits is not None
+    assert [
+        (edit.span.start.line, edit.span.start.character, edit.new_text)
+        for edit in helper_edits[MAIN_URI]
+    ] == [
+        (0, 5, 'worker'),
+        (1, 7, 'worker'),
+    ]
+
+
+def test_language_service_static_command_rename_resolves_builtin_alias(
+    service: LanguageService,
+) -> None:
+    diagnostics = service.open_document(
+        MAIN_URI,
+        'rename exit ::mock::real_exit\nproc exit args {::mock::real_exit 0}\n',
+        1,
+    )
+
+    assert diagnostics == ()
+    definition = service.definition(MAIN_URI, 1, 17)
+    assert len(definition) == 1
+    assert definition[0].uri == MAIN_URI
+    assert definition[0].range.start.line == 0
+    assert definition[0].range.start.character == 12
+
+
+def test_language_service_static_command_rename_moves_old_proc_name(
+    service: LanguageService,
+) -> None:
+    diagnostics = service.open_document(
+        MAIN_URI,
+        'proc helper {} {return old}\n'
+        'rename helper alias\n'
+        'proc helper {} {return new}\n'
+        'alias\n'
+        'helper\n',
+        1,
+    )
+
+    assert diagnostics == ()
+
+
+def test_language_service_static_command_rename_does_not_affect_prior_calls(
+    service: LanguageService,
+) -> None:
+    diagnostics = service.open_document(
+        MAIN_URI,
+        'proc helper {} {return ok}\nhelper\nrename helper alias\nalias\n',
+        1,
+    )
+
+    assert diagnostics == ()
+    helper_definition = service.definition(MAIN_URI, 1, 1)
+    assert len(helper_definition) == 1
+    assert helper_definition[0].range.start.line == 0
+    assert helper_definition[0].range.start.character == 5
+
+    alias_definition = service.definition(MAIN_URI, 3, 1)
+    assert len(alias_definition) == 1
+    assert alias_definition[0].range.start.line == 2
+    assert alias_definition[0].range.start.character == 14
+
+
+def test_language_service_static_command_rename_ignores_proc_body_effect(
+    service: LanguageService,
+) -> None:
+    diagnostics = service.open_document(
+        MAIN_URI,
+        'proc helper {} {return ok}\nproc setup {} {rename helper alias}\nhelper\n',
+        1,
+    )
+
+    assert diagnostics == ()
+    definition = service.definition(MAIN_URI, 2, 1)
+    assert len(definition) == 1
+    assert definition[0].range.start.line == 0
+    assert definition[0].range.start.character == 5
+
+
+def test_language_service_static_command_rename_chains_aliases(
+    service: LanguageService,
+) -> None:
+    diagnostics = service.open_document(
+        MAIN_URI,
+        'proc helper {} {return ok}\nrename helper alias\nrename alias worker\nworker\n',
+        1,
+    )
+
+    assert diagnostics == ()
+    definition = service.definition(MAIN_URI, 3, 1)
+    assert len(definition) == 1
+    assert definition[0].range.start.line == 2
+    assert definition[0].range.start.character == 13
+
+
+def test_language_service_static_command_rename_ignores_unreachable_if_effect(
+    service: LanguageService,
+) -> None:
+    diagnostics = service.open_document(
+        MAIN_URI,
+        'proc helper {} {return ok}\nif {0} {rename helper alias}\nhelper\n',
+        1,
+    )
+
+    assert [diagnostic.code for diagnostic in diagnostics] == ['unreachable-code']
+    definition = service.definition(MAIN_URI, 2, 1)
+    assert len(definition) == 1
+    assert definition[0].range.start.line == 0
+    assert definition[0].range.start.character == 5
+
+
 @pytest.mark.parametrize(
     ('text', 'character', 'builtin_name'),
     [

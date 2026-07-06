@@ -144,6 +144,21 @@ class CommandImport:
 
 
 @dataclass(frozen=True, slots=True)
+class CommandRename:
+    symbol_id: str | None
+    uri: str
+    namespace: str
+    scope_id: str
+    procedure_symbol_id: str | None
+    embedded_language: str | None
+    old_name: str
+    new_qualified_name: str | None
+    span: Span
+    old_name_span: Span
+    new_name_span: Span
+
+
+@dataclass(frozen=True, slots=True)
 class VarBinding:
     symbol_id: str
     uri: str
@@ -243,6 +258,7 @@ class DocumentFacts:
     procedures: tuple[ProcDecl, ...]
     source_directives: tuple[SourceDirective, ...]
     command_imports: tuple[CommandImport, ...]
+    command_renames: tuple[CommandRename, ...]
     package_requires: tuple[PackageRequire, ...]
     package_provides: tuple[PackageProvide, ...]
     package_index_entries: tuple[PackageIndexEntry, ...]

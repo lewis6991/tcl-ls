@@ -15,7 +15,10 @@ class DuplicateProcChecker(DiagnosticChecker):
     @override
     def check(self, context: DiagnosticContext) -> Iterable[Diagnostic]:
         for proc in context.facts.procedures:
-            duplicates = context.workspace_index.procedures_for_name(proc.qualified_name)
+            duplicates = context.workspace_index.procedures_for_name(
+                proc.qualified_name,
+                uri=proc.uri,
+            )
             if len(duplicates) <= 1:
                 continue
             yield self.emit(

@@ -85,6 +85,10 @@ def proc_symbol_id(uri: str, qualified_name: str, offset: int) -> str:
     return f'proc::{uri}::{qualified_name}::{offset}'
 
 
+def command_rename_symbol_id(uri: str, qualified_name: str, offset: int) -> str:
+    return f'cmd-rename::{uri}::{qualified_name}::{offset}'
+
+
 def variable_symbol_id(uri: str, scope_id: str, name: str) -> str:
     return f'var::{uri}::{scope_id}::{name}'
 

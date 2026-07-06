@@ -6,6 +6,7 @@ from pathlib import Path
 
 from tcl_lsp.analysis.model import (
     CommandImport,
+    CommandRename,
     DocumentFacts,
     PackageIndexEntry,
     PackageProvide,
@@ -19,6 +20,7 @@ type LazyPackageIndex = tuple[Path, tuple[str, ...]]
 class WorkspaceIndex:
     __slots__ = (
         '_command_imports_by_namespace',
+        '_command_renames',
         '_documents',
         '_lazy_package_index_loaders',
         '_lazy_package_index_names_by_path',
@@ -35,6 +37,7 @@ class WorkspaceIndex:
         self._package_indexes_by_uri: dict[str, tuple[PackageIndexEntry, ...]] = {}
         self._procedures_by_qualified_name: dict[str, list[ProcDecl]] = defaultdict(list)
         self._command_imports_by_namespace: dict[str, list[CommandImport]] = defaultdict(list)
+        self._command_renames: list[CommandRename] = []
         self._provided_packages_by_name: dict[str, list[PackageProvide]] = defaultdict(list)
         self._package_index_entries_by_name: dict[str, list[PackageIndexEntry]] = defaultdict(list)
         self._lazy_package_index_loaders: dict[Path, PackageIndexLoader] = {}
@@ -51,6 +54,7 @@ class WorkspaceIndex:
             self._command_imports_by_namespace.setdefault(command_import.namespace, []).append(
                 command_import
             )
+        self._command_renames.extend(facts.command_renames)
         for package in facts.package_provides:
             self._provided_packages_by_name.setdefault(package.name, []).append(package)
 
@@ -112,6 +116,11 @@ class WorkspaceIndex:
             if not self._command_imports_by_namespace[command_import.namespace]:
                 del self._command_imports_by_namespace[command_import.namespace]
 
+        if existing.command_renames:
+            self._command_renames = [
+                candidate for candidate in self._command_renames if candidate.uri != uri
+            ]
+
         for package in existing.package_provides:
             current = self._provided_packages_by_name.get(package.name)
             if current is None:
@@ -141,29 +150,114 @@ class WorkspaceIndex:
             if not self._package_index_entries_by_name[entry.name]:
                 del self._package_index_entries_by_name[entry.name]
 
-    def resolve_procedure(self, raw_name: str, namespace: str) -> tuple[ProcDecl, ...]:
+    def resolve_procedure(
+        self,
+        raw_name: str,
+        namespace: str,
+        *,
+        uri: str | None = None,
+        offset: int | None = None,
+    ) -> tuple[ProcDecl, ...]:
         matches: list[ProcDecl] = []
         seen: set[str] = set()
         for candidate_name in _procedure_candidates(raw_name, namespace):
             for proc in _effective_procedures(
                 self._procedures_by_qualified_name.get(candidate_name, [])
             ):
+                if self._procedure_is_moved(proc, uri=uri, offset=offset):
+                    continue
                 if proc.symbol_id in seen:
                     continue
                 seen.add(proc.symbol_id)
                 matches.append(proc)
         return tuple(matches)
 
-    def procedures_for_name(self, qualified_name: str) -> tuple[ProcDecl, ...]:
-        return _effective_procedures(self._procedures_by_qualified_name.get(qualified_name, []))
+    def procedures_for_name(
+        self,
+        qualified_name: str,
+        *,
+        uri: str | None = None,
+        offset: int | None = None,
+    ) -> tuple[ProcDecl, ...]:
+        return tuple(
+            proc
+            for proc in _effective_procedures(
+                self._procedures_by_qualified_name.get(qualified_name, [])
+            )
+            if not self._procedure_is_moved(proc, uri=uri, offset=offset)
+        )
 
-    def resolve_imported_procedure(self, raw_name: str, namespace: str) -> tuple[ProcDecl, ...]:
+    def resolve_procedure_before(
+        self,
+        raw_name: str,
+        namespace: str,
+        *,
+        uri: str,
+        offset: int,
+    ) -> tuple[ProcDecl, ...]:
+        matches: list[ProcDecl] = []
+        seen: set[str] = set()
+        for candidate_name in _procedure_candidates(raw_name, namespace):
+            for proc in _effective_procedures(
+                self._procedures_by_qualified_name.get(candidate_name, [])
+            ):
+                # `rename old new` can only move a command that already exists at
+                # that point in the file. Normal command calls still use the
+                # broader procedure lookup so forward proc calls keep working.
+                if proc.uri == uri and proc.name_span.start.offset > offset:
+                    continue
+                if self._procedure_is_moved(proc, uri=uri, offset=offset):
+                    continue
+                if proc.symbol_id in seen:
+                    continue
+                seen.add(proc.symbol_id)
+                matches.append(proc)
+        return tuple(matches)
+
+    def resolve_command_renames(
+        self,
+        raw_name: str,
+        namespace: str,
+        *,
+        uri: str | None = None,
+        offset: int | None = None,
+    ) -> tuple[CommandRename, ...]:
+        candidate_names = frozenset(_procedure_candidates(raw_name, namespace))
+        matches: list[CommandRename] = []
+        seen: set[str] = set()
+        for command_rename in self._command_renames:
+            if not _command_rename_applies_before(command_rename, uri=uri, offset=offset):
+                continue
+            if command_rename.new_qualified_name not in candidate_names:
+                continue
+            if command_rename.symbol_id is None or self._command_rename_is_moved(
+                command_rename,
+                uri=uri,
+                offset=offset,
+            ):
+                continue
+            if command_rename.symbol_id in seen:
+                continue
+            seen.add(command_rename.symbol_id)
+            matches.append(command_rename)
+        return tuple(matches)
+
+    def imported_procedures_for_name(
+        self,
+        raw_name: str,
+        namespace: str,
+        *,
+        uri: str | None = None,
+        offset: int | None = None,
+    ) -> tuple[ProcDecl, ...]:
         matches: list[ProcDecl] = []
         seen: set[str] = set()
         for _, target_name in self.matching_command_imports(raw_name, namespace):
             for proc in _effective_procedures(
                 self._procedures_by_qualified_name.get(target_name, ())
             ):
+                if self._procedure_is_moved(proc, uri=uri, offset=offset):
+                    continue
                 if proc.symbol_id in seen:
                     continue
                 seen.add(proc.symbol_id)
@@ -252,6 +346,85 @@ class WorkspaceIndex:
             self._lazy_package_index_paths_without_names
         )
         return cloned
+
+    def _procedure_is_moved(
+        self,
+        proc: ProcDecl,
+        *,
+        uri: str | None,
+        offset: int | None,
+    ) -> bool:
+        for command_rename in self._command_renames:
+            if not _command_rename_applies_before(command_rename, uri=uri, offset=offset):
+                continue
+            if proc.qualified_name not in _procedure_candidates(
+                command_rename.old_name,
+                command_rename.namespace,
+            ):
+                continue
+            # A later proc declaration recreates the old name after an earlier rename.
+            if command_rename.uri == proc.uri and (
+                command_rename.span.start.offset <= proc.name_span.start.offset
+            ):
+                continue
+            return True
+        return False
+
+    def _command_rename_is_moved(
+        self,
+        command_rename: CommandRename,
+        *,
+        uri: str | None,
+        offset: int | None,
+    ) -> bool:
+        qualified_name = command_rename.new_qualified_name
+        if qualified_name is None:
+            return True
+
+        if self._has_later_procedure(
+            qualified_name,
+            command_rename,
+            uri=uri,
+            offset=offset,
+        ):
+            return True
+
+        for later_rename in self._command_renames:
+            if later_rename == command_rename:
+                continue
+            if not _command_rename_applies_before(later_rename, uri=uri, offset=offset):
+                continue
+            if qualified_name not in _procedure_candidates(
+                later_rename.old_name,
+                later_rename.namespace,
+            ):
+                continue
+            # Only a later rename can move this alias again.
+            if later_rename.uri == command_rename.uri and (
+                later_rename.span.start.offset <= command_rename.span.start.offset
+            ):
+                continue
+            return True
+        return False
+
+    def _has_later_procedure(
+        self,
+        qualified_name: str,
+        command_rename: CommandRename,
+        *,
+        uri: str | None,
+        offset: int | None,
+    ) -> bool:
+        lookup_uri = command_rename.uri if uri is None else uri
+        for proc in self._procedures_by_qualified_name.get(qualified_name, ()):
+            if proc.uri != lookup_uri:
+                continue
+            if proc.name_span.start.offset <= command_rename.span.start.offset:
+                continue
+            if offset is not None and proc.name_span.start.offset >= offset:
+                continue
+            return True
+        return False
 
     def _ensure_package_index_entries(self, package_name: str) -> None:
         if (
@@ -359,3 +532,20 @@ def _effective_procedures(
     if latest_implementation_by_uri:
         return tuple(procedure for procedure in effective if procedure.body_span is not None)
     return effective
+
+
+def _command_rename_applies_before(
+    command_rename: CommandRename,
+    *,
+    uri: str | None,
+    offset: int | None,
+) -> bool:
+    # Static rename effects are file-local; locationless lookups keep the
+    # pre-existing workspace-wide procedure view.
+    if uri is None:
+        return False
+    if command_rename.uri != uri:
+        return False
+    if offset is None:
+        return True
+    return command_rename.span.start.offset < offset

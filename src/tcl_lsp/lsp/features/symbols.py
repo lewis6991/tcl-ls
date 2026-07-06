@@ -37,12 +37,9 @@ def symbol_ids_at_position(
 
 def symbol_kind(documents: Iterable[ManagedDocument], symbol_id: str) -> str | None:
     for document in documents:
-        for procedure in document.facts.procedures:
-            if procedure.symbol_id == symbol_id:
-                return 'function'
-        for binding in document.facts.variable_bindings:
-            if binding.symbol_id == symbol_id:
-                return 'variable'
+        for definition in document.analysis.definitions:
+            if definition.symbol_id == symbol_id:
+                return definition.kind
     return None
 
 
