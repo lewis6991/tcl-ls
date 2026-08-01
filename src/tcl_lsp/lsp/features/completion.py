@@ -14,6 +14,7 @@ from tcl_lsp.analysis.builtins import (
     BuiltinOverload,
     builtin_command_for_packages,
     builtin_commands_by_package,
+    builtin_commands_in_package,
     canonical_builtin_package_name,
 )
 from tcl_lsp.analysis.facts.utils import normalize_command_name
@@ -21,6 +22,7 @@ from tcl_lsp.analysis.metadata_commands import MetadataOption, scan_command_opti
 from tcl_lsp.analysis.metadata_effects import dependency_required_packages
 from tcl_lsp.analysis.model import CommandCall, ProcDecl
 from tcl_lsp.common import Position, offset_at_position
+from tcl_lsp.contextual_builtins import contextual_builtin_packages
 from tcl_lsp.lsp.features.cursor_context import (
     CursorContext,
     argument_context,
@@ -461,11 +463,10 @@ def _command_completion_items(
         metadata_registry=metadata_registry,
     )
     for package_name in builtin_packages:
-        for builtin in (
-            builtin_commands_by_package(metadata_registry=metadata_registry)
-            .get(package_name, {})
-            .values()
-        ):
+        for builtin in builtin_commands_in_package(
+            package_name,
+            metadata_registry=metadata_registry,
+        ).values():
             label = _builtin_completion_label(builtin.name, absolute_prefix=absolute_prefix)
             if ' ' in builtin.name or not _matches_prefix(label, prefix):
                 continue
@@ -731,6 +732,10 @@ def _builtin_completion_packages(
 
     if _is_implicit_tcltest_file(document.uri):
         required_packages = required_packages | frozenset({'tcltest'})
+    required_packages = required_packages | contextual_builtin_packages(
+        document.uri,
+        text=document.text,
+    )
 
     for package_name in sorted(required_packages):
         packages.setdefault(canonical_builtin_package_name(package_name), None)

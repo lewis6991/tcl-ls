@@ -6,6 +6,7 @@ from pathlib import Path
 
 from tcl_lsp.analysis import FactExtractor, Resolver, WorkspaceIndex
 from tcl_lsp.analysis.metadata_effects import dependency_required_packages
+from tcl_lsp.contextual_builtins import contextual_builtin_packages
 from tcl_lsp.lsp.state import (
     IndexingProgressCallback,
     ManagedDocument,
@@ -420,15 +421,19 @@ class WorkspaceRebuilder:
                 metadata_registry=metadata_registry,
             )
             source_path = source_id_to_path(document.uri)
-            additional_required_packages: frozenset[str]
-            if source_path is None:
-                additional_required_packages = frozenset()
-            else:
-                additional_required_packages = dependency_required_packages(
-                    source_path,
-                    document.facts,
-                    analysis_workspace_index,
-                    metadata_registry=metadata_registry,
+            additional_required_packages = contextual_builtin_packages(
+                document.uri,
+                text=document.text,
+            )
+            if source_path is not None:
+                additional_required_packages = (
+                    additional_required_packages
+                    | dependency_required_packages(
+                        source_path,
+                        document.facts,
+                        analysis_workspace_index,
+                        metadata_registry=metadata_registry,
+                    )
                 )
             analysis = resolver.analyze(
                 uri=document.uri,
@@ -476,15 +481,19 @@ class WorkspaceRebuilder:
                 metadata_registry=metadata_registry,
             )
             source_path = source_id_to_path(uri)
-            additional_required_packages: frozenset[str]
-            if source_path is None:
-                additional_required_packages = frozenset()
-            else:
-                additional_required_packages = dependency_required_packages(
-                    source_path,
-                    document.facts,
-                    analysis_workspace_index,
-                    metadata_registry=metadata_registry,
+            additional_required_packages = contextual_builtin_packages(
+                uri,
+                text=document.text,
+            )
+            if source_path is not None:
+                additional_required_packages = (
+                    additional_required_packages
+                    | dependency_required_packages(
+                        source_path,
+                        document.facts,
+                        analysis_workspace_index,
+                        metadata_registry=metadata_registry,
+                    )
                 )
             analysis = resolver.analyze(
                 uri=uri,

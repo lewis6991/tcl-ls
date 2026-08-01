@@ -49,6 +49,48 @@ def test_language_server_returns_command_completion_items(server: LanguageServer
     assert greet_item['detail'] == 'proc ::greet()'
 
 
+def test_language_server_returns_contextual_builtin_completion_items_for_xsct(
+    server: LanguageServer,
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / 'script.xsct'
+    source_text = 'do\n'
+    source_path.write_text(source_text, encoding='utf-8')
+
+    open_server_document(server, source_text, uri=source_path.as_uri())
+
+    items = completion_items(
+        server,
+        uri=source_path.as_uri(),
+        line=0,
+        character=len('do'),
+    )
+    item = next(item for item in items if item['label'] == 'dow')
+
+    assert item['detail'] == 'xsct: dow'
+
+
+def test_language_server_returns_contextual_builtin_completion_items_for_expect_shebang(
+    server: LanguageServer,
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / 'script.tcl'
+    source_text = '#!/usr/bin/env expect -f\ndeb\n'
+    source_path.write_text(source_text, encoding='utf-8')
+
+    open_server_document(server, source_text, uri=source_path.as_uri())
+
+    items = completion_items(
+        server,
+        uri=source_path.as_uri(),
+        line=1,
+        character=len('deb'),
+    )
+    item = next(item for item in items if item['label'] == 'debug')
+
+    assert item['detail'] == 'expect: debug'
+
+
 def test_language_server_prepares_function_rename_for_qualified_names(
     server: LanguageServer,
 ) -> None:

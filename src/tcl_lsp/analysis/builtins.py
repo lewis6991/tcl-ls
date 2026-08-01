@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from lsprotocol import types
 
@@ -16,7 +17,8 @@ from tcl_lsp.analysis.metadata_commands import (
 from tcl_lsp.analysis.model import CommandArity, DefinitionTarget
 from tcl_lsp.analysis.signature_matching import display_metadata_signature
 from tcl_lsp.cache import metadata_lru_cache
-from tcl_lsp.common import Span, lsp_location
+from tcl_lsp.common import Position, Span, lsp_location
+from tcl_lsp.contextual_builtins import contextual_builtin_json_path
 from tcl_lsp.metadata_paths import DEFAULT_METADATA_REGISTRY, MetadataRegistry
 
 _CORE_PACKAGE = 'Tcl'
@@ -148,6 +150,14 @@ def builtin_commands_by_package(
     return _builtin_commands_by_package(metadata_registry)
 
 
+def builtin_commands_in_package(
+    package_name: str,
+    *,
+    metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
+) -> dict[str, BuiltinCommand]:
+    return _builtin_commands_for_package(package_name, metadata_registry)
+
+
 @metadata_lru_cache(maxsize=1)
 def _builtin_commands_by_package(
     metadata_registry: MetadataRegistry,
@@ -163,6 +173,12 @@ def _builtin_commands_for_package(
     package_name: str,
     metadata_registry: MetadataRegistry,
 ) -> dict[str, BuiltinCommand]:
+    contextual_commands = _contextual_builtin_commands_for_package(
+        package_name,
+        metadata_registry,
+    )
+    if contextual_commands:
+        return contextual_commands
     metadata_path_layers = _builtin_metadata_path_layers_by_package(metadata_registry).get(
         package_name
     )
@@ -478,6 +494,54 @@ def _signature(name: str, parameter_list: str) -> str:
 
 def _builtin_symbol_id(package_name: str, name: str, signature: str, offset: int) -> str:
     return f'builtin::{package_name}::{name}::{signature}::{offset}'
+
+
+@metadata_lru_cache(maxsize=None)
+def _contextual_builtin_commands_for_package(
+    package_name: str,
+    metadata_registry: MetadataRegistry,
+) -> dict[str, BuiltinCommand]:
+    json_path = contextual_builtin_json_path(package_name)
+    if json_path is None or not json_path.is_file():
+        return {}
+
+    existing_names = frozenset(
+        name
+        for package_commands in _builtin_commands_by_package(metadata_registry).values()
+        for name in package_commands
+    )
+    raw_docs_by_name = json.loads(json_path.read_text(encoding='utf-8'))
+    if not isinstance(raw_docs_by_name, dict):
+        raise RuntimeError(f'Invalid contextual builtin JSON in `{json_path.name}`.')
+    docs_by_name: dict[str, str] = {}
+    for name, documentation in cast(dict[object, object], raw_docs_by_name).items():
+        if isinstance(name, str) and isinstance(documentation, str):
+            docs_by_name[name] = documentation
+
+    commands: dict[str, BuiltinCommand] = {}
+    for index, (name, documentation) in enumerate(docs_by_name.items()):
+        if name in existing_names:
+            continue
+        start = Position(offset=index, line=index, character=0)
+        name_span = Span(start=start, end=start.advance(name))
+        overload = BuiltinOverload(
+            symbol_id=_builtin_symbol_id(package_name, name, name, index),
+            signature=name,
+            match_signature=name,
+            arity=None,
+            options=(),
+            subcommands=(),
+            documentation=documentation.strip() or None,
+            location=lsp_location(json_path.as_uri(), name_span),
+            span=name_span,
+        )
+        commands[name] = BuiltinCommand(
+            name=name,
+            package=package_name,
+            metadata_path_name=json_path.name,
+            overloads=(overload,),
+        )
+    return commands
 
 
 def _canonical_package_name(package_name: str) -> str:
