@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-DEFAULT_SOURCE_PATTERNS = ('*.tcl', '*.tm', '*.test')
+DEFAULT_SOURCE_PATTERNS = ('*.tcl', '*.tm', '*.test', '*.xdc', '*.xsct', '*.exp')
 
 
 def discover_tcl_sources(

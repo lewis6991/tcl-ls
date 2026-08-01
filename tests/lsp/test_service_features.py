@@ -78,6 +78,22 @@ def test_language_service_hover_includes_proc_comment_blocks(
     assert hover.contents == 'proc ::greet(name)\n\nGreets a user by name.\nReturns nothing.'
 
 
+def test_language_service_hover_resolves_contextual_builtin_commands_by_extension(
+    service: LanguageService,
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / 'constraints.xdc'
+    source_text = 'read_hw_sio_scan file.csv\n'
+    source_path.write_text(source_text, encoding='utf-8')
+
+    assert service.open_document(source_path.as_uri(), source_text, 1) == ()
+
+    hover = service.hover(source_path.as_uri(), 0, 1)
+    assert hover is not None
+    assert hover.contents.startswith('builtin command read_hw_sio_scan')
+    assert 'Read hardware SIO scan data from a file.' in hover.contents
+
+
 def test_language_service_definition_resolves_builtin_command_metadata(
     service: LanguageService,
 ) -> None:

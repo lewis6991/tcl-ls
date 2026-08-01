@@ -98,6 +98,7 @@ from tcl_lsp.analysis.model import (
     VariableReference,
 )
 from tcl_lsp.common import Diagnostic, Position, Span, lsp_range
+from tcl_lsp.contextual_builtins import contextual_builtin_packages
 from tcl_lsp.metadata_paths import DEFAULT_METADATA_REGISTRY, MetadataRegistry
 from tcl_lsp.parser import Parser, word_static_text
 from tcl_lsp.parser.model import (
@@ -108,6 +109,7 @@ from tcl_lsp.parser.model import (
     LiteralText,
     ParseResult,
     Script,
+    Token,
     VariableSubstitution,
     Word,
 )
@@ -121,6 +123,15 @@ _UNSUPPORTED_SPECIAL_ENTER_MESSAGE = (
     'Structured Tcl commands only support single-word `enter body` selectors '
     'for script-body arguments.'
 )
+
+
+def _leading_shebang(tokens: tuple[Token, ...]) -> str | None:
+    if not tokens:
+        return None
+    first_token = tokens[0]
+    if first_token.kind != 'comment' or first_token.span.start.offset != 0:
+        return None
+    return first_token.text
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,7 +257,12 @@ class _FactCollector:
         self._include_lexical_spans = include_lexical_spans
         self._include_parse_result = include_parse_result
         self._diagnostics: list[Diagnostic] = list(diagnostics)
-        self._active_builtin_packages: set[str] = set()
+        self._active_builtin_packages: set[str] = set(
+            contextual_builtin_packages(
+                parse_result.source_id,
+                shebang=_leading_shebang(parse_result.tokens),
+            )
+        )
         self._comment_spans: list[Span] = list(comment_spans)
         self._string_spans: list[Span] = list(string_spans)
         self._operator_spans: list[Span] = list(operator_spans)

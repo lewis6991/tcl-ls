@@ -17,6 +17,7 @@ from tcl_lsp.analysis import FactExtractor, Resolver, WorkspaceIndex
 from tcl_lsp.analysis.facts.lowering import collect_parse_result_lexical_spans
 from tcl_lsp.analysis.metadata_effects import dependency_required_packages
 from tcl_lsp.common import Diagnostic, lsp_range
+from tcl_lsp.contextual_builtins import contextual_builtin_packages
 from tcl_lsp.lsp.document_changes import DocumentChangeWorker
 from tcl_lsp.lsp.features.completion import CompletionResults, completion_items
 from tcl_lsp.lsp.features.document_links import document_links
@@ -464,15 +465,16 @@ class LanguageServer(PyglsLanguageServer):
             )
 
             source_path = source_id_to_path(uri)
-            additional_required_packages: frozenset[str]
-            if source_path is None:
-                additional_required_packages = frozenset()
-            else:
-                additional_required_packages = dependency_required_packages(
-                    source_path,
-                    facts,
-                    document_workspace_index,
-                    metadata_registry=snapshot.metadata_registry,
+            additional_required_packages = contextual_builtin_packages(uri, text=text)
+            if source_path is not None:
+                additional_required_packages = (
+                    additional_required_packages
+                    | dependency_required_packages(
+                        source_path,
+                        facts,
+                        document_workspace_index,
+                        metadata_registry=snapshot.metadata_registry,
+                    )
                 )
             analysis = resolver.analyze(
                 uri=uri,
