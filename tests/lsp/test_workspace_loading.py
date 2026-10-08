@@ -33,6 +33,41 @@ def test_language_service_loads_plugin_metadata_from_tcllsrc(tmp_path: Path) -> 
     assert diagnostics == ()
 
 
+def test_language_service_loads_file_metadata_dependencies_and_unloads_them(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / 'workspace'
+    metadata = project_root / '.tcl-ls'
+    metadata.mkdir(parents=True)
+    (project_root / 'tcllsrc.tcl').write_text('plugin-path .tcl-ls\n', encoding='utf-8')
+    (metadata / 'loader.meta.tcl').write_text('meta source ../common.tcl\n', encoding='utf-8')
+    (project_root / 'pkgIndex.tcl').write_text(
+        'package ifneeded loader 1.0 [list source [file join $dir loader.tcl]]\n',
+        encoding='utf-8',
+    )
+    (project_root / 'loader.tcl').write_text(
+        'source "$env(EXAMPLE_HOME)/common.tcl"\npackage provide loader 1.0\n',
+        encoding='utf-8',
+    )
+    common = project_root / 'common.tcl'
+    common.write_text('proc greet {} {return hello}\n', encoding='utf-8')
+    uri = (project_root / 'main.tcl').as_uri()
+    service = LanguageService()
+
+    diagnostics = service.open_document(uri, 'package require loader\ngreet\nmissing\n', 1)
+
+    assert [(d.code, d.message) for d in diagnostics] == [
+        ('unresolved-command', 'Unresolved command `missing`.'),
+    ]
+    assert service.definition(uri, 1, 1)[0].uri == common.as_uri()
+
+    diagnostics = service.change_document(uri, 'greet\n', 2)
+
+    assert [(d.code, d.message) for d in diagnostics] == [
+        ('unresolved-command', 'Unresolved command `greet`.'),
+    ]
+
+
 def test_language_service_loads_package_indexes_from_tcllsrc_lib_path(
     tmp_path: Path,
 ) -> None:

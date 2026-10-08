@@ -29,6 +29,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         help='Build a `.meta.tcl` metadata file using the bundled Tcl helper.',
     )
     build_file_parser.add_argument('output', type=Path)
+    build_file_parser.add_argument(
+        '--no-probe', action='store_true', help='Inspect commands without calling them.'
+    )
+    build_file_parser.add_argument(
+        '--environment', default='Tcl', help='Tool environment name (default: core Tcl).'
+    )
+    build_file_parser.add_argument(
+        '--new-only', action='store_true', help='Exclude commands already present in plain Tcl.'
+    )
 
     args = parser.parse_args(argv)
 
@@ -36,7 +45,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(bundled_tcl_meta_path().resolve(strict=False))
         return 0
     if args.command == 'build-file':
-        return _run_tcl_script(bundled_tcl_meta_path(), ['build-file', str(args.output)])
+        helper_args = ['build-file']
+        if args.no_probe:
+            helper_args.append('--no-probe')
+        if args.new_only:
+            helper_args.append('--new-only')
+        if args.environment != 'Tcl':
+            helper_args.extend(['--environment', args.environment])
+        return _run_tcl_script(bundled_tcl_meta_path(), [*helper_args, str(args.output)])
 
     parser.error(f'unsupported command: {args.command}')
     return 2

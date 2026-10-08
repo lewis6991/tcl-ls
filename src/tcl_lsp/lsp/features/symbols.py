@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 
 from tcl_lsp.analysis.builtins import builtin_definition_targets
+from tcl_lsp.analysis.environments import registry_at_offset
 from tcl_lsp.analysis.model import CommandImport, DefinitionTarget
 from tcl_lsp.lsp.state import ManagedDocument
 from tcl_lsp.metadata_paths import MetadataRegistry
@@ -62,6 +63,12 @@ def definitions_for_command_import(
         definitions.append(definition)
 
     for document in documents:
+        if document.facts.uri == command_import.uri:
+            metadata_registry = registry_at_offset(
+                metadata_registry,
+                document.facts.environment_scopes,
+                command_import.span.start.offset,
+            )
         for definition in document.analysis.definitions:
             qualified_name = _qualified_command_name(definition.name)
             if command_import.kind == 'exact':
@@ -97,7 +104,11 @@ def definitions_for_symbols(
                 continue
             seen.add(definition.symbol_id)
             definitions.append(definition)
-    for definition in builtin_definition_targets(metadata_registry=metadata_registry):
+    # Resolution has already selected the environment at each reference. Lookup
+    # by symbol ID must retain those targets even outside the selected scope.
+    for definition in builtin_definition_targets(
+        metadata_registry=metadata_registry, all_environments=True
+    ):
         if definition.symbol_id not in symbol_ids or definition.symbol_id in seen:
             continue
         seen.add(definition.symbol_id)

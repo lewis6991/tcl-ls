@@ -17,6 +17,14 @@ Literal ``?`` words only appear inside command-shape syntax.
 .. code-block:: tcl
 
    meta module name
+   meta module name -environment
+
+   meta source path
+
+   meta alias name target
+   meta alias name target -module moduleName
+
+   meta override name {shape}
 
    meta command name {shape}
    meta command name {shape} {
@@ -60,6 +68,28 @@ Literal ``?`` words only appear inside command-shape syntax.
 Rules:
 
 * declaration words must be static Tcl words
+* ``meta module name -environment`` declares a tool environment. Its commands
+  are available only where that environment is selected. It is not activated
+  by ``package require`` or by a qualified command name. See
+  :doc:`../user-guide/configuration` for directives and conditional rules.
+* ``meta override`` accepts the same shapes, bodies, and variants as
+  ``meta command``. In an environment, it explicitly replaces a command and
+  its subcommands from Tcl or a lower environment. Ordinary ``meta command``
+  entries only add names that are not already present. Overrides require a
+  module declaration.
+* ``meta source path`` records a fixed dependency of the associated Tcl file,
+  such as ``loader.tcl`` for ``loader.meta.tcl``. The path is relative to the
+  metadata file. This declaration requires file-scoped metadata without
+  ``meta module``. Later metadata roots replace earlier source lists for
+  the same file name.
+* ``meta alias name target`` reuses a command's signatures, subcommands,
+  documentation, and annotations under another name. It requires ``meta
+  module`` and resolves the target in the same module after applying metadata
+  root precedence. Use ``-module moduleName`` to select another module, such as
+  ``meta alias tcl_clock clock -module Tcl`` to retain the original Tcl clock
+  metadata in a tool environment. The original command remains available. Alias chains are
+  supported; missing targets and cycles are errors. This describes an alias
+  or renamed command provided by the program; it does not execute Tcl.
 * command and language names must be a single word
 * ``extends tcl`` is an optional ordinary clause inside a ``meta language``
   body
@@ -773,6 +803,13 @@ Rules:
   SELECTOR`` must each select exactly one argument
 * ``params select SELECTOR`` reads one runtime argument whose contents use
   ordinary Tcl procedure parameter-list syntax
+* ``params select SELECTOR format FORMAT`` selects a parameter format:
+  ``tcl`` (the default), ``tepam`` (a Tepam attribute list), or ``tepam-args``
+  (the argument definitions from ``-args``, or a list of argument names)
+* Tepam formats bind body variables and retain each name's source location.
+  A leading ``-`` is removed from option names. The parser reads static lists
+  without evaluating defaults. These formats leave call arity unknown because
+  body variables do not describe the option-based call syntax
 * ``name -`` reuses the enclosing command name tail
 * ``params -`` means the emitted procedure has an empty parameter list
 * ``params literal PARAMETER_LIST`` uses ordinary Tcl procedure parameter-list
@@ -820,6 +857,14 @@ Examples:
        }
    }
 
+   command tepam::procedure {name attributes body} {
+       procedure {
+           name select 1
+           params select 2 format tepam
+           body select 3
+       }
+   }
+
 ``plugin``
 ~~~~~~~~~~
 
@@ -842,8 +887,8 @@ Example:
 
 .. code-block:: tcl
 
-   meta command tepam::procedure {name attributes body} {
-       plugin tepam.tcl ::tcl_lsp::plugins::tepam::statementWords
+   meta command project::declare {name attributes body} {
+       plugin declare.tcl ::project::metadata::declare
    }
 
 Plugin Return Format
@@ -867,8 +912,7 @@ Supported plugin effects are:
    source selector definition
    procedure {
        name select 2
-       params literal {left right}
-       _params-source select 3
+       params select 3 format tepam
        body select 4
        language sample
    }
@@ -883,16 +927,13 @@ Effect rules:
   to the plugin
 * plugin selectors do not support ``after-options`` because plugins do not
   declare option tables for the generic selector machinery
-* plugin ``procedure`` effects reuse declarative ``name``, ``params``,
-  ``body``, and ``language`` fields
+* plugin ``procedure`` effects reuse declarative ``name``, ``params`` (including
+  parameter formats), ``body``, and ``language`` fields
 * plugin ``params literal PARAMETER_LIST`` values use the same Tcl procedure
   parameter-list syntax as declarative ``procedure`` metadata
-* plugins may additionally return ``_params-source`` as a provisional
-  plugin-only escape hatch for literal parameters whose source location still
-  needs a coarse word anchor
-* ``_params-source`` is intentionally separate from ``params`` so it can be
-  removed or replaced later without locking the core ``procedure`` syntax into
-  a hack
+* older plugins may return ``_params-source select SELECTOR`` to anchor literal
+  parameters to a whole word. Prefer ``params select`` with a parameter format
+  when available; this retains the individual parameter locations
 
 Example plugin return:
 
@@ -904,8 +945,7 @@ Example plugin return:
        {enter tcl body 3}
        {procedure {
            name select 2
-           params literal {left right}
-           _params-source select 3
+           params select 3 format tepam
            body select 4
            language sample
        }}

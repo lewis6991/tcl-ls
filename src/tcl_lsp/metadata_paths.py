@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from tcl_lsp.cache import metadata_lru_cache
@@ -22,6 +22,10 @@ def bundled_metadata_dir() -> Path:
 @dataclass(frozen=True, slots=True)
 class MetadataRegistry:
     extra_metadata_paths: tuple[Path, ...] = ()
+    environments: tuple[str, ...] = ()
+
+    def with_environments(self, environments: tuple[str, ...]) -> MetadataRegistry:
+        return replace(self, environments=environments)
 
     def metadata_paths(self) -> tuple[Path, ...]:
         return (bundled_metadata_dir(), *self.extra_metadata_paths)
@@ -51,8 +55,13 @@ class MetadataRegistry:
 DEFAULT_METADATA_REGISTRY = MetadataRegistry()
 
 
-def create_metadata_registry(paths: Iterable[Path | str] = ()) -> MetadataRegistry:
-    return MetadataRegistry(extra_metadata_paths=_normalize_metadata_paths(paths))
+def create_metadata_registry(
+    paths: Iterable[Path | str] = (), *, environment: str | None = None
+) -> MetadataRegistry:
+    return MetadataRegistry(
+        extra_metadata_paths=_normalize_metadata_paths(paths),
+        environments=(environment,) if environment and environment != 'Tcl' else (),
+    )
 
 
 def _normalize_metadata_paths(paths: Iterable[Path | str]) -> tuple[Path, ...]:

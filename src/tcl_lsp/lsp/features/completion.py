@@ -16,6 +16,7 @@ from tcl_lsp.analysis.builtins import (
     builtin_commands_by_package,
     canonical_builtin_package_name,
 )
+from tcl_lsp.analysis.environments import registry_at_offset
 from tcl_lsp.analysis.facts.utils import normalize_command_name
 from tcl_lsp.analysis.metadata_commands import MetadataOption, scan_command_options
 from tcl_lsp.analysis.metadata_effects import dependency_required_packages
@@ -89,6 +90,12 @@ def completion_items(
     document = documents_by_uri.get(uri)
     if document is None:
         return CompletionResults(items=())
+
+    offset = offset_at_position(document.text, line, character)
+    if offset is not None:
+        metadata_registry = registry_at_offset(
+            metadata_registry, document.facts.environment_scopes, offset
+        )
 
     if live_text is not None and live_text != document.text and parser is not None:
         context = _live_completion_context(

@@ -6,12 +6,14 @@ from dataclasses import dataclass
 from lsprotocol import types
 
 from tcl_lsp.analysis.builtins import BuiltinOverload, builtin_commands_by_package
+from tcl_lsp.analysis.environments import registry_at_offset
 from tcl_lsp.analysis.model import (
     CommandArity,
     CommandCall,
     ProcDecl,
     ResolutionResult,
 )
+from tcl_lsp.common import offset_at_position
 from tcl_lsp.lsp.features.cursor_context import cursor_context
 from tcl_lsp.lsp.state import ManagedDocument
 from tcl_lsp.metadata_paths import MetadataRegistry
@@ -35,6 +37,12 @@ def signature_help(
     document = documents_by_uri.get(uri)
     if document is None:
         return None
+
+    offset = offset_at_position(document.text, line, character)
+    if offset is not None:
+        metadata_registry = registry_at_offset(
+            metadata_registry, document.facts.environment_scopes, offset
+        )
 
     context = cursor_context(document, line=line, character=character)
     if context is None:

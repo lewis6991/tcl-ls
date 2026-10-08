@@ -31,12 +31,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             reporter=reporter,
             threads=args.threads,
             plugin_paths=args.plugin_paths,
+            environment=args.environment,
         )
     except KeyboardInterrupt:
         reporter.abort()
         print('Interrupted.', file=sys.stderr)
         return 130
-    except (OSError, ValueError, AssertionError) as exc:
+    except (OSError, ValueError, RuntimeError, AssertionError) as exc:
         reporter.abort()
         print(str(exc), file=sys.stderr)
         return 1
@@ -52,6 +53,9 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         description='Analyze Tcl sources under a file or directory and print diagnostics.',
     )
     parser.add_argument('path', help='Tcl source file or project directory to analyze')
+    parser.add_argument(
+        '--environment', help='Use this metadata module as the tool environment for the check.'
+    )
     parser.add_argument(
         '--color',
         choices=('auto', 'always', 'never'),

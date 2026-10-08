@@ -10,6 +10,7 @@ from tcl_lsp.parser.model import ParseResult
 
 if TYPE_CHECKING:
     from tcl_lsp.analysis.control_flow import ControlFlowScript
+    from tcl_lsp.analysis.environments import EnvironmentScope
 
 type BindingKind = Literal[
     'append',
@@ -267,6 +268,7 @@ class DocumentFacts:
     variable_references: tuple[VariableReference, ...]
     document_symbols: tuple[types.DocumentSymbol, ...]
     diagnostics: tuple[Diagnostic, ...]
+    environment_scopes: tuple[EnvironmentScope, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

@@ -16,6 +16,7 @@ from tcl_lsp.analysis.metadata_commands import (
     MetadataSource,
     SourceBase,
     file_scoped_annotated_metadata_commands,
+    file_scoped_metadata_sources,
     select_argument_indices,
 )
 from tcl_lsp.analysis.model import CommandCall, DocumentFacts, ProcDecl
@@ -149,6 +150,10 @@ class _DependencyScanner:
     required_packages: set[str] = field(init=False, default_factory=set)
 
     def scan_facts(self, facts: DocumentFacts) -> None:
+        for path in file_scoped_metadata_sources(self.metadata_registry).get(
+            self.source_path.name, ()
+        ):
+            self.source_uris.setdefault(path.as_uri(), None)
         candidate_names = _candidate_effect_command_names(self.metadata_registry)
         for directive in facts.source_directives:
             self.source_uris.setdefault(directive.target_uri, None)

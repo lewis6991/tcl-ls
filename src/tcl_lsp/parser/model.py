@@ -77,6 +77,7 @@ class Command:
 class Script:
     span: Span
     commands: tuple[Command, ...]
+    comments: tuple[Token, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

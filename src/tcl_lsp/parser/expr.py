@@ -237,6 +237,16 @@ class _ExprParser:
             return _Token('eof', '')
 
         current_char = self._text[self._index]
+        if current_char == '$':
+            start = self._index
+            if self._text.startswith('${', start):
+                closing_brace = self._text.find('}', start + 2)
+                end = closing_brace + 1 if closing_brace >= 0 else start
+            else:
+                end = consume_bare_variable_name_end(self._text, start + 1)
+            if end > start + 1:
+                self._index = end
+                return _Token('atom', self._text[start:end])
         if current_char == '(':
             self._index += 1
             return _Token('lparen', '(')

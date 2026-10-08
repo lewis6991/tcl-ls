@@ -23,6 +23,7 @@ from tcl_lsp.analysis.embedded_languages import (
     contextual_language_allows_tcl_fallback,
     contextual_resolution_reason,
 )
+from tcl_lsp.analysis.environments import registry_at_offset
 from tcl_lsp.analysis.facts.parsing import is_simple_name, split_tcl_list
 from tcl_lsp.analysis.facts.utils import (
     command_lookup_names,
@@ -176,7 +177,17 @@ class Resolver:
                 commands[event.qualified_name] = event
                 continue
             command_call = _rename_source_call(event) if isinstance(event, CommandRename) else event
-            binding = self._resolve_command(
+            registry = registry_at_offset(
+                self._metadata_registry,
+                facts.environment_scopes,
+                command_call.name_span.start.offset,
+            )
+            resolver = (
+                self
+                if registry == self._metadata_registry
+                else Resolver(metadata_registry=registry)
+            )
+            binding = resolver._resolve_command(
                 command_call,
                 rename_index if isinstance(event, CommandRename) else workspace_index,
                 required_packages,
@@ -1109,7 +1120,9 @@ def _metadata_binding_kind(
     if annotation.kind is not None:
         return annotation.kind
 
-    inferred_kind = name_tail(metadata_command.name.rsplit(' ', 1)[-1])
+    inferred_kind = name_tail(
+        (metadata_command.alias_target or metadata_command.name).rsplit(' ', 1)[-1]
+    )
     if inferred_kind not in BINDING_KINDS:
         raise RuntimeError(
             f'Metadata command `{metadata_command.name}` requires an explicit binding kind.'

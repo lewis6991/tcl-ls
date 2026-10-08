@@ -26,6 +26,16 @@ command declarations are treated as errors rather than order-dependent
 overrides. Sibling ``foo.meta.tcl`` files are auto-associated with
 ``foo.tcl``/``foo.tm`` only when that match is unambiguous.
 
+File-scoped metadata can record dependencies that use runtime paths. For
+example, ``loader.meta.tcl`` can contain ``meta source ../src/common.tcl``.
+The checker then reads that dependency when it reads ``loader.tcl``. Paths
+are relative to the metadata file; no project Tcl code is executed.
+
+Use ``meta alias tcl_trace trace`` under ``meta module Tcl`` to reuse the
+metadata of a command that the program has aliased or renamed. This also
+reuses its subcommands and annotations, so the declaration stays in sync
+with the original command's metadata.
+
 Basic Metadata Shape
 --------------------
 
@@ -84,6 +94,30 @@ generation:
 ``helper-path`` prints the bundled ``tcl_meta.tcl`` path so a tool-specific
 Tcl shell can ``source`` it directly. ``build-file`` runs the same helper via
 ``tclsh`` and writes a ``.meta.tcl`` file to the requested output path.
+
+By default, generation calls discovered commands with test arguments to infer
+subcommands. Use ``--no-probe`` for tools whose commands must not be invoked:
+
+.. code-block:: tcl
+
+   source /path/printed/by/helper-path/tcl_meta.tcl
+   tcl-meta build-file --no-probe output.meta.tcl
+
+For a separate tool environment, use:
+
+.. code-block:: tcl
+
+   tcl-meta build-file --no-probe --new-only --environment JasperGold jasper.meta.tcl
+
+This inventory excludes commands present in plain Tcl. Keep tool replacements
+in a separate file with ``meta module JasperGold -environment`` and explicit
+``meta override`` declarations. Load that file after the inventory. Select the
+environment with a source comment or a conditional project rule, as described
+in :doc:`user-guide/configuration`.
+
+This mode inspects command definitions only. Tcl procedures keep their declared
+parameters; native commands use a general ``args`` signature. It does not infer
+subcommands. The shell CLI accepts the same option.
 
 When To Reach For Metadata
 --------------------------

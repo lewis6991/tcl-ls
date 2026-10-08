@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, cast
 
+from tcl_lsp.analysis.facts.parameters import ParameterFormat
 from tcl_lsp.analysis.facts.utils import normalize_command_name
 from tcl_lsp.analysis.model import BINDING_KINDS, BindingKind
 from tcl_lsp.cache import metadata_lru_cache
@@ -102,6 +103,7 @@ class MetadataProcedure:
     parameter_literal: str | None
     body_selector: MetadataSelector | None
     body_context: str | None
+    parameter_format: ParameterFormat = 'tcl'
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +136,19 @@ class MetadataCommand:
     options: tuple[MetadataOption, ...]
     subcommands: tuple[str, ...]
     annotations: tuple[MetadataAnnotation, ...]
+    alias_target: str | None = None
+    is_override: bool = False
+    module_name: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MetadataAlias:
+    name: str
+    target: str
+    uri: str
+    name_span: Span
+    documentation: str | None
+    target_module: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,16 +157,93 @@ class MetadataFileSummary:
     module_declaration_count: int
     commands: tuple[MetadataCommand, ...]
     language_extends: tuple[tuple[str, bool], ...]
+    source_paths: tuple[Path, ...]
+    aliases: tuple[MetadataAlias, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class MetadataFileModuleInfo:
     module_name: str | None
     module_declaration_count: int
+    is_environment: bool = False
 
 
-def load_metadata_commands(metadata_path: Path) -> tuple[MetadataCommand, ...]:
-    return metadata_file_summary(metadata_path).commands
+def load_metadata_commands(
+    metadata_path: Path,
+    *,
+    alias_paths: tuple[Path, ...] | None = None,
+) -> tuple[MetadataCommand, ...]:
+    summary = metadata_file_summary(metadata_path)
+    if not summary.aliases:
+        return summary.commands
+    if alias_paths is None:
+        alias_paths = (*DEFAULT_METADATA_REGISTRY.metadata_files(), metadata_path)
+    return _metadata_commands_with_aliases(metadata_path, alias_paths)
+
+
+@metadata_lru_cache(maxsize=None)
+def _metadata_commands_with_aliases(
+    metadata_path: Path, alias_paths: tuple[Path, ...]
+) -> tuple[MetadataCommand, ...]:
+    summary = metadata_file_summary(metadata_path)
+    definitions_by_module: dict[str, dict[str, tuple[MetadataCommand, ...] | MetadataAlias]] = {}
+    for candidate_path in dict.fromkeys(alias_paths):
+        candidate = metadata_file_summary(candidate_path)
+        if candidate.module_name is None:
+            continue
+        definitions = definitions_by_module.setdefault(candidate.module_name, {})
+        commands: dict[str, list[MetadataCommand]] = {}
+        for command in candidate.commands:
+            if command.context_name is None:
+                commands.setdefault(command.name, []).append(command)
+        additions: dict[str, tuple[MetadataCommand, ...] | MetadataAlias] = {
+            name: tuple(overloads) for name, overloads in commands.items()
+        }
+        additions.update({alias.name: alias for alias in candidate.aliases})
+        _discard_overridden_command_trees(definitions, additions)
+        definitions.update(additions)
+
+    def expand(
+        module: str, alias: MetadataAlias, pending: tuple[tuple[str, str], ...]
+    ) -> tuple[MetadataCommand, ...]:
+        key = (module, alias.name)
+        if key in pending:
+            raise RuntimeError(f'Metadata alias cycle at `{module}::{alias.name}`.')
+        target_module = alias.target_module or module
+        definitions = definitions_by_module.get(target_module, {})
+        target = definitions.get(alias.target)
+        if target is None:
+            raise RuntimeError(
+                f'Metadata alias `{alias.name}` has unknown target `{alias.target}`.'
+            )
+        if isinstance(target, MetadataAlias):
+            originals = expand(target_module, target, (*pending, key))
+        else:
+            originals = tuple(
+                command
+                for name, overloads in definitions.items()
+                if name == alias.target or name.startswith(f'{alias.target} ')
+                if not isinstance(overloads, MetadataAlias)
+                for command in overloads
+            )
+        return tuple(
+            replace(
+                command,
+                name=alias.name + command.name[len(alias.target) :],
+                uri=alias.uri,
+                name_span=alias.name_span,
+                documentation=alias.documentation or command.documentation,
+                alias_target=command.alias_target or command.name,
+                module_name=module,
+                is_override=False,
+            )
+            for command in originals
+        )
+
+    assert summary.module_name is not None
+    return summary.commands + tuple(
+        command for alias in summary.aliases for command in expand(summary.module_name, alias, ())
+    )
 
 
 def metadata_file_module_info(metadata_path: Path) -> MetadataFileModuleInfo:
@@ -163,12 +255,33 @@ def metadata_file_summary(metadata_path: Path) -> MetadataFileSummary:
 
 
 @metadata_lru_cache(maxsize=None)
+def metadata_environment_names(metadata_registry: MetadataRegistry) -> frozenset[str]:
+    return frozenset(
+        info.module_name
+        for path in metadata_registry.metadata_files()
+        if (info := metadata_file_module_info(path)).is_environment and info.module_name is not None
+    )
+
+
+def _module_declaration(command: Command) -> tuple[str, bool]:
+    name = word_static_text(command.words[2]) if len(command.words) >= 3 else None
+    if (
+        not name
+        or len(command.words) not in {3, 4}
+        or (len(command.words) == 4 and word_static_text(command.words[3]) != '-environment')
+    ):
+        raise RuntimeError('Metadata module entries must be `meta module name ?-environment?`.')
+    return name, len(command.words) == 4
+
+
+@metadata_lru_cache(maxsize=None)
 def _metadata_file_module_info(
     metadata_path: Path,
 ) -> MetadataFileModuleInfo:
     text = metadata_path.read_text(encoding='utf-8')
     module_name: str | None = None
     module_declaration_count = 0
+    is_environment = False
     needs_parser_fallback = False
     # Cold startup only needs the declared module/package name. Most metadata
     # files use a simple literal `meta module ...` header, so avoid a full Tcl
@@ -179,7 +292,11 @@ def _metadata_file_module_info(
             continue
         if not stripped.startswith(_META_MODULE_PREFIX):
             continue
-        declared_module_name = _simple_meta_module_name(stripped[len(_META_MODULE_PREFIX) :])
+        declaration = stripped[len(_META_MODULE_PREFIX) :]
+        if declaration.endswith(' -environment'):
+            is_environment = True
+            declaration = declaration.removesuffix(' -environment')
+        declared_module_name = _simple_meta_module_name(declaration)
         if declared_module_name is None:
             needs_parser_fallback = True
             break
@@ -196,6 +313,7 @@ def _metadata_file_module_info(
 
         module_name = None
         module_declaration_count = 0
+        is_environment = False
         for command in parse_result.script.commands:
             if len(command.words) < 2:
                 continue
@@ -203,11 +321,7 @@ def _metadata_file_module_info(
                 continue
             if word_static_text(command.words[1]) != 'module':
                 continue
-            declared_module_name = (
-                word_static_text(command.words[2]) if len(command.words) == 3 else None
-            )
-            if declared_module_name is None:
-                raise RuntimeError('Metadata module entries must be `meta module name`.')
+            declared_module_name, is_environment = _module_declaration(command)
             if module_name is None:
                 module_name = declared_module_name
             module_declaration_count += 1
@@ -215,6 +329,7 @@ def _metadata_file_module_info(
     return MetadataFileModuleInfo(
         module_name=module_name,
         module_declaration_count=module_declaration_count,
+        is_environment=is_environment,
     )
 
 
@@ -247,6 +362,8 @@ def _metadata_file_summary(
     module_declaration_count = 0
     commands: list[MetadataCommand] = []
     language_extends: list[tuple[str, bool]] = []
+    source_paths: list[Path] = []
+    aliases: list[MetadataAlias] = []
     for command in parse_result.script.commands:
         if not command.words:
             continue
@@ -254,28 +371,57 @@ def _metadata_file_summary(
             raise RuntimeError(
                 'Metadata top-level entries must be `meta module name`, '
                 '`meta command name {args}`, `meta command name variants { ... }`, '
+                '`meta override name {args}`, `meta source path`, `meta alias name target`, '
                 'or `meta language name { ... }`.'
             )
         if len(command.words) < 2:
             raise RuntimeError(
                 'Metadata top-level entries must be `meta module name`, '
                 '`meta command name {args}`, `meta command name variants { ... }`, '
+                '`meta override name {args}`, `meta source path`, `meta alias name target`, '
                 'or `meta language name { ... }`.'
             )
         entry_kind = word_static_text(command.words[1])
-        if entry_kind == 'module':
-            declared_module_name = (
-                word_static_text(command.words[2]) if len(command.words) == 3 else None
+        if entry_kind == 'alias':
+            names = tuple(word_static_text(word) for word in command.words[2:])
+            if (
+                len(names) not in {2, 4}
+                or any(not name or any(c.isspace() for c in name) for name in names)
+                or (len(names) == 4 and names[2] != '-module')
+            ):
+                raise RuntimeError(
+                    'Metadata aliases must be `meta alias name target ?-module module?` '
+                    'with static names.'
+                )
+            name, target = names[:2]
+            assert name is not None and target is not None
+            aliases.append(
+                MetadataAlias(
+                    name=normalize_command_name(name),
+                    target=normalize_command_name(target),
+                    uri=metadata_uri,
+                    name_span=command.words[2].content_span,
+                    documentation=_command_documentation(command.leading_comments),
+                    target_module=names[3] if len(names) == 4 else None,
+                )
             )
-            if declared_module_name is None:
-                raise RuntimeError('Metadata module entries must be `meta module name`.')
+            continue
+        if entry_kind == 'source':
+            source_path = word_static_text(command.words[2]) if len(command.words) == 3 else None
+            if not source_path:
+                raise RuntimeError('Metadata source entries must be `meta source staticPath`.')
+            source_paths.append((metadata_path.parent / source_path).resolve(strict=False))
+            continue
+        if entry_kind == 'module':
+            declared_module_name, _ = _module_declaration(command)
             if module_name is None:
                 module_name = declared_module_name
             module_declaration_count += 1
             continue
-        if entry_kind == 'command':
+        if entry_kind in {'command', 'override'}:
             commands.extend(
-                _parse_metadata_command_entry(
+                replace(entry, is_override=entry_kind == 'override')
+                for entry in _parse_metadata_command_entry(
                     command,
                     metadata_path=metadata_path,
                     metadata_uri=metadata_uri,
@@ -294,18 +440,52 @@ def _metadata_file_summary(
         raise RuntimeError(
             'Metadata top-level entries must be `meta module name`, '
             '`meta command name {args}`, `meta command name variants { ... }`, '
+            '`meta override name {args}`, `meta source path`, `meta alias name target`, '
             'or `meta language name { ... }`.'
         )
 
     metadata_commands = tuple(commands)
     if metadata_commands:
         metadata_commands = _commands_with_derived_subcommands(metadata_commands)
+        metadata_commands = tuple(
+            replace(command, module_name=module_name) for command in metadata_commands
+        )
+    if module_name is None and any(command.is_override for command in metadata_commands):
+        raise RuntimeError('Metadata overrides require a module declaration.')
+    if source_paths and module_name is not None:
+        raise RuntimeError('Metadata source entries require file-scoped metadata without a module.')
+    if aliases and module_name is None:
+        raise RuntimeError('Metadata aliases require a module declaration.')
+    declared_names = {command.name for command in commands if command.context_name is None}
+    for alias in aliases:
+        if alias.name in declared_names:
+            raise RuntimeError(f'Conflicting metadata declarations for `{alias.name}`.')
+        declared_names.add(alias.name)
     return MetadataFileSummary(
         module_name=module_name,
         module_declaration_count=module_declaration_count,
         commands=metadata_commands,
         language_extends=tuple(language_extends),
+        source_paths=tuple(source_paths),
+        aliases=tuple(aliases),
     )
+
+
+@metadata_lru_cache(maxsize=None)
+def file_scoped_metadata_sources(
+    metadata_registry: MetadataRegistry,
+) -> dict[str, tuple[Path, ...]]:
+    sources: dict[str, tuple[Path, ...]] = {}
+    for _, metadata_files in metadata_registry.metadata_file_layers():
+        layer_sources: dict[str, list[Path]] = {}
+        for metadata_path in metadata_files:
+            summary = metadata_file_summary(metadata_path)
+            if not summary.source_paths:
+                continue
+            for lookup_name in metadata_lookup_names(metadata_path):
+                layer_sources.setdefault(lookup_name, []).extend(summary.source_paths)
+        sources.update({name: tuple(dict.fromkeys(paths)) for name, paths in layer_sources.items()})
+    return sources
 
 
 def all_metadata_commands(
@@ -319,7 +499,9 @@ def all_metadata_commands(
 def _all_metadata_commands(metadata_registry: MetadataRegistry) -> tuple[MetadataCommand, ...]:
     commands: list[MetadataCommand] = []
     for metadata_path in metadata_registry.metadata_files():
-        commands.extend(load_metadata_commands(metadata_path))
+        commands.extend(
+            load_metadata_commands(metadata_path, alias_paths=metadata_registry.metadata_files())
+        )
     return tuple(commands)
 
 
@@ -359,7 +541,7 @@ def _file_scoped_annotated_metadata_commands(
         layer_commands_by_lookup_name: dict[str, dict[str, MetadataCommand]] = {}
         for metadata_path in layer_paths:
             override_names, annotated_commands = _file_scoped_annotated_entries_for_file(
-                metadata_path
+                metadata_path, alias_paths=metadata_registry.metadata_files()
             )
             if not override_names:
                 continue
@@ -400,10 +582,12 @@ def _file_scoped_annotated_metadata_commands(
 
 def _file_scoped_annotated_entries_for_file(
     metadata_path: Path,
+    *,
+    alias_paths: tuple[Path, ...],
 ) -> tuple[tuple[str, ...], dict[str, MetadataCommand]]:
     override_entries: dict[str, MetadataCommand | None] = {}
     annotated: dict[str, MetadataCommand] = {}
-    for metadata_command in load_metadata_commands(metadata_path):
+    for metadata_command in load_metadata_commands(metadata_path, alias_paths=alias_paths):
         if metadata_command.context_name is not None:
             continue
 
@@ -1049,6 +1233,7 @@ def _parse_procedure_annotation(command: Command, command_name: str) -> Metadata
     member_name_literal: str | None | object = _MISSING
     parameter_selector: MetadataSelector | None | object = _MISSING
     parameter_literal: str | None | object = _MISSING
+    parameter_format: ParameterFormat = 'tcl'
     body_selector: MetadataSelector | None = None
     body_context: str | None = None
 
@@ -1073,12 +1258,9 @@ def _parse_procedure_annotation(command: Command, command_name: str) -> Metadata
                 raise RuntimeError(
                     f'Procedure annotations for `{command_name}` may only declare one `params`.'
                 )
-            parameter_selector, parameter_literal = _parse_procedure_value(
+            parameter_selector, parameter_literal, parameter_format = parse_procedure_parameters(
                 nested_words[1:],
                 command_name=command_name,
-                role='params',
-                allow_literal=True,
-                allow_none=True,
             )
             continue
         if nested_name == 'body':
@@ -1128,7 +1310,23 @@ def _parse_procedure_annotation(command: Command, command_name: str) -> Metadata
         parameter_literal=cast(str | None, parameter_literal),
         body_selector=body_selector,
         body_context=body_context,
+        parameter_format=parameter_format,
     )
+
+
+def parse_procedure_parameters(
+    words: list[str] | tuple[str, ...], *, command_name: str
+) -> tuple[MetadataSelector | None, str | None, ParameterFormat]:
+    parameter_format: ParameterFormat = 'tcl'
+    if len(words) >= 4 and words[0] == 'select' and words[-2] == 'format':
+        if words[-1] not in {'tcl', 'tepam', 'tepam-args'}:
+            raise RuntimeError(f'Unknown procedure parameter format `{words[-1]}`.')
+        parameter_format = cast(ParameterFormat, words[-1])
+        words = words[:-2]
+    selector, literal = _parse_procedure_value(
+        words, command_name=command_name, role='params', allow_literal=True, allow_none=True
+    )
+    return selector, literal, parameter_format
 
 
 def _parse_plugin_annotation(

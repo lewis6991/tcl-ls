@@ -17,7 +17,6 @@ from tcl_lsp.analysis.metadata_commands import (
     MetadataBind,
     MetadataContext,
     MetadataPackage,
-    MetadataPlugin,
     MetadataProcedure,
     MetadataSelector,
     MetadataSource,
@@ -218,7 +217,14 @@ def test_core_metadata_models_meta_as_ensemble() -> None:
     assert meta_language_builtin.metadata_path_name == 'meta.meta.tcl'
     assert meta_module_builtin.metadata_path_name == 'meta.meta.tcl'
 
-    assert meta_builtin.overloads[0].subcommands == ('module', 'command', 'language')
+    assert meta_builtin.overloads[0].subcommands == (
+        'module',
+        'source',
+        'alias',
+        'override',
+        'command',
+        'language',
+    )
 
     assert tuple(overload.signature for overload in meta_command_builtin.overloads) == (
         'meta command {name shape}',
@@ -349,7 +355,7 @@ def test_tcloo_metadata_parses_embedded_context_annotations() -> None:
     assert method_body_command.context_extends == 'tcl'
 
 
-def test_tepam_metadata_parses_plugin_annotations() -> None:
+def test_tepam_metadata_uses_the_shared_parameter_format() -> None:
     metadata_path = bundled_metadata_dir() / Path('tcllib/tepam.meta.tcl')
     commands = load_metadata_commands(metadata_path)
 
@@ -358,15 +364,12 @@ def test_tepam_metadata_parses_plugin_annotations() -> None:
         for command in commands
         if command.context_name is None and command.name == 'tepam::procedure'
     )
-    plugin_annotation = next(
+    procedure_annotation = next(
         annotation
         for annotation in procedure_command.annotations
-        if isinstance(annotation, MetadataPlugin)
+        if isinstance(annotation, MetadataProcedure)
     )
-    assert plugin_annotation.script_path == (
-        bundled_metadata_dir() / Path('tcllib/tepam.tcl')
-    ).resolve(strict=False)
-    assert plugin_annotation.proc_name == '::tcl_lsp::plugins::tepam::statementWords'
+    assert procedure_annotation.parameter_format == 'tepam'
 
 
 def test_builtin_metadata_ignores_context_commands() -> None:
@@ -389,11 +392,13 @@ def test_builtin_command_core_lookup_only_loads_tcl_package(
         *,
         package_name: str,
         metadata_path_layers: tuple[tuple[Path, ...], ...],
+        alias_paths: tuple[Path, ...],
     ) -> dict[str, builtins_module.BuiltinCommand]:
         loaded_packages.append(package_name)
         return original(
             package_name=package_name,
             metadata_path_layers=metadata_path_layers,
+            alias_paths=alias_paths,
         )
 
     clear_cache_group('metadata')
@@ -417,11 +422,13 @@ def test_builtin_command_package_lookup_only_loads_requested_package_set(
         *,
         package_name: str,
         metadata_path_layers: tuple[tuple[Path, ...], ...],
+        alias_paths: tuple[Path, ...],
     ) -> dict[str, builtins_module.BuiltinCommand]:
         loaded_packages.append(package_name)
         return original(
             package_name=package_name,
             metadata_path_layers=metadata_path_layers,
+            alias_paths=alias_paths,
         )
 
     clear_cache_group('metadata')
@@ -445,11 +452,13 @@ def test_annotated_metadata_lookup_only_loads_requested_package_set(
         *,
         package_name: str,
         metadata_path_layers: tuple[tuple[Path, ...], ...],
+        alias_paths: tuple[Path, ...],
     ) -> dict[str, Any]:
         loaded_packages.append(package_name)
         return original(
             package_name=package_name,
             metadata_path_layers=metadata_path_layers,
+            alias_paths=alias_paths,
         )
 
     clear_cache_group('metadata')
@@ -478,11 +487,13 @@ def test_is_builtin_package_does_not_materialize_builtin_command_packages(
         *,
         package_name: str,
         metadata_path_layers: tuple[tuple[Path, ...], ...],
+        alias_paths: tuple[Path, ...],
     ) -> dict[str, builtins_module.BuiltinCommand]:
         loaded_packages.append(package_name)
         return original(
             package_name=package_name,
             metadata_path_layers=metadata_path_layers,
+            alias_paths=alias_paths,
         )
 
     def fail_metadata_file_summary(_metadata_path: Path) -> Any:

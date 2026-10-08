@@ -162,15 +162,22 @@ def _consume_static_command_substitution(
     return None
 
 
-def split_tcl_list(text: str, start_position: Position) -> list[ListItem]:
+def split_tcl_list(text: str, start_position: Position, *, strict: bool = False) -> list[ListItem]:
     items: list[ListItem] = []
     index = 0
     position = start_position
 
     while index < len(text):
-        while index < len(text) and text[index].isspace():
-            position = position.advance(text[index])
-            index += 1
+        while index < len(text):
+            if text[index].isspace():
+                position = position.advance(text[index])
+                index += 1
+            elif text.startswith('\\\n', index):
+                # Tcl replaces line continuations even inside braced words.
+                position = position.advance(text[index : index + 2])
+                index += 2
+            else:
+                break
         if index >= len(text):
             break
 
@@ -178,38 +185,29 @@ def split_tcl_list(text: str, start_position: Position) -> list[ListItem]:
         current_char = text[index]
         if current_char == '{':
             raw_text, consumed, position, content_start = _consume_braced_item(
-                text[index:], position
+                text[index:], position, strict=strict
             )
-            index += consumed
-            items.append(
-                ListItem(
-                    text=raw_text,
-                    span=Span(start=item_start_position, end=position),
-                    content_start=content_start,
-                )
-            )
-            continue
-        if current_char == '"':
+        elif current_char == '"':
             raw_text, consumed, position, content_start = _consume_quoted_item(
-                text[index:], position
+                text[index:], position, strict=strict
             )
-            index += consumed
-            items.append(
-                ListItem(
-                    text=raw_text,
-                    span=Span(start=item_start_position, end=position),
-                    content_start=content_start,
-                )
-            )
-            continue
-
-        item_text, consumed, position = _consume_plain_item(text[index:], position)
+        else:
+            raw_text, consumed, position = _consume_plain_item(text[index:], position)
+            content_start = item_start_position
         index += consumed
+        if (
+            strict
+            and current_char in {'{', '"'}
+            and index < len(text)
+            and not text[index].isspace()
+            and not text.startswith('\\\n', index)
+        ):
+            raise ValueError('Grouped list element followed by non-space character.')
         items.append(
             ListItem(
-                text=item_text,
+                text=raw_text,
                 span=Span(start=item_start_position, end=position),
-                content_start=item_start_position,
+                content_start=content_start,
             )
         )
 
@@ -217,7 +215,7 @@ def split_tcl_list(text: str, start_position: Position) -> list[ListItem]:
 
 
 def _consume_braced_item(
-    text: str, start_position: Position
+    text: str, start_position: Position, *, strict: bool = False
 ) -> tuple[str, int, Position, Position]:
     index = 0
     position = start_position
@@ -258,11 +256,13 @@ def _consume_braced_item(
         position = position.advance(current_char)
         index += 1
 
+    if strict:
+        raise ValueError('Unmatched open brace in list.')
     return ''.join(parts), index, position, content_start
 
 
 def _consume_quoted_item(
-    text: str, start_position: Position
+    text: str, start_position: Position, *, strict: bool = False
 ) -> tuple[str, int, Position, Position]:
     index = 0
     position = start_position
@@ -278,12 +278,15 @@ def _consume_quoted_item(
             index += 1
             return ''.join(parts), index, position, content_start
         if current_char == '\\' and index + 1 < len(text):
+            position = position.advance(current_char)
             index += 1
             current_char = text[index]
         parts.append(current_char)
         position = position.advance(current_char)
         index += 1
 
+    if strict:
+        raise ValueError('Unmatched open quote in list.')
     return ''.join(parts), index, position, content_start
 
 
@@ -292,8 +295,11 @@ def _consume_plain_item(text: str, start_position: Position) -> tuple[str, int, 
     position = start_position
     parts: list[str] = []
     while index < len(text) and not text[index].isspace():
+        if text.startswith('\\\n', index):
+            break
         current_char = text[index]
         if current_char == '\\' and index + 1 < len(text):
+            position = position.advance(current_char)
             index += 1
             current_char = text[index]
         parts.append(current_char)

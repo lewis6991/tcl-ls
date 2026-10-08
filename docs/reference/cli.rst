@@ -28,6 +28,10 @@ Options:
 ``--fail-on-diagnostics``
    Exit with status 1 if any diagnostics are reported.
 
+``--environment NAME``
+   Select an initial tool metadata environment for all checked files. Comment
+   directives and conditional project rules can add environments within a file.
+
 ``-j, --threads N``
    Analyze source files with ``N`` worker processes. The default is 8.
 
@@ -50,7 +54,7 @@ Usage:
 .. code-block:: text
 
    tcl-meta helper-path
-   tcl-meta build-file output.meta.tcl
+   tcl-meta build-file [--no-probe] [--new-only] [--environment NAME] output.meta.tcl
 
 Subcommands:
 
@@ -59,6 +63,13 @@ Subcommands:
 
 ``build-file``
    Run the bundled helper through ``tclsh`` and write a ``.meta.tcl`` file.
+   Add ``--no-probe`` to inspect definitions without calling discovered commands
+   to infer their subcommands. This option also works when the helper is sourced
+   inside a tool Tcl shell.
+
+   ``--new-only`` omits commands present in a plain Tcl interpreter, including
+   commands replaced by the tool. ``--environment NAME`` writes a named tool
+   module with ``-environment``. Without it, output belongs to the ``Tcl`` module.
+   Keep reviewed overrides in a separate metadata file loaded after this inventory.
 
 ``tcl-meta`` requires ``tclsh`` to be present on ``PATH``.
-

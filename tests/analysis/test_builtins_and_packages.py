@@ -108,6 +108,29 @@ def test_analysis_collects_tcloo_methods_from_definition_bodies(parser: Parser) 
     assert analysis.diagnostics == ()
 
 
+def test_analysis_resolves_created_class_commands_without_explicit_package_require(
+    parser: Parser,
+) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///tcloo_classes.tcl',
+        'namespace eval demo {\n'
+        '    oo::class create Widget {method greet {} {return hello}}\n'
+        '    Widget create instance\n'
+        '}\n'
+        'demo::Widget destroy\n'
+        'demo::Missing destroy\n',
+    )
+
+    assert {proc.qualified_name for proc in snapshot.facts.procedures} == {
+        '::demo::Widget',
+        '::demo::Widget method greet',
+    }
+    assert [(d.code, d.message) for d in snapshot.analysis.diagnostics] == [
+        ('unresolved-command', 'Unresolved command `demo::Missing`.'),
+    ]
+
+
 def test_analysis_collects_inline_tcloo_define_commands(parser: Parser) -> None:
     snapshot = _analyze(
         parser,
@@ -417,12 +440,15 @@ def test_analysis_collects_tepam_procedures_from_package_metadata(parser: Parser
         '    if {$verbose} {\n'
         '        puts verbose\n'
         '    }\n'
-        '}\n',
+        '}\n'
+        'tepam::procedure init {} {}\n'
+        'init\n',
     )
     facts = snapshot.facts
     analysis = snapshot.analysis
 
     assert '::warn' in {procedure.qualified_name for procedure in facts.procedures}
+    assert '::init' in {procedure.qualified_name for procedure in facts.procedures}
 
     resolution_by_name = {
         resolution.reference.name: resolution.uncertainty.state

@@ -4,15 +4,31 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tcl_lsp.parser import Parser, word_static_text
+from tcl_lsp.parser.expr import parse_expr
 
 _CONFIG_FILE_NAME = 'tcllsrc.tcl'
 _LIBRARY_PATH_COMMANDS = frozenset({'lib-path', 'library-path'})
 
 
 @dataclass(frozen=True, slots=True)
+class EnvironmentRule:
+    name: str
+    condition: str
+
+
+@dataclass(frozen=True, slots=True)
 class _ConfiguredPaths:
     plugin_paths: tuple[Path, ...]
     library_paths: tuple[Path, ...]
+    environment_rules: tuple[EnvironmentRule, ...] = ()
+
+
+def configured_environment_rules(path: Path) -> tuple[EnvironmentRule, ...]:
+    return tuple(
+        rule
+        for config_path in config_files(path)
+        for rule in load_config_paths(config_path).environment_rules
+    )
 
 
 def configured_plugin_paths(path: Path) -> tuple[Path, ...]:
@@ -58,11 +74,20 @@ def load_config_paths(config_path: Path) -> _ConfiguredPaths:
 
     plugin_paths: dict[Path, None] = {}
     library_paths: dict[Path, None] = {}
+    environment_rules: list[EnvironmentRule] = []
     for command in parse_result.script.commands:
         command_name = word_static_text(command.words[0]) if command.words else None
         if command_name is None:
             raise RuntimeError(f'`{_CONFIG_FILE_NAME}` commands must use static command names.')
 
+        if command_name == 'environment':
+            values = tuple(word_static_text(word) for word in command.words[1:])
+            if len(values) != 3 or not values[0] or values[1] != 'when' or not values[2]:
+                raise RuntimeError('Environment rules must be `environment name when {condition}`.')
+            if parse_expr(values[2]) is None:
+                raise RuntimeError(f'Invalid environment condition for `{values[0]}`.')
+            environment_rules.append(EnvironmentRule(values[0], values[2]))
+            continue
         if command_name == 'plugin-path':
             target_paths = plugin_paths
         elif command_name in _LIBRARY_PATH_COMMANDS:
@@ -87,11 +112,13 @@ def load_config_paths(config_path: Path) -> _ConfiguredPaths:
     return _ConfiguredPaths(
         plugin_paths=tuple(plugin_paths),
         library_paths=tuple(library_paths),
+        environment_rules=tuple(environment_rules),
     )
 
 
 __all__ = [
     'config_files',
+    'configured_environment_rules',
     'configured_library_paths',
     'configured_plugin_paths',
     'load_config_paths',

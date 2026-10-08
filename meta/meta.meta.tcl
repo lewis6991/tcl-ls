@@ -9,7 +9,7 @@
 meta module Tcl
 #
 # Top-level declarations:
-#   meta module name
+#   meta module name ?-environment?
 #   meta command name {shape}
 #   meta command name {shape} {
 #       clause ...
@@ -152,6 +152,8 @@ meta module Tcl
 #       params select selector | literal parameterList | -
 #           `select` reads one argument whose contents use ordinary Tcl
 #           procedure parameter-list syntax.
+#           Add `format tepam` to read a Tepam attribute list, or
+#           `format tepam-args` to read its argument definitions or names.
 #           `literal` uses ordinary Tcl procedure parameter-list syntax:
 #           names, `{name default}` items, and optional trailing `args`.
 #           `-` means the emitted procedure has no parameters.
@@ -172,8 +174,8 @@ meta module Tcl
 #       source selector caller|definition
 #       procedure { ... }
 #   Plugin `procedure` effects reuse the declarative `name`/`params`/`body`/
-#   `language` fields and may additionally include `_params-source select
-#   selector` when literal parameters need a source anchor. Plugin selectors
+#   `language` fields, including parameter formats. Older plugins may use
+#   `_params-source select selector` to anchor literal parameters. Plugin selectors
 #   apply to the full command word list and do not support `after-options`.
 #
 # extends tcl
@@ -191,7 +193,28 @@ meta command meta {subcommand args} {
     # Declare the builtin package or module represented by this metadata file.
     # Files with a `meta module` declaration are indexed as bundled package
     # metadata.
-    command module {<name>}
+    command module variants {
+        form {<name>}
+        form {<name> =-environment}
+    }
+
+    # Record a fixed dependency of the associated Tcl file. Resolve the path
+    # relative to this metadata file. Only valid without a module declaration.
+    command source {<path>}
+
+    # Reuse another command's metadata, including its subcommands.
+    # The target belongs to the same module unless -module selects another.
+    command alias variants {
+        form {<name> <target>}
+        form {<name> <target> =-module <packageName>}
+    }
+
+    # Explicitly replace a command from Tcl or a lower environment.
+    command override variants {
+        form {<name> <shape>}
+        form {<name> <groupedShape> <body>} {enter meta-command-body body 3}
+        form {<name> =variants <body>} {enter meta-command-body body 3}
+    }
 
     # Declare metadata for a command or command prefix.
     # Use `meta command name {shape}` for single-form commands, or
@@ -294,6 +317,9 @@ meta language meta-procedure-body {
 
     command params variants {
         form {=select <procedureSelector>}
+        form {=select <procedureSelector> =format =tcl}
+        form {=select <procedureSelector> =format =tepam}
+        form {=select <procedureSelector> =format =tepam-args}
         form {=literal <value>}
         form {=-}
     }

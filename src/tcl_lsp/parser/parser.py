@@ -130,6 +130,7 @@ class _ParserImplementation:
     def _parse_script(self, stop_char: str | None) -> Script:
         start = self._current_position()
         commands: list[Command] = []
+        comments: list[Token] = []
         at_command_start = True
         pending_comments: list[Token] = []
         previous_token_was_separator = False
@@ -154,7 +155,9 @@ class _ParserImplementation:
                 continue
 
             if at_command_start and current_char == '#':
-                pending_comments.append(self._parse_comment())
+                comment = self._parse_comment()
+                comments.append(comment)
+                pending_comments.append(comment)
                 previous_token_was_separator = False
                 at_command_start = True
                 continue
@@ -167,7 +170,9 @@ class _ParserImplementation:
             at_command_start = False
 
         return Script(
-            span=Span(start=start, end=self._current_position()), commands=tuple(commands)
+            span=Span(start=start, end=self._current_position()),
+            commands=tuple(commands),
+            comments=tuple(comments),
         )
 
     def _parse_command(self, stop_char: str | None, leading_comments: tuple[Token, ...]) -> Command:

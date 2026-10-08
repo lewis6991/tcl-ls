@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, cast
 
+from tcl_lsp.analysis.facts.parameters import ParameterFormat
 from tcl_lsp.analysis.facts.parsing import split_tcl_list
 from tcl_lsp.analysis.metadata_commands import (
     MetadataBind,
@@ -22,6 +23,7 @@ from tcl_lsp.analysis.metadata_commands import (
     MetadataRef,
     MetadataSelector,
     MetadataSource,
+    parse_procedure_parameters,
     parse_selector_tokens,
     validate_context_body_selector,
     validate_context_owner_selector,
@@ -446,6 +448,7 @@ def _parse_plugin_procedure_effect(command: Command) -> PluginProcedureEffect:
     member_name_literal: str | None | object = _MISSING
     parameter_selector: MetadataSelector | None | object = _MISSING
     parameter_literal: str | None | object = _MISSING
+    parameter_format: ParameterFormat = 'tcl'
     parameter_source_selector: MetadataSelector | None = None
     body_selector: MetadataSelector | None = None
     body_context: str | None = None
@@ -468,12 +471,12 @@ def _parse_plugin_procedure_effect(command: Command) -> PluginProcedureEffect:
                 raise RuntimeError(
                     'Procedure plugin effects may only declare one `params` setting.'
                 )
-            parameter_selector, parameter_literal = _parse_plugin_procedure_value(
+            parameter_selector, parameter_literal, parameter_format = parse_procedure_parameters(
                 command_words[1:],
-                key='params',
-                allow_literal=True,
-                allow_none=True,
+                command_name='plugin effect',
             )
+            if parameter_selector is not None:
+                _validate_plugin_selector(parameter_selector, key='params')
             continue
         if nested_name == '_params-source':
             if parameter_source_selector is not None:
@@ -539,6 +542,7 @@ def _parse_plugin_procedure_effect(command: Command) -> PluginProcedureEffect:
             parameter_literal=cast(str | None, parameter_literal),
             body_selector=body_selector,
             body_context=body_context,
+            parameter_format=parameter_format,
         ),
         parameter_source_selector=parameter_source_selector,
     )

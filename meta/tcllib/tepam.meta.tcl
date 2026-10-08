@@ -3,5 +3,9 @@ meta module tepam
 
 # Declare a procedure using Tepam's attribute DSL.
 meta command tepam::procedure {name attributes body} {
-    plugin tepam.tcl ::tcl_lsp::plugins::tepam::statementWords
+    procedure {
+        name select 1
+        params select 2 format tepam
+        body select 3
+    }
 }

@@ -23,6 +23,7 @@ from tcl_lsp.parser.model import (
     ParseResult,
     QuotedWord,
     Script,
+    Token,
     VariableSubstitution,
     Word,
 )
@@ -30,7 +31,9 @@ from tcl_lsp.parser.model import (
 
 @dataclass(frozen=True, slots=True)
 class LoweredScript:
+    span: Span
     commands: tuple[LoweredCommand, ...]
+    comments: tuple[Token, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -769,7 +772,9 @@ class _Lowerer:
 
     def lower_script(self, script: Script) -> LoweredScript:
         return LoweredScript(
-            commands=tuple(self._lower_command(command) for command in script.commands)
+            span=script.span,
+            comments=script.comments,
+            commands=tuple(self._lower_command(command) for command in script.commands),
         )
 
     def _lower_command(self, command: Command) -> LoweredCommand:

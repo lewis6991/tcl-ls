@@ -6,6 +6,10 @@ meta module TclOO
 meta command oo::class {subcommand args} {
     # Create a new TclOO class, optionally evaluating a definition script.
     command create {className ?definitionScript?} {
+        procedure {
+            name select 1
+            params literal {args}
+        }
         enter tcloo-definition body 2 owner 1
     }
 }

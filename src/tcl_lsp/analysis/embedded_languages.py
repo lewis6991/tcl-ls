@@ -6,7 +6,13 @@ from itertools import pairwise
 from typing import Any
 
 from tcl_lsp.analysis.arity import metadata_signature_arity
-from tcl_lsp.analysis.facts.utils import namespace_for_name, normalize_command_name, qualify_name
+from tcl_lsp.analysis.builtins import builtin_commands
+from tcl_lsp.analysis.facts.utils import (
+    command_lookup_names,
+    namespace_for_name,
+    normalize_command_name,
+    qualify_name,
+)
 from tcl_lsp.analysis.metadata_commands import (
     MetadataBind,
     MetadataCommand,
@@ -14,6 +20,7 @@ from tcl_lsp.analysis.metadata_commands import (
     MetadataProcedure,
     all_metadata_language_extends,
     load_metadata_commands,
+    metadata_environment_names,
     scan_command_options,
     select_argument_indices,
 )
@@ -113,6 +120,18 @@ def _context_entry_command_index(
         for metadata_command in layer_commands:
             if metadata_command.context_name is not None:
                 continue
+            module = metadata_command.module_name
+            if (
+                module in metadata_environment_names(metadata_registry)
+                and module not in metadata_registry.environments
+            ):
+                continue
+            if module is not None and module in metadata_registry.environments:
+                active = builtin_commands(metadata_registry=metadata_registry).get(
+                    metadata_command.name
+                )
+                if active is None or active.package != module:
+                    continue
             layer_commands_by_name.setdefault(metadata_command.name, []).append(metadata_command)
 
         _discard_overridden_command_trees(commands_by_name, layer_commands_by_name)
@@ -168,7 +187,11 @@ def _metadata_commands_by_layer(
     for _, layer_paths in metadata_registry.metadata_file_layers():
         commands: list[MetadataCommand] = []
         for metadata_path in layer_paths:
-            commands.extend(load_metadata_commands(metadata_path))
+            commands.extend(
+                load_metadata_commands(
+                    metadata_path, alias_paths=metadata_registry.metadata_files()
+                )
+            )
         if commands:
             layer_commands.append(tuple(commands))
     return tuple(layer_commands)
@@ -254,6 +277,7 @@ def match_embedded_language_entries(
     matched = _match_metadata_command(
         command,
         _context_entry_command_index(metadata_registry),
+        current_namespace=current_namespace,
     )
     if matched is None:
         return ()
@@ -321,29 +345,37 @@ def contextual_resolution_reason(
 def _match_metadata_command(
     command: Command,
     commands_by_name: dict[str, tuple[MetadataCommand, ...]],
+    *,
+    current_namespace: str = '::',
 ) -> MatchedEmbeddedCommand | None:
-    static_prefix_parts: list[str] = []
-    matched: MatchedEmbeddedCommand | None = None
-    for index, word in enumerate(command.words):
-        static_text = word_static_text(word)
-        if static_text is None:
-            break
-        if index == 0:
-            static_text = normalize_command_name(static_text)
-        static_prefix_parts.append(static_text)
-        candidates = commands_by_name.get(' '.join(static_prefix_parts))
-        if candidates is None:
-            continue
-        metadata_command = _matching_metadata_command(
-            candidates,
-            command.words[index + 1 :],
-        )
-        if metadata_command is None:
-            continue
-        matched = MatchedEmbeddedCommand(
-            metadata_command=metadata_command, prefix_word_count=index + 1
-        )
-    return matched
+    if not command.words:
+        return None
+    root_text = word_static_text(command.words[0])
+    if root_text is None:
+        return None
+    for root_name in command_lookup_names(root_text, current_namespace):
+        static_prefix_parts: list[str] = []
+        matched: MatchedEmbeddedCommand | None = None
+        for index, word in enumerate(command.words):
+            static_text = root_name if index == 0 else word_static_text(word)
+            if static_text is None:
+                break
+            static_prefix_parts.append(static_text)
+            candidates = commands_by_name.get(' '.join(static_prefix_parts))
+            if candidates is None:
+                continue
+            metadata_command = _matching_metadata_command(
+                candidates,
+                command.words[index + 1 :],
+            )
+            if metadata_command is None:
+                continue
+            matched = MatchedEmbeddedCommand(
+                metadata_command=metadata_command, prefix_word_count=index + 1
+            )
+        if matched is not None:
+            return matched
+    return None
 
 
 def embedded_language_entry_for_annotation(

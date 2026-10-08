@@ -21,7 +21,7 @@ def test_meta_tools_reexports_meta_helpers() -> None:
     assert meta_tools.bundled_tcl_meta_path is meta.bundled_tcl_meta_path
 
 
-def _build_metadata_with_tcl(tmp_path: Path, source_text: str) -> str:
+def _build_metadata_with_tcl(tmp_path: Path, source_text: str, *, options: str = '') -> str:
     tclsh_path = shutil.which('tclsh')
     if tclsh_path is None:
         pytest.skip('tclsh is required for bundled Tcl helper tests')
@@ -29,7 +29,7 @@ def _build_metadata_with_tcl(tmp_path: Path, source_text: str) -> str:
     output_path = tmp_path / 'tool.meta.tcl'
     script_path = tmp_path / 'script.tcl'
     script_path.write_text(
-        f'source [lindex $argv 0]\n{source_text}\ntcl-meta build-file [lindex $argv 1]\n',
+        f'source [lindex $argv 0]\n{source_text}\ntcl-meta build-file {options} [lindex $argv 1]\n',
         encoding='utf-8',
     )
 
@@ -61,7 +61,12 @@ def test_helper_path_prints_existing_bundled_script(capsys: pytest.CaptureFixtur
     assert helper_path.is_file()
 
 
-def test_build_file_dispatches_to_bundled_tcl_helper(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    'options', [[], ['--no-probe'], ['--no-probe', '--new-only', '--environment', 'Tool']]
+)
+def test_build_file_dispatches_to_bundled_tcl_helper(
+    monkeypatch: pytest.MonkeyPatch, options: list[str]
+) -> None:
     calls: list[list[str]] = []
 
     def fake_which(name: str) -> str | None:
@@ -77,11 +82,17 @@ def test_build_file_dispatches_to_bundled_tcl_helper(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(subprocess, 'run', fake_run)
 
     output_path = Path('/tmp/generated.meta.tcl')
-    result = meta.main(['build-file', str(output_path)])
+    result = meta.main(['build-file', *options, str(output_path)])
 
     assert result == 0
     assert calls == [
-        ['/usr/bin/tclsh', str(meta.bundled_tcl_meta_path()), 'build-file', str(output_path)]
+        [
+            '/usr/bin/tclsh',
+            str(meta.bundled_tcl_meta_path()),
+            'build-file',
+            *options,
+            str(output_path),
+        ]
     ]
 
 
@@ -113,6 +124,32 @@ def test_bundled_tcl_helper_derives_proc_signatures(tmp_path: Path) -> None:
     metadata = _build_metadata_with_tcl(tmp_path, 'proc demo {name {title friend} args} {}')
 
     assert metadata == _METADATA_HEADER + 'meta command demo {name ? title ? args}\n'
+
+
+def test_inspection_only_generation_does_not_execute_discovered_commands(tmp_path: Path) -> None:
+    metadata = _build_metadata_with_tcl(
+        tmp_path,
+        'proc demo {name {title friend} args} {exit 9}\ninterp alias {} aliasDemo {} demo\n',
+        options='--no-probe',
+    )
+
+    assert metadata == (
+        _METADATA_HEADER
+        + 'meta command aliasDemo args\n'
+        + 'meta command demo {name ? title ? args}\n'
+    )
+
+
+def test_tool_inventory_excludes_replaced_tcl_commands(tmp_path: Path) -> None:
+    metadata = _build_metadata_with_tcl(
+        tmp_path,
+        'rename clock {}\nproc clock {args} {exit 9}\nproc prove {args} {exit 9}\n',
+        options='--no-probe --new-only --environment ExampleTool',
+    )
+    assert metadata == (
+        _METADATA_HEADER.replace('meta module Tcl', 'meta module ExampleTool -environment')
+        + 'meta command prove args\n'
+    )
 
 
 def test_bundled_tcl_helper_keeps_generic_signatures_for_non_proc_commands(

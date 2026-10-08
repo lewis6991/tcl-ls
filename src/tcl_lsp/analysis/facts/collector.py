@@ -7,6 +7,7 @@ from lsprotocol import types
 
 from tcl_lsp.analysis.arity import proc_parameter_arity
 from tcl_lsp.analysis.builtins import (
+    annotated_metadata_commands_by_package,
     annotated_metadata_commands_for_packages,
     builtin_commands_for_packages,
     canonical_builtin_package_name,
@@ -22,6 +23,7 @@ from tcl_lsp.analysis.embedded_languages import (
     match_embedded_language_entries,
     resolve_embedded_language_entries,
 )
+from tcl_lsp.analysis.environments import EnvironmentScope, active_environments
 from tcl_lsp.analysis.facts.lowering import (
     LoweredCatchCommand,
     LoweredCommand,
@@ -40,10 +42,12 @@ from tcl_lsp.analysis.facts.lowering import (
     lower_parse_result,
     lower_script,
 )
+from tcl_lsp.analysis.facts.parameters import procedure_parameter_items
 from tcl_lsp.analysis.facts.parsing import ListItem, is_simple_name, split_tcl_list
 from tcl_lsp.analysis.facts.utils import (
     body_span,
     command_documentation,
+    command_lookup_names,
     command_rename_symbol_id,
     extract_ifneeded_source_uri,
     extract_static_source_uri,
@@ -78,6 +82,7 @@ from tcl_lsp.analysis.metadata_commands import (
     MetadataRef,
     MetadataSelector,
     MetadataSource,
+    metadata_environment_names,
     select_argument_indices,
 )
 from tcl_lsp.analysis.model import (
@@ -108,10 +113,12 @@ from tcl_lsp.parser.model import (
     LiteralText,
     ParseResult,
     Script,
+    Token,
     VariableSubstitution,
     Word,
 )
 from tcl_lsp.plugins.host import PluginProcedureEffect, TclPluginHost
+from tcl_lsp.project.config import configured_environment_rules
 from tcl_lsp.project.paths import source_id_to_path
 
 _CONFLICTING_EMBEDDED_LANGUAGE_CODE = 'conflicting-embedded-language'
@@ -203,6 +210,9 @@ class _FactCollector:
         '_command_renames',
         '_comment_spans',
         '_diagnostics',
+        '_environment_rules',
+        '_environment_scopes',
+        '_explicit_environments',
         '_include_lexical_spans',
         '_include_parse_result',
         '_linked_variables_by_scope',
@@ -239,6 +249,18 @@ class _FactCollector:
         include_parse_result: bool,
     ) -> None:
         self._metadata_registry = metadata_registry
+        self._explicit_environments = metadata_registry.environments
+        source_path = source_id_to_path(parse_result.source_id)
+        self._environment_rules = (
+            configured_environment_rules(source_path) if source_path is not None else ()
+        )
+        for name in (
+            *metadata_registry.environments,
+            *(rule.name for rule in self._environment_rules),
+        ):
+            if name not in metadata_environment_names(metadata_registry):
+                raise RuntimeError(f'Unknown metadata environment `{name}`.')
+        self._environment_scopes: list[EnvironmentScope] = []
         self._parser = parser
         self._plugin_host = plugin_host
         self._parse_result = parse_result
@@ -288,6 +310,7 @@ class _FactCollector:
             variable_references=tuple(self._variable_references),
             document_symbols=tuple(self._build_document_symbols()),
             diagnostics=tuple(self._diagnostics),
+            environment_scopes=tuple(self._environment_scopes),
         )
 
     def _collect_lowered_script(
@@ -295,10 +318,61 @@ class _FactCollector:
         script: LoweredScript,
         context: _ExtractionContext,
     ) -> _ExtractionContext:
+        saved_registry = self._metadata_registry
+        saved_explicit = self._explicit_environments
         current_context = context
-        for command in script.commands:
-            current_context = self._collect_lowered_command(command, current_context)
-        return current_context
+        try:
+            self._select_environment(context, script.span)
+            events = sorted(
+                (*script.commands, *script.comments),
+                key=lambda event: (
+                    event.span.start.offset
+                    if isinstance(event, Token)
+                    else event.command.span.start.offset
+                ),
+            )
+            for event in events:
+                if isinstance(event, Token):
+                    self._collect_environment_directive(event)
+                    end = event.span.end
+                else:
+                    current_context = self._collect_lowered_command(event, current_context)
+                    end = event.command.span.end
+                self._select_environment(current_context, Span(end, script.span.end))
+            return current_context
+        finally:
+            self._metadata_registry = saved_registry
+            self._explicit_environments = saved_explicit
+
+    def _select_environment(self, context: _ExtractionContext, span: Span) -> None:
+        environments = active_environments(
+            self._explicit_environments, self._environment_rules, context.flow_state
+        )
+        if environments != self._metadata_registry.environments:
+            self._metadata_registry = self._metadata_registry.with_environments(environments)
+            self._environment_scopes.append(EnvironmentScope(span, environments))
+
+    def _collect_environment_directive(self, comment: Token) -> None:
+        text = comment.text[1:].strip()
+        if not text.startswith('tcl-ls:'):
+            return
+        words = text.split()
+        if len(words) != 3 or words[:2] != ['tcl-ls:', 'env']:
+            message = 'Environment directives must be `# tcl-ls: env name`.'
+        elif words[2] not in metadata_environment_names(self._metadata_registry):
+            message = f'Unknown metadata environment `{words[2]}`.'
+        else:
+            self._explicit_environments += (words[2],)
+            return
+        self._diagnostics.append(
+            Diagnostic(
+                span=comment.span,
+                severity='error',
+                message=message,
+                source='tcl-ls',
+                code='invalid-environment',
+            )
+        )
 
     def _collect_lowered_command(
         self, command: LoweredCommand, context: _ExtractionContext
@@ -699,12 +773,17 @@ class _FactCollector:
         if root_text is None:
             return
 
+        current_matches = ()
         static_prefix_parts = [normalize_command_name(root_text)]
-        current_matches = builtin_commands_for_packages(
-            static_prefix_parts[0],
-            required_packages,
-            metadata_registry=self._metadata_registry,
-        )
+        for root_name in command_lookup_names(root_text, context.namespace):
+            current_matches = builtin_commands_for_packages(
+                root_name,
+                required_packages,
+                metadata_registry=self._metadata_registry,
+            )
+            if current_matches:
+                static_prefix_parts = [root_name]
+                break
         if not current_matches:
             return
 
@@ -929,7 +1008,7 @@ class _FactCollector:
             info={
                 'embedded-language': context.embedded_language or '',
                 'embedded-owner-name': context.embedded_owner_name or '',
-                'metadata-command': metadata_command.name,
+                'metadata-command': metadata_command.alias_target or metadata_command.name,
                 'namespace': context.namespace,
                 'prefix-word-count': str(prefix_word_count),
                 'procedure-symbol-id': context.procedure_symbol_id or '',
@@ -1029,7 +1108,11 @@ class _FactCollector:
                 uri=context.uri,
                 proc_symbol_id=proc_id,
             ),
-            arity=proc_parameter_arity(parameter_items),
+            arity=(
+                proc_parameter_arity(parameter_items)
+                if procedure.parameter_format == 'tcl'
+                else None
+            ),
             documentation=command_documentation(command),
             body_span=body_span(body_word) if body_word is not None else None,
         )
@@ -1117,13 +1200,21 @@ class _FactCollector:
             static_text = self._static_list_text(parameter_word)
             if static_text is None:
                 return
-            parameter_items = tuple(split_tcl_list(static_text, parameter_word.content_span.start))
+            parameter_items = procedure_parameter_items(
+                static_text, parameter_word.content_span.start, procedure.parameter_format
+            )
+            if parameter_items is None:
+                return
             parameters = self._parameter_decls_from_items(
                 parameter_items,
                 uri=context.uri,
                 proc_symbol_id=proc_id,
             )
-            arity = proc_parameter_arity(parameter_items)
+            arity = (
+                proc_parameter_arity(parameter_items)
+                if procedure.parameter_format == 'tcl'
+                else None
+            )
         else:
             parameters = ()
             arity = None
@@ -1600,7 +1691,11 @@ class _FactCollector:
                 uri=context.uri,
                 proc_symbol_id=proc_id,
             ),
-            arity=proc_parameter_arity(parameter_items),
+            arity=(
+                proc_parameter_arity(parameter_items)
+                if procedure.parameter_format == 'tcl'
+                else None
+            ),
             documentation=command_documentation(command),
             body_span=body_span(body_word) if body_word is not None else None,
         )
@@ -1721,7 +1816,9 @@ class _FactCollector:
         static_text = self._static_list_text(parameter_word)
         if static_text is None:
             return None
-        return tuple(split_tcl_list(static_text, parameter_word.content_span.start))
+        return procedure_parameter_items(
+            static_text, parameter_word.content_span.start, procedure.parameter_format
+        )
 
     def _procedure_selected_argument_index(
         self,
@@ -1765,7 +1862,9 @@ class _FactCollector:
         if annotation.kind is not None:
             return annotation.kind
 
-        inferred_kind = name_tail(metadata_command.name.rsplit(' ', 1)[-1])
+        inferred_kind = name_tail(
+            (metadata_command.alias_target or metadata_command.name).rsplit(' ', 1)[-1]
+        )
         if inferred_kind not in BINDING_KINDS:
             raise RuntimeError(
                 f'Metadata command `{metadata_command.name}` requires an explicit binding kind.'
@@ -1781,43 +1880,43 @@ class _FactCollector:
             frozenset(self._active_builtin_packages),
             metadata_registry=self._metadata_registry,
         )
-        static_prefix_parts: list[str] = []
-        imported_prefix_parts: list[list[str]] | None = None
-        matched: tuple[MetadataCommand, int] | None = None
-        for index, word in enumerate(command.words):
-            static_text = word_static_text(word)
-            if static_text is None:
-                break
-            if index == 0:
-                static_text = normalize_command_name(static_text)
-            static_prefix_parts.append(static_text)
-
-            if index == 0:
-                imported_prefix_parts = [
-                    [normalize_command_name(target_name)]
-                    for target_name in self._imported_command_candidates(
-                        static_text,
-                        context.namespace,
+        if not command.words:
+            return None
+        root_text = word_static_text(command.words[0])
+        if root_text is None:
+            return None
+        lookup_names = command_lookup_names(root_text, context.namespace)
+        imported_names = tuple(
+            normalize_command_name(name)
+            for name in self._imported_command_candidates(root_text, context.namespace)
+        )
+        root_names = (*lookup_names[:-1], *imported_names, lookup_names[-1])
+        for root_name in dict.fromkeys(root_names):
+            static_prefix_parts: list[str] = []
+            matched: tuple[MetadataCommand, int] | None = None
+            for index, word in enumerate(command.words):
+                static_text = root_name if index == 0 else word_static_text(word)
+                if static_text is None:
+                    break
+                static_prefix_parts.append(static_text)
+                prefix = ' '.join(static_prefix_parts)
+                candidates = available_commands.get(prefix, ())
+                if not candidates and '::' in root_name:
+                    # Match the resolver's support for qualified package commands
+                    # even when the file has no explicit package require.
+                    candidates = tuple(
+                        commands[prefix]
+                        for commands in annotated_metadata_commands_by_package(
+                            metadata_registry=self._metadata_registry
+                        ).values()
+                        if prefix in commands
                     )
-                ]
-            elif imported_prefix_parts is not None:
-                for prefix_parts in imported_prefix_parts:
-                    prefix_parts.append(static_text)
-
-            metadata_command = self._unique_metadata_command(
-                available_commands.get(' '.join(static_prefix_parts), ())
-            )
-            if metadata_command is not None:
-                matched = metadata_command, index + 1
-            if imported_prefix_parts is None:
-                continue
-            for prefix_parts in imported_prefix_parts:
-                metadata_command = self._unique_metadata_command(
-                    available_commands.get(' '.join(prefix_parts), ())
-                )
+                metadata_command = self._unique_metadata_command(candidates)
                 if metadata_command is not None:
                     matched = metadata_command, index + 1
-        return matched
+            if matched is not None:
+                return matched
+        return None
 
     def _unique_metadata_command(
         self,
