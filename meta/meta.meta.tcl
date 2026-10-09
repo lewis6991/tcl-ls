@@ -297,6 +297,13 @@ meta language meta-language-body {
         form {=tcl}
     }
 
+    # Replace a command from a lower environment in this language.
+    command override variants {
+        form {<name> <shape>}
+        form {<name> <groupedShape> <body>} {enter meta-command-body body 3}
+        form {<name> =variants <body>} {enter meta-command-body body 3}
+    }
+
     command command variants {
         form {<name> <shape>}
         form {<name> <groupedShape> <body>} {

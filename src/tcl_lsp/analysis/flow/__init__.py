@@ -1,4 +1,5 @@
 from tcl_lsp.analysis.flow.variables import (
+    VariableEffects,
     VariableFlowState,
     condition_branch_flow_states,
     dynamic_variable_target_names,
@@ -12,6 +13,7 @@ from tcl_lsp.analysis.flow.variables import (
 )
 
 __all__ = [
+    'VariableEffects',
     'VariableFlowState',
     'condition_branch_flow_states',
     'dynamic_variable_target_names',

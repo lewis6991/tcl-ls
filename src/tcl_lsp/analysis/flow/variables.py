@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from tcl_lsp.analysis.facts.parsing import is_simple_name, split_tcl_list
+from tcl_lsp.analysis.facts.utils import qualify_name
 from tcl_lsp.analysis.flow.exprs import eval_expr_text, expr_branch_flow_states
 from tcl_lsp.common import Diagnostic, Position
 from tcl_lsp.parser import Parser, word_static_text
@@ -21,48 +22,140 @@ _FLOW_PARSER = Parser()
 
 @dataclass(frozen=True, slots=True)
 class VariableFlowState:
+    """Known values keyed by variable identity within one Tcl scope.
+
+    Unqualified procedure locals stay distinct from namespace variables.
+    Links are part of the flow state, so a conditional link cannot change the
+    interpretation of names on another path. An unknown link has no known value
+    and a write through it invalidates all values.
+    """
+
     exact_values_by_name: dict[str, tuple[str, ...]]
+    namespace: str = '::'
+    procedure: bool = True
+    links: tuple[tuple[str, str | None], ...] = ()
+    unknown_links: bool = False
 
     @classmethod
-    def empty(cls) -> VariableFlowState:
-        return cls({})
+    def empty(cls, *, namespace: str = '::', procedure: bool = True) -> VariableFlowState:
+        return cls({}, namespace=namespace, procedure=procedure)
+
+    def cleared(self) -> VariableFlowState:
+        return replace(self, exact_values_by_name={}) if self.exact_values_by_name else self
+
+    def invalidated(self) -> VariableFlowState:
+        """Unknown code can change both values and procedure-local links."""
+        return replace(
+            self.cleared(),
+            links=tuple((name, None) for name, _ in self.links),
+            unknown_links=self.procedure,
+        )
+
+    @classmethod
+    def join(cls, *states: VariableFlowState) -> VariableFlowState:
+        """Keep only values known on every possible path."""
+        if not states:
+            return cls.empty()
+        first = states[0]
+        assert all((s.namespace, s.procedure) == (first.namespace, first.procedure) for s in states)
+        links = [dict(state.links) for state in states]
+        names = dict.fromkeys(name for state_links in links for name in state_links)
+        joined_links: dict[str, str | None] = {}
+        for name in names:
+            target = links[0].get(name)
+            joined_links[name] = (
+                target if all(name in other and other[name] == target for other in links) else None
+            )
+        return replace(
+            first,
+            exact_values_by_name={
+                name: tuple(
+                    dict.fromkeys(
+                        value for state in states for value in state.exact_values_by_name[name]
+                    )
+                )
+                for name in first.exact_values_by_name
+                if all(name in state.exact_values_by_name for state in states)
+            },
+            links=tuple(joined_links.items()),
+            unknown_links=any(state.unknown_links for state in states),
+        )
+
+    def _variable_key(self, name: str) -> str | None:
+        if '::' in name or not self.procedure:
+            return qualify_name(name, self.namespace)
+        for local, target in self.links:
+            if name == local:
+                return target
+        return None if self.unknown_links else name
+
+    def with_links(
+        self, links: dict[str, str | None], *, unknown: bool = False
+    ) -> VariableFlowState:
+        return replace(
+            self.cleared(),
+            links=tuple((dict(self.links) | links).items()),
+            unknown_links=self.unknown_links or unknown,
+        )
 
     def exact_values(self, name: str) -> tuple[str, ...]:
-        return self.exact_values_by_name.get(name, ())
+        key = self._variable_key(name)
+        return () if key is None else self.exact_values_by_name.get(key, ())
 
-    def with_exact_values(
-        self,
-        name: str,
-        values: tuple[str, ...],
-    ) -> VariableFlowState:
+    def with_exact_values(self, name: str, values: tuple[str, ...]) -> VariableFlowState:
+        key = self._variable_key(name)
+        if key is None:
+            return self.cleared()
         next_values_by_name = dict(self.exact_values_by_name)
         if values:
-            next_values_by_name[name] = values
+            next_values_by_name[key] = values
         else:
-            next_values_by_name.pop(name, None)
-        return VariableFlowState(next_values_by_name)
+            next_values_by_name.pop(key, None)
+        return replace(self, exact_values_by_name=next_values_by_name)
 
     def without_names(self, names: tuple[str, ...]) -> VariableFlowState:
         if not names:
             return self
-
-        next_values_by_name = dict(self.exact_values_by_name)
-        changed = False
-        for name in names:
-            if name not in next_values_by_name:
-                continue
-            changed = True
-            next_values_by_name.pop(name)
-        if not changed:
-            return self
-        return VariableFlowState(next_values_by_name)
+        keys = {self._variable_key(name) for name in names}
+        if None in keys:
+            return self.cleared()
+        return replace(
+            self,
+            exact_values_by_name={
+                name: values
+                for name, values in self.exact_values_by_name.items()
+                if name not in keys
+            },
+        )
 
     def merged(self, domains: dict[str, tuple[str, ...]]) -> VariableFlowState:
-        if not domains:
-            return self
-        next_values_by_name = dict(self.exact_values_by_name)
-        next_values_by_name.update(domains)
-        return VariableFlowState(next_values_by_name)
+        state = self
+        for name, values in domains.items():
+            state = state.with_exact_values(name, values)
+        return state
+
+
+@dataclass(frozen=True, slots=True)
+class VariableEffects:
+    """Possible writes and link changes, without executing a command."""
+
+    writes: frozenset[str] | None = frozenset()
+    changes_links: bool = False
+
+    @classmethod
+    def unknown(cls) -> VariableEffects:
+        return cls(None, changes_links=True)
+
+    def combined(self, other: VariableEffects) -> VariableEffects:
+        return VariableEffects(
+            None if self.writes is None or other.writes is None else self.writes | other.writes,
+            self.changes_links or other.changes_links,
+        )
+
+    def invalidate(self, state: VariableFlowState) -> VariableFlowState:
+        if self.changes_links:
+            state = state.invalidated()
+        return state.cleared() if self.writes is None else state.without_names(tuple(self.writes))
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,13 +228,16 @@ def script_body_flow_state(
     metadata_command_name: str,
     argument_words: tuple[Word, ...],
     selected_word: Word,
+    effects: VariableEffects | None = None,
 ) -> VariableFlowState:
+    body_state = state if effects is None else effects.invalidate(state)
     if metadata_command_name not in {'foreach', 'lmap'} or not argument_words:
-        return state
+        return body_state
     if selected_word is not argument_words[-1]:
-        return state
+        return body_state
 
-    return state.merged(_foreach_like_var_domains(argument_words[:-1], state))
+    # Iteration variables are assigned afresh, even if the body writes them.
+    return body_state.merged(_foreach_like_var_domains(argument_words[:-1], state))
 
 
 def condition_branch_flow_states(
@@ -193,14 +289,15 @@ def state_with_set_command(
         return state.with_exact_values(target_name, exact_word_values(command.words[2], state))
 
     dynamic_names = dynamic_variable_target_names(command.words[1], state)
-    if not dynamic_names or len(command.words) < 3:
+    if len(command.words) < 3:
         return state
+    if not dynamic_names:
+        return state.cleared()
 
-    next_state = state
-    values = exact_word_values(command.words[2], state)
-    for name in dynamic_names:
-        next_state = next_state.with_exact_values(name, values)
-    return next_state
+    if len(dynamic_names) != 1:
+        # One target is written at runtime, not every possible target.
+        return state.without_names(dynamic_names)
+    return state.with_exact_values(dynamic_names[0], exact_word_values(command.words[2], state))
 
 
 def state_with_unset_command(
@@ -214,7 +311,10 @@ def state_with_unset_command(
             if target_name not in names:
                 names.append(target_name)
             continue
-        for dynamic_name in dynamic_variable_target_names(word, state):
+        dynamic_names = dynamic_variable_target_names(word, state)
+        if not dynamic_names:
+            return state.cleared()
+        for dynamic_name in dynamic_names:
             if dynamic_name not in names:
                 names.append(dynamic_name)
     return state.without_names(tuple(names))

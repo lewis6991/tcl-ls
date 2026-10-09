@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from lsprotocol import types
 
@@ -10,10 +9,12 @@ from tcl_lsp.analysis.arity import metadata_signature_arity
 from tcl_lsp.analysis.metadata_commands import (
     MetadataCommand,
     MetadataOption,
+    discard_overridden_command_trees,
     load_metadata_commands,
     metadata_environment_names,
     metadata_file_module_info,
 )
+from tcl_lsp.analysis.metadata_view import metadata_view
 from tcl_lsp.analysis.model import CommandArity, DefinitionTarget
 from tcl_lsp.analysis.signature_matching import display_metadata_signature
 from tcl_lsp.cache import metadata_lru_cache
@@ -58,34 +59,22 @@ def builtin_commands(
     return _builtin_commands(metadata_registry)
 
 
-@metadata_lru_cache(maxsize=1)
+@metadata_lru_cache(maxsize=128)
 def _builtin_commands(metadata_registry: MetadataRegistry) -> dict[str, BuiltinCommand]:
     commands = dict(_builtin_commands_for_package(_CORE_PACKAGE, metadata_registry))
     overrides = _environment_commands(metadata_registry)
-    _discard_overridden_commands(commands, overrides)
+    discard_overridden_command_trees(commands, overrides)
     commands.update(overrides)
     return commands
 
 
 @metadata_lru_cache(maxsize=None)
 def _environment_commands(metadata_registry: MetadataRegistry) -> dict[str, BuiltinCommand]:
-    core = _builtin_commands_for_package(_CORE_PACKAGE, metadata_registry)
-    commands: dict[str, BuiltinCommand] = {}
-    environments = metadata_environment_names(metadata_registry)
-    for environment in metadata_registry.environments:
-        if environment not in environments:
-            raise RuntimeError(f'Unknown metadata environment `{environment}`.')
-        occupied = core.keys() | commands.keys()
-        overrides = {
-            name: command
-            for name, command in _builtin_commands_for_package(
-                environment, metadata_registry
-            ).items()
-            if command.is_override or name.split(' ', maxsplit=1)[0] not in occupied
-        }
-        _discard_overridden_commands(commands, overrides)
-        commands.update(overrides)
-    return commands
+    return {
+        name: _builtin_commands_for_package(command.module_name, metadata_registry)[name]
+        for name, command in metadata_view(metadata_registry).environment_commands.items()
+        if command.module_name is not None
+    }
 
 
 def core_annotated_metadata_commands(
@@ -95,13 +84,13 @@ def core_annotated_metadata_commands(
     return _core_annotated_metadata_commands(metadata_registry)
 
 
-@metadata_lru_cache(maxsize=1)
+@metadata_lru_cache(maxsize=128)
 def _core_annotated_metadata_commands(
     metadata_registry: MetadataRegistry,
 ) -> dict[str, MetadataCommand]:
     commands = dict(_annotated_metadata_commands_for_package(_CORE_PACKAGE, metadata_registry))
     overrides = _environment_commands(metadata_registry)
-    _discard_overridden_commands(commands, overrides)
+    discard_overridden_command_trees(commands, overrides)
     for environment in metadata_registry.environments:
         commands.update(
             {
@@ -122,7 +111,7 @@ def annotated_metadata_commands_by_package(
     return _annotated_metadata_commands_by_package(metadata_registry)
 
 
-@metadata_lru_cache(maxsize=1)
+@metadata_lru_cache(maxsize=128)
 def _annotated_metadata_commands_by_package(
     metadata_registry: MetadataRegistry,
 ) -> dict[str, dict[str, MetadataCommand]]:
@@ -198,7 +187,7 @@ def builtin_commands_by_package(
     return _builtin_commands_by_package(metadata_registry)
 
 
-@metadata_lru_cache(maxsize=1)
+@metadata_lru_cache(maxsize=128)
 def _builtin_commands_by_package(
     metadata_registry: MetadataRegistry,
 ) -> dict[str, dict[str, BuiltinCommand]]:
@@ -429,7 +418,7 @@ def _load_metadata_package(
                 layer_commands[name] = command
         # Later metadata roots override earlier command trees. Within one root,
         # duplicate command declarations are treated as conflicting metadata.
-        _discard_overridden_commands(package_commands, layer_commands)
+        discard_overridden_command_trees(package_commands, layer_commands)
         package_commands.update(layer_commands)
 
     return package_commands
@@ -459,7 +448,7 @@ def _load_annotated_metadata_package(
                     )
                 layer_override_names[command_name] = None
             layer_annotated.update(file_annotated)
-        _discard_overridden_commands(annotated, layer_override_names)
+        discard_overridden_command_trees(annotated, layer_override_names)
         annotated.update(layer_annotated)
     return annotated
 
@@ -491,19 +480,6 @@ def _builtin_metadata_path_layers_by_package(
         package_name: tuple(metadata_path_layers)
         for package_name, metadata_path_layers in path_layers_by_package.items()
     }
-
-
-def _discard_overridden_commands(
-    commands: dict[str, Any],
-    override_commands: dict[str, Any],
-) -> None:
-    override_names = tuple(override_commands)
-    for existing_name in tuple(commands):
-        if any(
-            existing_name == override_name or existing_name.startswith(f'{override_name} ')
-            for override_name in override_names
-        ):
-            commands.pop(existing_name, None)
 
 
 def _annotated_entries_for_file(

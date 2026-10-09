@@ -105,13 +105,13 @@ class _ExprAnalyzer:
                 right_true_state, right_false_state = self.branch_flow_states(
                     left_true_state, right
                 )
-                return right_true_state, _merge_possible_states(left_false_state, right_false_state)
+                return right_true_state, type(state).join(left_false_state, right_false_state)
             case ExprBinary('||', left, right):
                 left_true_state, left_false_state = self.branch_flow_states(state, left)
                 right_true_state, right_false_state = self.branch_flow_states(
                     left_false_state, right
                 )
-                return _merge_possible_states(left_true_state, right_true_state), right_false_state
+                return type(state).join(left_true_state, right_true_state), right_false_state
             case _:
                 return state, state
 
@@ -350,31 +350,6 @@ def _state_without_exact_value(
 
     remaining_values = tuple(existing for existing in existing_values if existing != value)
     return state.with_exact_values(name, remaining_values)
-
-
-def _merge_possible_states(
-    *states: VariableFlowState,
-) -> VariableFlowState:
-    first_state = states[0]
-    candidate_names: list[str] = []
-    for state in states:
-        for name in state.exact_values_by_name:
-            if name in candidate_names:
-                continue
-            candidate_names.append(name)
-
-    merged_values_by_name: dict[str, tuple[str, ...]] = {}
-    for name in candidate_names:
-        if any(name not in state.exact_values_by_name for state in states):
-            continue
-
-        values: list[str] = []
-        for state in states:
-            _append_unique_values(values, state.exact_values_by_name[name])
-        if values:
-            merged_values_by_name[name] = tuple(values)
-
-    return type(first_state)(merged_values_by_name)
 
 
 def _append_unique_values(values: list[str], new_values: tuple[str, ...]) -> None:

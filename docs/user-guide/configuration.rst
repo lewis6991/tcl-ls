@@ -83,9 +83,23 @@ static expression analysis; Tcl commands are never executed. Use fully qualified
 variable names for project-wide conditions. Rules are applied in config order,
 above explicitly selected environments.
 
+Value tracking uses visible assignments and metadata ``bind`` effects. After a
+branch, a value is known only if every possible path establishes it. Loops and
+caught errors invalidate variables their bodies may write. Dynamic execution,
+such as ``eval`` or ``source``, discards tracked values. Effects inside called
+procedures are not inferred; describe caller-variable writes with ``bind``
+metadata. Fully qualified names and their namespace-local spellings refer to
+the same variable. Procedure locals remain separate unless ``global`` or
+``variable`` links them. Unknown or conditional links are handled conservatively.
+Explicit environment directives do not depend on variable values.
+
 Each environment can add commands. Replacing a command from Tcl or a lower
 environment requires ``meta override``. This keeps generated ``args`` stubs
-from hiding precise command metadata.
+from hiding precise command metadata. Embedded-language commands and
+``extends tcl`` declarations follow the same environment selection and stack
+order; loading an inactive environment does not change an embedded language.
+Inside ``meta language``, use ``override name {shape}`` to replace a command
+from a lower environment.
 
 ``tcl-check --environment name`` selects an initial environment for the whole
 check. Source directives and conditional rules still apply. Editor environments

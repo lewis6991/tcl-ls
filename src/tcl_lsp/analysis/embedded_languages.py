@@ -3,10 +3,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from itertools import pairwise
-from typing import Any
 
 from tcl_lsp.analysis.arity import metadata_signature_arity
-from tcl_lsp.analysis.builtins import builtin_commands
 from tcl_lsp.analysis.facts.utils import (
     command_lookup_names,
     namespace_for_name,
@@ -18,12 +16,10 @@ from tcl_lsp.analysis.metadata_commands import (
     MetadataCommand,
     MetadataContext,
     MetadataProcedure,
-    all_metadata_language_extends,
-    load_metadata_commands,
-    metadata_environment_names,
     scan_command_options,
     select_argument_indices,
 )
+from tcl_lsp.analysis.metadata_view import metadata_view
 from tcl_lsp.analysis.signature_matching import metadata_signature_match_state
 from tcl_lsp.cache import metadata_lru_cache
 from tcl_lsp.metadata_paths import DEFAULT_METADATA_REGISTRY, MetadataRegistry
@@ -66,17 +62,12 @@ class _EmbeddedLanguage:
     extends_tcl: bool
 
 
-@metadata_lru_cache(maxsize=1)
+@metadata_lru_cache(maxsize=128)
 def _embedded_languages(
     metadata_registry: MetadataRegistry,
 ) -> dict[EmbeddedLanguageName, _EmbeddedLanguage]:
     commands_by_language = _embedded_language_command_index(metadata_registry)
-    extends_tcl_by_language = all_metadata_language_extends(metadata_registry).copy()
-
-    # Keep declared languages even when they contribute no commands so closed
-    # DSLs do not silently reopen as plain Tcl.
-    for language_name in extends_tcl_by_language:
-        commands_by_language.setdefault(language_name, {})
+    extends_tcl_by_language = metadata_view(metadata_registry).language_extends
 
     embedded_languages: dict[str, _EmbeddedLanguage] = {}
     for language_name, commands_for_language in commands_by_language.items():
@@ -110,42 +101,15 @@ def _embedded_languages(
     return embedded_languages
 
 
-@metadata_lru_cache(maxsize=1)
+@metadata_lru_cache(maxsize=128)
 def _context_entry_command_index(
     metadata_registry: MetadataRegistry,
 ) -> dict[str, tuple[MetadataCommand, ...]]:
-    commands_by_name: dict[str, tuple[MetadataCommand, ...]] = {}
-    for layer_commands in _metadata_commands_by_layer(metadata_registry):
-        layer_commands_by_name: dict[str, list[MetadataCommand]] = {}
-        for metadata_command in layer_commands:
-            if metadata_command.context_name is not None:
-                continue
-            module = metadata_command.module_name
-            if (
-                module in metadata_environment_names(metadata_registry)
-                and module not in metadata_registry.environments
-            ):
-                continue
-            if module is not None and module in metadata_registry.environments:
-                active = builtin_commands(metadata_registry=metadata_registry).get(
-                    metadata_command.name
-                )
-                if active is None or active.package != module:
-                    continue
-            layer_commands_by_name.setdefault(metadata_command.name, []).append(metadata_command)
-
-        _discard_overridden_command_trees(commands_by_name, layer_commands_by_name)
-        commands_by_name.update(
-            {
-                command_name: tuple(overloads)
-                for command_name, overloads in layer_commands_by_name.items()
-            }
-        )
-
     return {
-        command_name: overloads
-        for command_name, overloads in commands_by_name.items()
-        if any(
+        name: overloads
+        for (context, name), overloads in metadata_view(metadata_registry).commands.items()
+        if context is None
+        and any(
             isinstance(annotation, MetadataContext)
             for overload in overloads
             for annotation in overload.annotations
@@ -153,61 +117,18 @@ def _context_entry_command_index(
     }
 
 
-@metadata_lru_cache(maxsize=1)
+@metadata_lru_cache(maxsize=128)
 def _embedded_language_command_index(
     metadata_registry: MetadataRegistry,
 ) -> dict[str, dict[str, tuple[MetadataCommand, ...]]]:
-    commands_by_language: dict[str, dict[str, tuple[MetadataCommand, ...]]] = {}
-    for layer_commands in _metadata_commands_by_layer(metadata_registry):
-        layer_commands_by_language: dict[str, dict[str, list[MetadataCommand]]] = {}
-        for metadata_command in layer_commands:
-            if metadata_command.context_name is None:
-                continue
-            layer_commands_by_language.setdefault(metadata_command.context_name, {}).setdefault(
-                metadata_command.name, []
-            ).append(metadata_command)
-
-        for language_name, layer_commands_by_name in layer_commands_by_language.items():
-            commands_for_language = commands_by_language.setdefault(language_name, {})
-            _discard_overridden_command_trees(commands_for_language, layer_commands_by_name)
-            commands_for_language.update(
-                {
-                    command_name: tuple(overloads)
-                    for command_name, overloads in layer_commands_by_name.items()
-                }
-            )
+    view = metadata_view(metadata_registry)
+    commands_by_language: dict[str, dict[str, tuple[MetadataCommand, ...]]] = {
+        name: {} for name in view.language_extends
+    }
+    for (context, name), overloads in view.commands.items():
+        if context is not None:
+            commands_by_language.setdefault(context, {})[name] = overloads
     return commands_by_language
-
-
-@metadata_lru_cache(maxsize=1)
-def _metadata_commands_by_layer(
-    metadata_registry: MetadataRegistry,
-) -> tuple[tuple[MetadataCommand, ...], ...]:
-    layer_commands: list[tuple[MetadataCommand, ...]] = []
-    for _, layer_paths in metadata_registry.metadata_file_layers():
-        commands: list[MetadataCommand] = []
-        for metadata_path in layer_paths:
-            commands.extend(
-                load_metadata_commands(
-                    metadata_path, alias_paths=metadata_registry.metadata_files()
-                )
-            )
-        if commands:
-            layer_commands.append(tuple(commands))
-    return tuple(layer_commands)
-
-
-def _discard_overridden_command_trees(
-    commands: dict[str, Any],
-    override_commands: dict[str, Any],
-) -> None:
-    override_names = tuple(override_commands)
-    for existing_name in tuple(commands):
-        if any(
-            existing_name == override_name or existing_name.startswith(f'{override_name} ')
-            for override_name in override_names
-        ):
-            commands.pop(existing_name, None)
 
 
 def match_embedded_language_command(

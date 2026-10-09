@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import heapq
-from collections import OrderedDict
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from lsprotocol import types
 
-from tcl_lsp.analysis import WorkspaceIndex
+from tcl_lsp.analysis import FactExtractor, WorkspaceIndex
 from tcl_lsp.analysis.builtins import (
     BuiltinCommand,
     BuiltinOverload,
@@ -17,35 +16,22 @@ from tcl_lsp.analysis.builtins import (
     canonical_builtin_package_name,
 )
 from tcl_lsp.analysis.environments import registry_at_offset
-from tcl_lsp.analysis.facts.utils import normalize_command_name
 from tcl_lsp.analysis.metadata_commands import MetadataOption, scan_command_options
 from tcl_lsp.analysis.metadata_effects import dependency_required_packages
 from tcl_lsp.analysis.model import CommandCall, ProcDecl
-from tcl_lsp.common import Position, offset_at_position
 from tcl_lsp.lsp.features.cursor_context import (
     CursorContext,
-    argument_context,
-    command_name_prefix,
     cursor_context,
     is_empty_command_position,
-    namespace_at_position,
-    scope_id_at_position,
 )
-from tcl_lsp.lsp.state import ManagedDocument
+from tcl_lsp.lsp.state import ManagedDocument, empty_analysis
 from tcl_lsp.metadata_paths import MetadataRegistry
-from tcl_lsp.parser import Parser, word_static_text
-from tcl_lsp.parser.model import BareWord
-from tcl_lsp.parser.model import Command as SyntaxCommand
+from tcl_lsp.parser import Parser
 from tcl_lsp.project.paths import source_id_to_path
 
 type CompletionKind = Literal['argument', 'command', 'package', 'variable']
 
 _MAX_COMMAND_COMPLETION_ITEMS = 200
-_BUILTIN_COMPLETION_PACKAGE_CACHE_LIMIT = 128
-_builtin_completion_package_cache: OrderedDict[
-    tuple[str, int, WorkspaceIndex, MetadataRegistry],
-    tuple[str, ...],
-] = OrderedDict()
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,35 +77,46 @@ def completion_items(
     if document is None:
         return CompletionResults(items=())
 
-    offset = offset_at_position(document.text, line, character)
-    if offset is not None:
-        metadata_registry = registry_at_offset(
-            metadata_registry, document.facts.environment_scopes, offset
-        )
-
-    if live_text is not None and live_text != document.text and parser is not None:
-        context = _live_completion_context(
-            document=document,
-            workspace_index=workspace_index,
-            metadata_registry=metadata_registry,
-            parser=parser,
-            uri=uri,
-            text=live_text,
-            line=line,
-            character=character,
-        )
-        if context is not None:
-            return _completion_results_for_context(
-                documents_by_uri,
-                document=document,
-                workspace_index=workspace_index,
-                metadata_registry=metadata_registry,
-                context=context,
+    live_document = live_text is not None and live_text != document.text
+    if live_document:
+        # Use the same extraction as diagnostics. Mixing live cursor positions
+        # with old scopes can select the wrong environment, namespace, or body.
+        assert live_text is not None
+        live_parser = parser or Parser()
+        extractor = FactExtractor(live_parser, metadata_registry=metadata_registry)
+        try:
+            parse_result = live_parser.parse_document(uri, live_text)
+            facts = extractor.extract(
+                parse_result,
+                include_lexical_spans=False,
+                environment_rules=document.facts.environment_rules,
             )
+        finally:
+            extractor.close()
+        document = replace(
+            document,
+            text=live_text,
+            parse_result=parse_result,
+            facts=facts,
+            analysis=empty_analysis(uri, facts.document_symbols),
+            lexical_spans_included=False,
+        )
+        documents_by_uri = {**documents_by_uri, uri: document}
+        workspace_index = workspace_index.clone()
+        workspace_index.update(uri, facts)
 
     context = cursor_context(document, line=line, character=character)
     if context is None:
         return CompletionResults(items=())
+    # A call uses its entry environment, even with the cursor at its end.
+    metadata_offset = (
+        context.attached_command_call.name_span.start.offset
+        if context.attached_command_call is not None
+        else context.offset
+    )
+    metadata_registry = registry_at_offset(
+        metadata_registry, document.facts.environment_scopes, metadata_offset
+    )
     context = _completion_context(
         document=document,
         cursor=context,
@@ -227,175 +224,6 @@ def _completion_context(
         )
 
     return None
-
-
-def _live_completion_context(
-    *,
-    document: ManagedDocument,
-    workspace_index: WorkspaceIndex,
-    metadata_registry: MetadataRegistry,
-    parser: Parser,
-    uri: str,
-    text: str,
-    line: int,
-    character: int,
-) -> _CompletionContext | None:
-    offset = offset_at_position(text, line, character)
-    if offset is None:
-        return None
-
-    namespace = namespace_at_position(document.facts, line=line, character=character)
-    scope_id = scope_id_at_position(document.facts, line=line, character=character)
-    line_start = text.rfind('\n', 0, offset) + 1
-    line_prefix_text = text[line_start:offset]
-
-    variable_prefix = _live_variable_prefix(line_prefix_text)
-    if variable_prefix is not None:
-        return _CompletionContext(
-            kind='variable',
-            prefix=variable_prefix,
-            namespace=namespace,
-            scope_id=scope_id,
-        )
-
-    if is_empty_command_position(text, offset=offset):
-        return _CompletionContext(
-            kind='command',
-            prefix='',
-            namespace=namespace,
-        )
-
-    parse_result = parser.parse_embedded_script(
-        source_id=uri,
-        text=line_prefix_text,
-        start_position=Position(offset=line_start, line=line, character=0),
-    )
-    if not parse_result.script.commands:
-        return None
-
-    command = parse_result.script.commands[-1]
-    live_call = _live_command_call(
-        document=document,
-        workspace_index=workspace_index,
-        metadata_registry=metadata_registry,
-        namespace=namespace,
-        scope_id=scope_id,
-        command=command,
-    )
-    if live_call is None:
-        return None
-
-    command_prefix = command_name_prefix(text, live_call, offset)
-    if command_prefix is not None:
-        return _CompletionContext(
-            kind='command',
-            prefix=command_prefix,
-            namespace=namespace,
-        )
-
-    current_argument_context = argument_context(text, live_call, offset)
-    if live_call.name == 'package require':
-        return _CompletionContext(
-            kind='package',
-            prefix='' if current_argument_context is None else current_argument_context[0],
-            namespace=namespace,
-        )
-
-    if current_argument_context is not None:
-        argument_prefix, argument_index = current_argument_context
-        return _CompletionContext(
-            kind='argument',
-            prefix=argument_prefix,
-            namespace=namespace,
-            command_call=live_call,
-            argument_index=argument_index,
-        )
-
-    return None
-
-
-def _live_variable_prefix(prefix_text: str) -> str | None:
-    if prefix_text.endswith('${') or prefix_text.endswith('$'):
-        return ''
-
-    open_brace_index = prefix_text.rfind('${')
-    if open_brace_index >= 0 and '}' not in prefix_text[open_brace_index + 2 :]:
-        return prefix_text[open_brace_index + 2 :]
-
-    dollar_index = prefix_text.rfind('$')
-    if dollar_index < 0:
-        return None
-
-    variable_prefix = prefix_text[dollar_index + 1 :]
-    if not variable_prefix:
-        return None
-    if all(char.isalnum() or char in {'_', ':'} for char in variable_prefix):
-        return variable_prefix
-    return None
-
-
-def _live_command_call(
-    *,
-    document: ManagedDocument,
-    workspace_index: WorkspaceIndex,
-    metadata_registry: MetadataRegistry,
-    namespace: str,
-    scope_id: str,
-    command: SyntaxCommand,
-) -> CommandCall | None:
-    if not command.words:
-        return None
-
-    command_name_word = command.words[0]
-    static_name = word_static_text(command_name_word)
-    command_name = normalize_command_name(static_name) if static_name is not None else None
-    name_span = command_name_word.span
-    argument_start = 1
-
-    if command_name is not None and len(command.words) > 1:
-        builtin_packages = frozenset(
-            _builtin_completion_packages(
-                document=document,
-                workspace_index=workspace_index,
-                metadata_registry=metadata_registry,
-            )
-        )
-        command_name_parts = [command_name]
-        for index, word in enumerate(command.words[1:], start=1):
-            static_text = word_static_text(word)
-            if static_text is None:
-                break
-            candidate_name = ' '.join((*command_name_parts, static_text))
-            if (
-                builtin_command_for_packages(
-                    candidate_name,
-                    builtin_packages,
-                    metadata_registry=metadata_registry,
-                )
-                is None
-            ):
-                break
-            command_name_parts.append(static_text)
-            name_span = word.content_span
-            argument_start = index + 1
-        command_name = ' '.join(command_name_parts)
-
-    argument_words = command.words[argument_start:]
-    return CommandCall(
-        uri=document.uri,
-        name=command_name,
-        arg_texts=tuple(word_static_text(word) for word in argument_words),
-        arg_spans=tuple(word.span for word in argument_words),
-        arg_expanded=tuple(word.expanded for word in argument_words),
-        arg_grouped=tuple(not isinstance(word, BareWord) for word in argument_words),
-        namespace=namespace,
-        scope_id=scope_id,
-        procedure_symbol_id=None,
-        embedded_language=None,
-        span=command.span,
-        name_span=name_span,
-        dynamic=command_name is None,
-    )
 
 
 def _command_completion_items(
@@ -711,17 +539,6 @@ def _builtin_completion_packages(
     workspace_index: WorkspaceIndex,
     metadata_registry: MetadataRegistry,
 ) -> tuple[str, ...]:
-    cache_key = (
-        document.uri,
-        document.version,
-        workspace_index,
-        metadata_registry,
-    )
-    cached_packages = _builtin_completion_package_cache.get(cache_key)
-    if cached_packages is not None:
-        _builtin_completion_package_cache.move_to_end(cache_key)
-        return cached_packages
-
     packages: dict[str, None] = {'Tcl': None}
     source_path = source_id_to_path(document.uri)
     if source_path is None:
@@ -742,11 +559,7 @@ def _builtin_completion_packages(
     for package_name in sorted(required_packages):
         packages.setdefault(canonical_builtin_package_name(package_name), None)
 
-    builtin_packages = tuple(packages)
-    _builtin_completion_package_cache[cache_key] = builtin_packages
-    while len(_builtin_completion_package_cache) > _BUILTIN_COMPLETION_PACKAGE_CACHE_LIMIT:
-        _builtin_completion_package_cache.popitem(last=False)
-    return builtin_packages
+    return tuple(packages)
 
 
 def _iter_procedures(

@@ -13,7 +13,6 @@ from tcl_lsp.analysis.model import (
     ProcDecl,
     ResolutionResult,
 )
-from tcl_lsp.common import offset_at_position
 from tcl_lsp.lsp.features.cursor_context import cursor_context
 from tcl_lsp.lsp.state import ManagedDocument
 from tcl_lsp.metadata_paths import MetadataRegistry
@@ -38,12 +37,6 @@ def signature_help(
     if document is None:
         return None
 
-    offset = offset_at_position(document.text, line, character)
-    if offset is not None:
-        metadata_registry = registry_at_offset(
-            metadata_registry, document.facts.environment_scopes, offset
-        )
-
     context = cursor_context(document, line=line, character=character)
     if context is None:
         return None
@@ -54,6 +47,10 @@ def signature_help(
     command_call = context.attached_command_call
     if command_call is None or command_call.name is None:
         return None
+
+    metadata_registry = registry_at_offset(
+        metadata_registry, document.facts.environment_scopes, command_call.name_span.start.offset
+    )
 
     resolution = _resolution_for_call(document, command_call)
     if resolution is None or not resolution.target_symbol_ids:

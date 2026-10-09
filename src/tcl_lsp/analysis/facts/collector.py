@@ -39,6 +39,7 @@ from tcl_lsp.analysis.facts.lowering import (
     LoweredTryCommand,
     LoweredWhileCommand,
     LoweredWordReferences,
+    command_scripts,
     lower_parse_result,
     lower_script,
 )
@@ -61,6 +62,7 @@ from tcl_lsp.analysis.facts.utils import (
     variable_symbol_id,
 )
 from tcl_lsp.analysis.flow import (
+    VariableEffects,
     VariableFlowState,
     condition_branch_flow_states,
     dynamic_variable_target_names,
@@ -72,6 +74,7 @@ from tcl_lsp.analysis.flow import (
     switch_branch_flow_state,
     unset_target_words,
 )
+from tcl_lsp.analysis.flow.exprs import eval_expr_text
 from tcl_lsp.analysis.metadata_commands import (
     MetadataBind,
     MetadataCommand,
@@ -118,7 +121,7 @@ from tcl_lsp.parser.model import (
     Word,
 )
 from tcl_lsp.plugins.host import PluginProcedureEffect, TclPluginHost
-from tcl_lsp.project.config import configured_environment_rules
+from tcl_lsp.project.config import EnvironmentRule, configured_environment_rules
 from tcl_lsp.project.paths import source_id_to_path
 
 _CONFLICTING_EMBEDDED_LANGUAGE_CODE = 'conflicting-embedded-language'
@@ -140,6 +143,8 @@ class _ExtractionContext:
     embedded_owner_name: str | None
     command_renames_enabled: bool
     flow_state: VariableFlowState
+    metadata_registry: MetadataRegistry
+    explicit_environments: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,9 +182,16 @@ class FactExtractor:
         *,
         include_parse_result: bool = True,
         include_lexical_spans: bool | None = None,
+        environment_rules: tuple[EnvironmentRule, ...] | None = None,
     ) -> DocumentFacts:
         if include_lexical_spans is None:
             include_lexical_spans = include_parse_result
+
+        if environment_rules is None:
+            source_path = source_id_to_path(parse_result.source_id)
+            environment_rules = (
+                configured_environment_rules(source_path) if source_path is not None else ()
+            )
 
         lowering_result = lower_parse_result(
             parse_result,
@@ -188,6 +200,7 @@ class FactExtractor:
         )
         collector = _FactCollector(
             metadata_registry=self._metadata_registry,
+            environment_rules=environment_rules,
             parser=self._parser,
             plugin_host=self._plugin_host,
             parse_result=parse_result,
@@ -212,7 +225,6 @@ class _FactCollector:
         '_diagnostics',
         '_environment_rules',
         '_environment_scopes',
-        '_explicit_environments',
         '_include_lexical_spans',
         '_include_parse_result',
         '_linked_variables_by_scope',
@@ -240,6 +252,7 @@ class _FactCollector:
         plugin_host: TclPluginHost,
         parse_result: ParseResult,
         *,
+        environment_rules: tuple[EnvironmentRule, ...],
         comment_spans: tuple[Span, ...],
         operator_spans: tuple[Span, ...],
         string_spans: tuple[Span, ...],
@@ -249,11 +262,7 @@ class _FactCollector:
         include_parse_result: bool,
     ) -> None:
         self._metadata_registry = metadata_registry
-        self._explicit_environments = metadata_registry.environments
-        source_path = source_id_to_path(parse_result.source_id)
-        self._environment_rules = (
-            configured_environment_rules(source_path) if source_path is not None else ()
-        )
+        self._environment_rules = environment_rules
         for name in (
             *metadata_registry.environments,
             *(rule.name for rule in self._environment_rules),
@@ -311,6 +320,7 @@ class _FactCollector:
             document_symbols=tuple(self._build_document_symbols()),
             diagnostics=tuple(self._diagnostics),
             environment_scopes=tuple(self._environment_scopes),
+            environment_rules=self._environment_rules,
         )
 
     def _collect_lowered_script(
@@ -318,52 +328,66 @@ class _FactCollector:
         script: LoweredScript,
         context: _ExtractionContext,
     ) -> _ExtractionContext:
-        saved_registry = self._metadata_registry
-        saved_explicit = self._explicit_environments
-        current_context = context
-        try:
-            self._select_environment(context, script.span)
-            events = sorted(
-                (*script.commands, *script.comments),
-                key=lambda event: (
-                    event.span.start.offset
-                    if isinstance(event, Token)
-                    else event.command.span.start.offset
-                ),
-            )
-            for event in events:
-                if isinstance(event, Token):
-                    self._collect_environment_directive(event)
-                    end = event.span.end
-                else:
-                    current_context = self._collect_lowered_command(event, current_context)
-                    end = event.command.span.end
-                self._select_environment(current_context, Span(end, script.span.end))
-            return current_context
-        finally:
-            self._metadata_registry = saved_registry
-            self._explicit_environments = saved_explicit
-
-    def _select_environment(self, context: _ExtractionContext, span: Span) -> None:
-        environments = active_environments(
-            self._explicit_environments, self._environment_rules, context.flow_state
+        current_context = self._select_environment(context, script.span)
+        script_registry = current_context.metadata_registry
+        events = sorted(
+            (*script.commands, *script.comments),
+            key=lambda event: (
+                event.span.start.offset
+                if isinstance(event, Token)
+                else event.command.span.start.offset
+            ),
         )
-        if environments != self._metadata_registry.environments:
-            self._metadata_registry = self._metadata_registry.with_environments(environments)
-            self._environment_scopes.append(EnvironmentScope(span, environments))
+        for event in events:
+            if isinstance(event, Token):
+                current_context = self._collect_environment_directive(event, current_context)
+                end = event.span.end
+            else:
+                current_context = self._collect_lowered_command(event, current_context)
+                end = event.command.span.end
+            # A substitution may already have changed the command's registry.
+            # Compare with this script's selection, not that temporary scope.
+            current_context = self._select_environment(
+                current_context, Span(end, script.span.end), previous_registry=script_registry
+            )
+            script_registry = current_context.metadata_registry
+        # Directives have lexical scope; only variable effects leave a body.
+        return replace(context, flow_state=current_context.flow_state)
 
-    def _collect_environment_directive(self, comment: Token) -> None:
+    def _select_environment(
+        self,
+        context: _ExtractionContext,
+        span: Span,
+        *,
+        previous_registry: MetadataRegistry | None = None,
+    ) -> _ExtractionContext:
+        environments = active_environments(
+            context.explicit_environments, self._environment_rules, context.flow_state
+        )
+        previous = previous_registry or context.metadata_registry
+        if environments != previous.environments:
+            self._environment_scopes.append(EnvironmentScope(span, environments))
+        if environments == context.metadata_registry.environments:
+            return context
+        return replace(
+            context, metadata_registry=context.metadata_registry.with_environments(environments)
+        )
+
+    def _collect_environment_directive(
+        self, comment: Token, context: _ExtractionContext
+    ) -> _ExtractionContext:
         text = comment.text[1:].strip()
         if not text.startswith('tcl-ls:'):
-            return
+            return context
         words = text.split()
         if len(words) != 3 or words[:2] != ['tcl-ls:', 'env']:
             message = 'Environment directives must be `# tcl-ls: env name`.'
-        elif words[2] not in metadata_environment_names(self._metadata_registry):
+        elif words[2] not in metadata_environment_names(context.metadata_registry):
             message = f'Unknown metadata environment `{words[2]}`.'
         else:
-            self._explicit_environments += (words[2],)
-            return
+            return replace(
+                context, explicit_environments=(*context.explicit_environments, words[2])
+            )
         self._diagnostics.append(
             Diagnostic(
                 span=comment.span,
@@ -373,12 +397,13 @@ class _FactCollector:
                 code='invalid-environment',
             )
         )
+        return context
 
     def _collect_lowered_command(
         self, command: LoweredCommand, context: _ExtractionContext
     ) -> _ExtractionContext:
         syntax_command = command.command
-        command_name, metadata_context_entries = self._collect_command_common(command, context)
+        context, metadata_context_entries = self._collect_command_common(command, context)
         if type(command) is not LoweredGenericCommand:
             special_entries = self._resolved_command_embedded_entries(
                 syntax_command,
@@ -387,39 +412,39 @@ class _FactCollector:
             )
             if special_entries is None:
                 self._report_conflicting_embedded_language(syntax_command.span)
-                return context
+                return self._context_with_flow_state(context, context.flow_state.invalidated())
             if not self._special_embedded_entries_supported(command, special_entries):
                 self._report_unsupported_special_enter(syntax_command.span)
-                return context
-            if self._collect_special_lowered_command(
+                return self._context_with_flow_state(context, context.flow_state.invalidated())
+            result = self._collect_special_lowered_command(
                 command,
                 context,
                 embedded_entries=special_entries,
-            ):
-                return context
-        if self._collect_embedded_language_command(
+            )
+            if result is not None:
+                return result
+        result = self._collect_embedded_language_command(
             syntax_command,
             context,
             additional_entries=metadata_context_entries,
-        ):
-            return context
-        if self._collect_embedded_language_entry(
-            syntax_command,
-            context,
-            additional_entries=metadata_context_entries,
-        ):
-            return context
-
+        )
+        if result is None:
+            result = self._collect_embedded_language_entry(
+                syntax_command,
+                context,
+                additional_entries=metadata_context_entries,
+            )
         normalized_command_name = (
-            normalize_command_name(command_name) if command_name is not None else None
+            normalize_command_name(command.command_name)
+            if command.command_name is not None
+            else None
         )
-        self._collect_builtin_handler_command(
-            syntax_command,
-            normalized_command_name,
-            context,
-        )
+        if result is None:
+            self._collect_builtin_handler_command(syntax_command, normalized_command_name, context)
+        else:
+            context = result
         return self._updated_context_after_command(
-            syntax_command,
+            command,
             normalized_command_name=normalized_command_name,
             context=context,
         )
@@ -430,63 +455,62 @@ class _FactCollector:
         context: _ExtractionContext,
         *,
         embedded_entries: tuple[EmbeddedLanguageEntry, ...] = (),
-    ) -> bool:
+    ) -> _ExtractionContext | None:
         entry_by_script_word_index = {
             entry.script_word_index: entry
             for entry in embedded_entries
             if entry.script_word_index is not None
         }
         if isinstance(command, LoweredProcCommand):
-            self._collect_lowered_proc(
+            return self._collect_lowered_proc(
                 command,
                 context,
                 entry_by_script_word_index=entry_by_script_word_index,
             )
         elif isinstance(command, LoweredNamespaceEvalCommand):
-            self._collect_lowered_namespace_eval(
+            return self._collect_lowered_namespace_eval(
                 command,
                 context,
                 entry_by_script_word_index=entry_by_script_word_index,
             )
         elif isinstance(command, LoweredForCommand):
-            self._collect_lowered_for(
+            return self._collect_lowered_for(
                 command,
                 context,
                 entry_by_script_word_index=entry_by_script_word_index,
             )
         elif isinstance(command, LoweredIfCommand):
-            self._collect_lowered_if(
+            return self._collect_lowered_if(
                 command,
                 context,
                 entry_by_script_word_index=entry_by_script_word_index,
             )
         elif isinstance(command, LoweredCatchCommand):
-            self._collect_lowered_catch(
+            return self._collect_lowered_catch(
                 command,
                 context,
                 entry_by_script_word_index=entry_by_script_word_index,
             )
         elif isinstance(command, LoweredTryCommand):
-            self._collect_lowered_try(
+            return self._collect_lowered_try(
                 command,
                 context,
                 entry_by_script_word_index=entry_by_script_word_index,
             )
         elif isinstance(command, LoweredSwitchCommand):
-            self._collect_lowered_switch(
+            return self._collect_lowered_switch(
                 command,
                 context,
                 entry_by_script_word_index=entry_by_script_word_index,
             )
         elif isinstance(command, LoweredWhileCommand):
-            self._collect_lowered_while(
+            return self._collect_lowered_while(
                 command,
                 context,
                 entry_by_script_word_index=entry_by_script_word_index,
             )
         else:
-            return False
-        return True
+            return None
 
     def _special_embedded_entries_supported(
         self,
@@ -651,10 +675,10 @@ class _FactCollector:
         self,
         command: LoweredCommand,
         context: _ExtractionContext,
-    ) -> tuple[str | None, tuple[EmbeddedLanguageEntry, ...]]:
+    ) -> tuple[_ExtractionContext, tuple[EmbeddedLanguageEntry, ...]]:
         syntax_command = command.command
         if not syntax_command.words:
-            return None, ()
+            return context, ()
 
         command_name_word = syntax_command.words[0]
         argument_words = syntax_command.words[1:]
@@ -670,14 +694,15 @@ class _FactCollector:
         )
 
         for word_references in command.word_references:
-            self._collect_lowered_word_references(word_references, context)
+            context = self._collect_lowered_word_references(word_references, context)
 
+        context = self._select_environment(context, syntax_command.span)
         self._collect_builtin_subcommands(syntax_command, context)
         self._collect_contextual_subcommands(syntax_command, context)
         metadata_context_entries = self._collect_metadata_command_annotations(
             syntax_command, context
         )
-        return command.command_name, metadata_context_entries
+        return context, metadata_context_entries
 
     def _record_command_call(
         self,
@@ -779,7 +804,7 @@ class _FactCollector:
             current_matches = builtin_commands_for_packages(
                 root_name,
                 required_packages,
-                metadata_registry=self._metadata_registry,
+                metadata_registry=context.metadata_registry,
             )
             if current_matches:
                 static_prefix_parts = [root_name]
@@ -808,7 +833,7 @@ class _FactCollector:
             current_matches = builtin_commands_for_packages(
                 builtin_name,
                 required_packages,
-                metadata_registry=self._metadata_registry,
+                metadata_registry=context.metadata_registry,
             )
             if not current_matches:
                 return
@@ -869,7 +894,7 @@ class _FactCollector:
                 contextual_command_target(
                     context.embedded_language,
                     command_name,
-                    metadata_registry=self._metadata_registry,
+                    metadata_registry=context.metadata_registry,
                 )
                 is None
             ):
@@ -935,14 +960,14 @@ class _FactCollector:
         context: _ExtractionContext,
         *,
         additional_entries: tuple[EmbeddedLanguageEntry, ...] = (),
-    ) -> bool:
+    ) -> _ExtractionContext | None:
         matched = match_embedded_language_command(
             command,
             context.embedded_language,
-            metadata_registry=self._metadata_registry,
+            metadata_registry=context.metadata_registry,
         )
         if matched is None:
-            return False
+            return None
 
         handled = False
         embedded_entries: list[EmbeddedLanguageEntry] = list(additional_entries)
@@ -983,14 +1008,14 @@ class _FactCollector:
                 embedded_entries.append(entry)
                 continue
 
-        handled |= self._collect_embedded_entries(command, context, tuple(embedded_entries))
+        result = self._collect_embedded_entries(command, context, tuple(embedded_entries))
         handled |= self._collect_selected_metadata_annotations(
             command,
             context,
             metadata_command=matched.metadata_command,
             prefix_word_count=matched.prefix_word_count,
         )
-        return handled
+        return result if result is not None else context if handled else None
 
     def _collect_metadata_plugin(
         self,
@@ -1121,15 +1146,9 @@ class _FactCollector:
         if body_word is None:
             return
 
-        body_context = _ExtractionContext(
-            uri=proc_decl.uri,
-            namespace=proc_decl.namespace,
-            scope_id=proc_decl.symbol_id,
-            procedure_symbol_id=proc_decl.symbol_id,
+        body_context = replace(
+            self._procedure_context(proc_decl, context),
             embedded_language=procedure.body_context,
-            embedded_owner_name=None,
-            command_renames_enabled=False,
-            flow_state=VariableFlowState.empty(),
         )
         self._record_parameter_bindings(proc_decl.parameters, body_context)
         self._collect_script_body_word(body_word, body_context)
@@ -1237,15 +1256,9 @@ class _FactCollector:
         if body_word is None:
             return
 
-        body_context = _ExtractionContext(
-            uri=proc_decl.uri,
-            namespace=proc_decl.namespace,
-            scope_id=proc_decl.symbol_id,
-            procedure_symbol_id=proc_decl.symbol_id,
+        body_context = replace(
+            self._procedure_context(proc_decl, context),
             embedded_language=procedure.body_context,
-            embedded_owner_name=None,
-            command_renames_enabled=False,
-            flow_state=VariableFlowState.empty(),
         )
         self._record_parameter_bindings(proc_decl.parameters, body_context)
         self._collect_script_body_word(body_word, body_context)
@@ -1435,7 +1448,7 @@ class _FactCollector:
         span: Span,
         context: _ExtractionContext,
     ) -> None:
-        if is_builtin_package(package_name, metadata_registry=self._metadata_registry):
+        if is_builtin_package(package_name, metadata_registry=context.metadata_registry):
             self._active_builtin_packages.add(canonical_builtin_package_name(package_name))
         self._package_requires.append(
             PackageRequire(
@@ -1466,7 +1479,7 @@ class _FactCollector:
         context: _ExtractionContext,
         *,
         additional_entries: tuple[EmbeddedLanguageEntry, ...] = (),
-    ) -> bool:
+    ) -> _ExtractionContext | None:
         entries = self._resolved_command_embedded_entries(
             command,
             context,
@@ -1474,7 +1487,7 @@ class _FactCollector:
         )
         if entries is None:
             self._report_conflicting_embedded_language(command.span)
-            return True
+            return self._context_with_flow_state(context, context.flow_state.invalidated())
         return self._collect_embedded_entries(command, context, entries)
 
     def _resolved_command_embedded_entries(
@@ -1487,7 +1500,7 @@ class _FactCollector:
         entries = match_embedded_language_entries(
             command,
             current_namespace=context.namespace,
-            metadata_registry=self._metadata_registry,
+            metadata_registry=context.metadata_registry,
         )
         if entries is None:
             return None
@@ -1520,27 +1533,27 @@ class _FactCollector:
         command: Command,
         context: _ExtractionContext,
         entries: tuple[EmbeddedLanguageEntry, ...],
-    ) -> bool:
+    ) -> _ExtractionContext | None:
         if not entries:
-            return False
+            return None
 
         resolved_entries = resolve_embedded_language_entries(entries)
         if resolved_entries is None:
             self._report_conflicting_embedded_language(command.span)
-            return True
+            return self._context_with_flow_state(context, context.flow_state.invalidated())
 
-        handled = False
+        result = context
         for entry in resolved_entries:
-            handled = self._collect_embedded_entry(command, context, entry) or handled
-        return handled
+            result = self._collect_embedded_entry(command, result, entry) or result
+        return result
 
     def _collect_embedded_entry(
         self,
         command: Command,
         context: _ExtractionContext,
         entry: EmbeddedLanguageEntry,
-    ) -> bool:
-        handled = False
+    ) -> _ExtractionContext | None:
+        states: list[VariableFlowState] = []
         if entry.script_word_index is not None and entry.script_word_index < len(command.words):
             selected_word = command.words[entry.script_word_index]
             entry_context = self._embedded_language_context(
@@ -1549,26 +1562,30 @@ class _FactCollector:
                 command=command,
                 selected_word=selected_word,
             )
-            self._collect_script_body_word(selected_word, entry_context)
-            handled = True
+            result = self._collect_script_body_word(selected_word, entry_context)
+            states.append(result.flow_state)
         if entry.inline_command_start_index is not None and entry.inline_command_start_index < len(
             command.words
         ):
             inline_command_end_index = entry.inline_command_end_index
             if inline_command_end_index is None:
-                return handled
+                return None
             entry_context = self._embedded_language_context(
                 entry,
                 parent_context=context,
                 command=command,
                 selected_word=command.words[entry.inline_command_start_index],
             )
-            self._collect_inline_embedded_command(
+            result = self._collect_inline_embedded_command(
                 command.words[entry.inline_command_start_index : inline_command_end_index + 1],
                 entry_context,
             )
-            handled = True
-        return handled
+            states.append(result.flow_state)
+        return (
+            replace(context, flow_state=VariableFlowState.join(context.flow_state, *states))
+            if states
+            else None
+        )
 
     def _embedded_language_context(
         self,
@@ -1578,21 +1595,34 @@ class _FactCollector:
         command: Command,
         selected_word: Word,
     ) -> _ExtractionContext:
-        next_flow_state = parent_context.flow_state
-        if entry.language == 'tcl':
-            next_flow_state = script_body_flow_state(
-                parent_context.flow_state,
-                metadata_command_name=normalize_command_name(
-                    word_static_text(command.words[0]) or ''
-                ),
-                argument_words=command.words[1:],
-                selected_word=selected_word,
-            )
-        return _ExtractionContext(
-            uri=parent_context.uri,
+        effects = VariableEffects()
+        matched = self._matched_metadata_command(command, parent_context)
+        repeated = matched is not None and any(
+            isinstance(annotation, MetadataBind)
+            and self._metadata_binding_kind(matched[0], annotation) in {'foreach', 'lmap'}
+            for annotation in matched[0].annotations
+        )
+        if repeated:
+            body = self._embedded_script_text(selected_word)
+            if body is None:
+                effects = VariableEffects.unknown()
+            else:
+                text, start = body
+                parsed = self._parser.parse_embedded_script(parent_context.uri, text, start)
+                script = lower_parse_result(
+                    parsed, parser=self._parser, collect_lexical_spans=False
+                ).script
+                effects = self._script_effects(script, parent_context)
+        next_flow_state = script_body_flow_state(
+            parent_context.flow_state,
+            metadata_command_name=normalize_command_name(word_static_text(command.words[0]) or ''),
+            argument_words=command.words[1:],
+            selected_word=selected_word,
+            effects=effects,
+        )
+        return replace(
+            parent_context,
             namespace=entry.namespace,
-            scope_id=parent_context.scope_id,
-            procedure_symbol_id=parent_context.procedure_symbol_id,
             embedded_language=entry.language,
             embedded_owner_name=entry.owner_name,
             command_renames_enabled=False,
@@ -1603,9 +1633,9 @@ class _FactCollector:
         self,
         words: tuple[Word, ...],
         context: _ExtractionContext,
-    ) -> None:
+    ) -> _ExtractionContext:
         if not words:
-            return
+            return self._context_with_flow_state(context, context.flow_state.invalidated())
 
         embedded_command = Command(
             span=Span(start=words[0].span.start, end=words[-1].span.end),
@@ -1621,7 +1651,7 @@ class _FactCollector:
         self._string_spans.extend(lowering_result.string_spans)
         self._operator_spans.extend(lowering_result.operator_spans)
         self._diagnostics.extend(lowering_result.diagnostics)
-        self._collect_lowered_script(lowering_result.script, context)
+        return self._collect_lowered_script(lowering_result.script, context)
 
     def _collect_embedded_procedure(
         self,
@@ -1704,15 +1734,10 @@ class _FactCollector:
         if body_word is None:
             return
 
-        body_context = _ExtractionContext(
-            uri=proc_decl.uri,
-            namespace=proc_decl.namespace,
-            scope_id=proc_decl.symbol_id,
-            procedure_symbol_id=proc_decl.symbol_id,
+        body_context = replace(
+            self._procedure_context(proc_decl, context),
             embedded_language=procedure.body_context,
             embedded_owner_name=owner_name,
-            command_renames_enabled=False,
-            flow_state=VariableFlowState.empty(),
         )
         self._record_parameter_bindings(proc_decl.parameters, body_context)
         self._collect_script_body_word(body_word, body_context)
@@ -1878,7 +1903,7 @@ class _FactCollector:
     ) -> tuple[MetadataCommand, int] | None:
         available_commands = annotated_metadata_commands_for_packages(
             frozenset(self._active_builtin_packages),
-            metadata_registry=self._metadata_registry,
+            metadata_registry=context.metadata_registry,
         )
         if not command.words:
             return None
@@ -1907,7 +1932,7 @@ class _FactCollector:
                     candidates = tuple(
                         commands[prefix]
                         for commands in annotated_metadata_commands_by_package(
-                            metadata_registry=self._metadata_registry
+                            metadata_registry=context.metadata_registry
                         ).values()
                         if prefix in commands
                     )
@@ -2030,10 +2055,12 @@ class _FactCollector:
             return raw_text
         return word_static_text(word)
 
-    def _collect_script_body_word(self, word: Word, context: _ExtractionContext) -> None:
+    def _collect_script_body_word(
+        self, word: Word, context: _ExtractionContext
+    ) -> _ExtractionContext:
         embedded_script_text = self._embedded_script_text(word)
         if embedded_script_text is None:
-            return
+            return self._context_with_flow_state(context, context.flow_state.invalidated())
 
         script_text, start_position = embedded_script_text
         if not self._include_lexical_spans:
@@ -2066,7 +2093,7 @@ class _FactCollector:
         self._string_spans.extend(lowering_result.string_spans)
         self._operator_spans.extend(lowering_result.operator_spans)
         self._diagnostics.extend(lowering_result.diagnostics)
-        self._collect_lowered_script(lowering_result.script, context)
+        return self._collect_lowered_script(lowering_result.script, context)
 
     def _embedded_script_text(self, word: Word) -> tuple[str, Position] | None:
         if isinstance(word, BracedWord) and not word.expanded:
@@ -2093,7 +2120,7 @@ class _FactCollector:
                 return
             if is_builtin_package(
                 package_name,
-                metadata_registry=self._metadata_registry,
+                metadata_registry=context.metadata_registry,
             ):
                 self._active_builtin_packages.add(canonical_builtin_package_name(package_name))
             version_constraints = tuple(
@@ -2163,7 +2190,7 @@ class _FactCollector:
         self,
         word_references: LoweredWordReferences,
         context: _ExtractionContext,
-    ) -> None:
+    ) -> _ExtractionContext:
         for substitution in word_references.variable_substitutions:
             self._record_variable_reference(
                 name=substitution.name,
@@ -2172,7 +2199,8 @@ class _FactCollector:
             )
 
         for script in word_references.command_substitutions:
-            self._collect_lowered_script(script, context)
+            context = self._collect_lowered_script(script, context)
+        return context
 
     def _collect_lowered_proc(
         self,
@@ -2180,9 +2208,9 @@ class _FactCollector:
         context: _ExtractionContext,
         *,
         entry_by_script_word_index: dict[int, EmbeddedLanguageEntry],
-    ) -> None:
+    ) -> _ExtractionContext:
         if command.name is None or command.name_span is None or command.body_span is None:
-            return
+            return context
 
         qualified_name = qualify_name(command.name, context.namespace)
         proc_id = proc_symbol_id(context.uri, qualified_name, command.name_span.start.offset)
@@ -2205,7 +2233,7 @@ class _FactCollector:
         )
         self._procedures.append(proc_decl)
 
-        body_context = self._procedure_context(proc_decl)
+        body_context = self._procedure_context(proc_decl, context)
         self._record_parameter_bindings(proc_decl.parameters, body_context)
         self._collect_special_lowered_body(
             command,
@@ -2213,6 +2241,7 @@ class _FactCollector:
             body_context,
             entry_by_script_word_index=entry_by_script_word_index,
         )
+        return context
 
     def _collect_namespace(self, command: Command, context: _ExtractionContext) -> None:
         if len(command.words) < 2:
@@ -2227,9 +2256,9 @@ class _FactCollector:
         context: _ExtractionContext,
         *,
         entry_by_script_word_index: dict[int, EmbeddedLanguageEntry],
-    ) -> None:
+    ) -> _ExtractionContext:
         if command.namespace_name is None or command.namespace_span is None:
-            return
+            return self._context_with_flow_state(context, context.flow_state.invalidated())
 
         namespace_scope = NamespaceScope(
             uri=context.uri,
@@ -2241,7 +2270,7 @@ class _FactCollector:
         self._namespaces.append(namespace_scope)
 
         if context.procedure_symbol_id is not None:
-            return
+            return self._context_with_flow_state(context, context.flow_state.invalidated())
 
         self._collect_special_lowered_body(
             command,
@@ -2250,9 +2279,11 @@ class _FactCollector:
                 context.uri,
                 namespace_scope.qualified_name,
                 command_renames_enabled=context.command_renames_enabled,
+                parent=context,
             ),
             entry_by_script_word_index=entry_by_script_word_index,
         )
+        return self._context_with_flow_state(context, context.flow_state.invalidated())
 
     def _collect_namespace_import(self, command: Command, context: _ExtractionContext) -> None:
         for pattern_word in command.words[2:]:
@@ -2380,26 +2411,31 @@ class _FactCollector:
         context: _ExtractionContext,
         *,
         entry_by_script_word_index: dict[int, EmbeddedLanguageEntry],
-    ) -> None:
-        self._collect_special_lowered_body(
+    ) -> _ExtractionContext:
+        context = self._collect_special_lowered_body(
             command,
             command.start_body,
             context,
             entry_by_script_word_index=entry_by_script_word_index,
         )
-        self._collect_lowered_condition(command.condition, context)
+        context = self._context_after_body_effects(command.body, context)
+        context = self._context_after_body_effects(command.next_body, context)
+        context = self._collect_lowered_condition(command.condition, context)
+        loop_context = context
+        context, _ = self._if_clause_contexts(command.condition, context)
+        context = self._collect_special_lowered_body(
+            command,
+            command.body,
+            context,
+            entry_by_script_word_index=entry_by_script_word_index,
+        )
         self._collect_special_lowered_body(
             command,
             command.next_body,
             context,
             entry_by_script_word_index=entry_by_script_word_index,
         )
-        self._collect_special_lowered_body(
-            command,
-            command.body,
-            context,
-            entry_by_script_word_index=entry_by_script_word_index,
-        )
+        return loop_context
 
     def _collect_info(self, command: Command, context: _ExtractionContext) -> None:
         if len(command.words) < 3:
@@ -2447,26 +2483,43 @@ class _FactCollector:
         context: _ExtractionContext,
         *,
         entry_by_script_word_index: dict[int, EmbeddedLanguageEntry],
-    ) -> None:
+    ) -> _ExtractionContext:
         remaining_context = context
+        remaining_possible = True
+        exits: list[VariableFlowState] = []
         for clause in command.clauses:
-            self._collect_lowered_condition(clause.condition, remaining_context)
-            clause_context, remaining_context = self._if_clause_contexts(
-                clause.condition,
-                remaining_context,
+            remaining_context = self._collect_lowered_condition(clause.condition, remaining_context)
+            truth = eval_expr_text(
+                remaining_context.flow_state,
+                clause.condition.text if clause.condition is not None else '',
+                lambda _script, _state: (),
             )
-            self._collect_special_lowered_body(
+            clause_context, next_context = self._if_clause_contexts(
+                clause.condition, remaining_context
+            )
+            result = self._collect_special_lowered_body(
                 command,
                 clause.body,
                 clause_context,
                 entry_by_script_word_index=entry_by_script_word_index,
             )
-        self._collect_special_lowered_body(
-            command,
-            command.else_body,
-            remaining_context,
-            entry_by_script_word_index=entry_by_script_word_index,
+            if remaining_possible and truth.true_possible:
+                exits.append(result.flow_state)
+            remaining_possible = remaining_possible and truth.false_possible
+            remaining_context = next_context
+        result = (
+            remaining_context
+            if command.else_body is None
+            else self._collect_special_lowered_body(
+                command,
+                command.else_body,
+                remaining_context,
+                entry_by_script_word_index=entry_by_script_word_index,
+            )
         )
+        if remaining_possible:
+            exits.append(result.flow_state)
+        return replace(context, flow_state=VariableFlowState.join(*exits))
 
     def _collect_lowered_catch(
         self,
@@ -2474,7 +2527,7 @@ class _FactCollector:
         context: _ExtractionContext,
         *,
         entry_by_script_word_index: dict[int, EmbeddedLanguageEntry],
-    ) -> None:
+    ) -> _ExtractionContext:
         self._collect_special_lowered_body(
             command,
             command.body,
@@ -2484,20 +2537,30 @@ class _FactCollector:
         for variable_word in command.command.words[2:4]:
             self._record_simple_binding_word(variable_word, context, kind='catch')
 
+        return self._context_after_effects(
+            self._context_after_body_effects(command.body, context),
+            self._command_effects(command, context),
+        )
+
     def _collect_lowered_try(
         self,
         command: LoweredTryCommand,
         context: _ExtractionContext,
         *,
         entry_by_script_word_index: dict[int, EmbeddedLanguageEntry],
-    ) -> None:
+    ) -> _ExtractionContext:
         self._collect_special_lowered_body(
             command,
             command.body,
             context,
             entry_by_script_word_index=entry_by_script_word_index,
         )
+        context = self._context_after_effects(
+            self._context_after_body_effects(command.body, context),
+            self._command_effects(command, context),
+        )
         for handler in command.handlers:
+            context = self._context_after_body_effects(handler.body, context)
             if handler.binding_word is not None:
                 self._record_list_binding_word(handler.binding_word, context, kind='catch')
             self._collect_special_lowered_body(
@@ -2506,7 +2569,9 @@ class _FactCollector:
                 context,
                 entry_by_script_word_index=entry_by_script_word_index,
             )
-        self._collect_special_lowered_body(
+        if command.finally_body is None:
+            return context
+        return self._collect_special_lowered_body(
             command,
             command.finally_body,
             context,
@@ -2636,7 +2701,9 @@ class _FactCollector:
         context: _ExtractionContext,
         *,
         entry_by_script_word_index: dict[int, EmbeddedLanguageEntry],
-    ) -> None:
+    ) -> _ExtractionContext:
+        context = self._context_after_effects(context, self._command_effects(command, context))
+        exits: list[VariableFlowState] = []
         self._collect_switch_regexp_bindings(command.regexp_binding_words, context)
         for branch_patterns, body in zip(
             command.branch_patterns, command.branch_bodies, strict=True
@@ -2651,12 +2718,16 @@ class _FactCollector:
                     patterns=branch_patterns,
                 ),
             )
-            self._collect_special_lowered_body(
+            result = self._collect_special_lowered_body(
                 command,
                 body,
                 branch_context,
                 entry_by_script_word_index=entry_by_script_word_index,
             )
+            exits.append(result.flow_state)
+        if not any('default' in patterns for patterns in command.branch_patterns):
+            exits.append(context.flow_state)
+        return replace(context, flow_state=VariableFlowState.join(*exits))
 
     def _collect_vwait(self, command: Command, context: _ExtractionContext) -> None:
         if len(command.words) < 2:
@@ -2686,23 +2757,27 @@ class _FactCollector:
         context: _ExtractionContext,
         *,
         entry_by_script_word_index: dict[int, EmbeddedLanguageEntry],
-    ) -> None:
-        self._collect_lowered_condition(command.condition, context)
+    ) -> _ExtractionContext:
+        context = self._context_after_body_effects(command.body, context)
+        context = self._collect_lowered_condition(command.condition, context)
+        loop_context = context
+        context, _ = self._if_clause_contexts(command.condition, context)
         self._collect_special_lowered_body(
             command,
             command.body,
             context,
             entry_by_script_word_index=entry_by_script_word_index,
         )
+        return loop_context
 
     def _collect_lowered_body(
         self,
         body: LoweredScriptBody | None,
         context: _ExtractionContext,
-    ) -> None:
+    ) -> _ExtractionContext:
         if body is None:
-            return
-        self._collect_lowered_script(body.script, context)
+            return self._context_with_flow_state(context, context.flow_state.invalidated())
+        return self._collect_lowered_script(body.script, context)
 
     def _collect_special_lowered_body(
         self,
@@ -2711,9 +2786,9 @@ class _FactCollector:
         context: _ExtractionContext,
         *,
         entry_by_script_word_index: dict[int, EmbeddedLanguageEntry],
-    ) -> None:
+    ) -> _ExtractionContext:
         if body is None:
-            return
+            return self._context_with_flow_state(context, context.flow_state.invalidated())
 
         body_context = (
             context
@@ -2734,15 +2809,16 @@ class _FactCollector:
                     selected_word=selected_word,
                 )
 
-        self._collect_lowered_script(body.script, body_context)
+        result = self._collect_lowered_script(body.script, body_context)
+        return replace(context, flow_state=result.flow_state)
 
     def _collect_lowered_condition(
         self,
         condition: LoweredCondition | None,
         context: _ExtractionContext,
-    ) -> None:
+    ) -> _ExtractionContext:
         if condition is None:
-            return
+            return context
         for substitution in condition.variable_substitutions:
             self._record_variable_reference(
                 name=substitution.name,
@@ -2751,9 +2827,17 @@ class _FactCollector:
             )
         for script in condition.command_substitutions:
             self._collect_lowered_script(script, self._context_without_command_renames(context))
+            # Expression substitutions may be skipped by short-circuit evaluation.
+            context = self._context_after_effects(context, self._script_effects(script, context))
+        return context
 
     def _namespace_context(
-        self, uri: str, namespace: str, *, command_renames_enabled: bool
+        self,
+        uri: str,
+        namespace: str,
+        *,
+        command_renames_enabled: bool,
+        parent: _ExtractionContext | None = None,
     ) -> _ExtractionContext:
         return _ExtractionContext(
             uri=uri,
@@ -2763,11 +2847,20 @@ class _FactCollector:
             embedded_language=None,
             embedded_owner_name=None,
             command_renames_enabled=command_renames_enabled,
-            flow_state=VariableFlowState.empty(),
+            flow_state=VariableFlowState.empty(namespace=namespace, procedure=False),
+            metadata_registry=self._metadata_registry
+            if parent is None
+            else parent.metadata_registry,
+            explicit_environments=self._metadata_registry.environments
+            if parent is None
+            else parent.explicit_environments,
         )
 
-    def _procedure_context(self, proc_decl: ProcDecl) -> _ExtractionContext:
-        return _ExtractionContext(
+    def _procedure_context(
+        self, proc_decl: ProcDecl, context: _ExtractionContext
+    ) -> _ExtractionContext:
+        return replace(
+            context,
             uri=proc_decl.uri,
             namespace=proc_decl.namespace,
             scope_id=proc_decl.symbol_id,
@@ -2775,27 +2868,189 @@ class _FactCollector:
             embedded_language=None,
             embedded_owner_name=None,
             command_renames_enabled=False,
-            flow_state=VariableFlowState.empty(),
+            flow_state=VariableFlowState.empty(namespace=proc_decl.namespace),
         )
 
     def _updated_context_after_command(
         self,
-        command: Command,
+        command: LoweredCommand,
         *,
         normalized_command_name: str | None,
         context: _ExtractionContext,
     ) -> _ExtractionContext:
+        if context.procedure_symbol_id is not None and normalized_command_name in {
+            'global',
+            'variable',
+            'upvar',
+        }:
+            return self._context_with_flow_state(
+                context,
+                self._flow_state_after_links(command.command, normalized_command_name, context),
+            )
         if normalized_command_name == 'set':
             return self._context_with_flow_state(
                 context,
-                state_with_set_command(context.flow_state, command),
+                state_with_set_command(context.flow_state, command.command),
             )
         if normalized_command_name == 'unset':
             return self._context_with_flow_state(
                 context,
-                state_with_unset_command(context.flow_state, command),
+                state_with_unset_command(context.flow_state, command.command),
             )
-        return context
+        return self._context_after_effects(context, self._command_effects(command, context))
+
+    def _flow_state_after_links(
+        self, command: Command, name: str | None, context: _ExtractionContext
+    ) -> VariableFlowState:
+        words = command.words[1:]
+        if name == 'variable':
+            words = words[::2]
+        elif name == 'upvar':
+            level = word_static_text(words[0]) if words else None
+            if level is not None and self._is_upvar_level(level):
+                words = words[1:]
+            words = words[1::2]
+        links: dict[str, str | None] = {}
+        unknown = False
+        for word in words:
+            target = self._simple_variable_name(word)
+            if target is None:
+                unknown = True
+            elif name == 'upvar':
+                links[target] = None
+            else:
+                namespace = '::' if name == 'global' else context.namespace
+                links[name_tail(target)] = qualify_name(target, namespace)
+        return context.flow_state.with_links(links, unknown=unknown)
+
+    def _context_after_effects(
+        self, context: _ExtractionContext, effects: VariableEffects
+    ) -> _ExtractionContext:
+        return self._context_with_flow_state(context, effects.invalidate(context.flow_state))
+
+    def _command_effects(
+        self, command: LoweredCommand, context: _ExtractionContext
+    ) -> VariableEffects:
+        """Use the same output bindings for collection and body summaries."""
+        syntax = command.command
+        if not syntax.words:
+            return VariableEffects()
+        static_name = word_static_text(syntax.words[0])
+        if static_name is None:
+            return VariableEffects.unknown()
+        name = normalize_command_name(static_name)
+        words = syntax.words
+        targets: list[Word] = []
+        if name in {'eval', 'source', 'uplevel', 'vwait', 'update', 'upvar', 'global', 'variable'}:
+            return VariableEffects.unknown()
+        if name == 'set' and len(words) >= 3:
+            targets.append(words[1])
+        elif name == 'unset':
+            targets.extend(unset_target_words(syntax))
+        elif name == 'array' and len(words) >= 3 and word_static_text(words[1]) in {'set', 'unset'}:
+            targets.append(words[2])
+        elif name == 'binary' and len(words) >= 5 and word_static_text(words[1]) == 'scan':
+            targets.extend(words[4:])
+        elif name == 'catch':
+            targets.extend(words[2:4])
+
+        list_targets: list[Word] = []
+        if isinstance(command, LoweredSwitchCommand):
+            targets.extend(command.regexp_binding_words)
+        elif isinstance(command, LoweredTryCommand):
+            list_targets.extend(
+                handler.binding_word
+                for handler in command.handlers
+                if handler.binding_word is not None
+            )
+
+        matched = self._matched_metadata_command(syntax, context)
+        if matched is not None:
+            metadata, prefix_count = matched
+            arguments = words[prefix_count:]
+            for annotation in metadata.annotations:
+                if isinstance(annotation, (MetadataPlugin, MetadataSource)):
+                    return VariableEffects.unknown()
+                if not isinstance(annotation, MetadataBind):
+                    continue
+                selected = self._selected_metadata_argument_words(
+                    argument_words=arguments,
+                    argument_texts=tuple(word_static_text(word) for word in arguments),
+                    metadata_command=metadata,
+                    annotation=annotation,
+                )
+                if selected is None:
+                    return VariableEffects(None)
+                for word in selected:
+                    if annotation.selector.list_mode:
+                        list_targets.append(word)
+                    else:
+                        targets.append(word)
+        names: set[str] = set()
+        for target in list_targets:
+            if word_static_text(target) is None:
+                return VariableEffects(None)
+            names.update(item.text for item in self._static_list_items(target))
+        for target in targets:
+            values = dynamic_variable_target_names(target, context.flow_state)
+            if not values:
+                return VariableEffects(None)
+            names.update(values)
+        return VariableEffects(frozenset(names))
+
+    def _script_effects(
+        self, script: LoweredScript, context: _ExtractionContext
+    ) -> VariableEffects:
+        """Summarize possible writes without running plugins or collecting facts."""
+        context = self._context_with_flow_state(context, context.flow_state.cleared())
+        effects = VariableEffects()
+        for comment in script.comments:
+            if comment.text[1:].strip().startswith('tcl-ls:'):
+                return VariableEffects.unknown()
+        for command in script.commands:
+            if isinstance(command, LoweredNamespaceEvalCommand):
+                return VariableEffects.unknown()
+            if not isinstance(command, LoweredProcCommand) and any(
+                word_static_text(command.command.words[index]) is None
+                for index in self._special_body_word_indices(command)
+                if index < len(command.command.words)
+            ):
+                return VariableEffects.unknown()
+            effects = effects.combined(self._command_effects(command, context))
+            scripts = list(command_scripts(command))
+            if isinstance(command, LoweredGenericCommand):
+                entries = self._resolved_command_embedded_entries(command.command, context)
+                if entries is None:
+                    return VariableEffects.unknown()
+                for entry in entries:
+                    if entry.script_word_index is None:
+                        return VariableEffects.unknown()
+                    word = command.command.words[entry.script_word_index]
+                    body = self._embedded_script_text(word)
+                    if body is None:
+                        return VariableEffects.unknown()
+                    text, start = body
+                    parsed = self._parser.parse_embedded_script(context.uri, text, start)
+                    scripts.append(
+                        lower_parse_result(
+                            parsed, parser=self._parser, collect_lexical_spans=False
+                        ).script
+                    )
+            for child in scripts:
+                effects = effects.combined(self._script_effects(child, context))
+        return effects
+
+    def _context_after_body_effects(
+        self, body: LoweredScriptBody | None, context: _ExtractionContext
+    ) -> _ExtractionContext:
+        if not context.flow_state.procedure and not context.flow_state.exact_values_by_name:
+            return context
+        effects = (
+            VariableEffects.unknown()
+            if body is None
+            else self._script_effects(body.script, context)
+        )
+        return self._context_after_effects(context, effects)
 
     def _context_with_flow_state(
         self,
@@ -2823,10 +3078,13 @@ class _FactCollector:
             context.flow_state,
             condition.text,
         )
-        return (
-            self._context_with_flow_state(context, true_state),
-            self._context_with_flow_state(context, false_state),
-        )
+        true_context = self._context_with_flow_state(context, true_state)
+        false_context = self._context_with_flow_state(context, false_state)
+        for script in condition.command_substitutions:
+            effects = self._script_effects(script, context)
+            true_context = self._context_after_effects(true_context, effects)
+            false_context = self._context_after_effects(false_context, effects)
+        return true_context, false_context
 
     def _record_variable_reference(
         self,

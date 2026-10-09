@@ -301,7 +301,9 @@ Example:
 
 ``meta language`` declares a named embedded command language. Inside the body,
 each entry uses ``command`` rather than ``meta command``. Those nested
-commands are only valid while a matching ``enter`` clause is active.
+commands are only valid while a matching ``enter`` clause is active. In an
+environment module, use ``override`` instead of ``command`` to replace a
+command from a lower environment. It accepts the same forms and body clauses.
 
 Languages are closed by default. Without an ``extends tcl`` clause, only the
 commands declared inside that language are valid there.

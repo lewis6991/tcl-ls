@@ -140,6 +140,44 @@ class LoweredWhileCommand(LoweredCommandBase):
 
 type LoweredCommand = LoweredCommandBase
 
+
+def command_scripts(command: LoweredCommand) -> tuple[LoweredScript, ...]:
+    """Scripts evaluated by a command, excluding procedure declarations."""
+    scripts = [script for refs in command.word_references for script in refs.command_substitutions]
+    bodies: tuple[LoweredScriptBody | None, ...] = ()
+    conditions: tuple[LoweredCondition | None, ...] = ()
+    match command:
+        case LoweredNamespaceEvalCommand() | LoweredCatchCommand():
+            bodies = (command.body,)
+        case LoweredForCommand():
+            bodies = (command.start_body, command.body, command.next_body)
+            conditions = (command.condition,)
+        case LoweredWhileCommand():
+            bodies = (command.body,)
+            conditions = (command.condition,)
+        case LoweredIfCommand():
+            bodies = (*(clause.body for clause in command.clauses), command.else_body)
+            conditions = tuple(clause.condition for clause in command.clauses)
+        case LoweredTryCommand():
+            bodies = (
+                command.body,
+                *(handler.body for handler in command.handlers),
+                command.finally_body,
+            )
+        case LoweredSwitchCommand():
+            bodies = command.branch_bodies
+        case _:
+            pass
+    scripts.extend(body.script for body in bodies if body is not None)
+    scripts.extend(
+        script
+        for condition in conditions
+        if condition is not None
+        for script in condition.command_substitutions
+    )
+    return tuple(scripts)
+
+
 _EMPTY_LOWERED_WORD_REFERENCES = LoweredWordReferences(
     variable_substitutions=(),
     command_substitutions=(),

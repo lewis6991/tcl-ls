@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, cast
@@ -200,7 +200,7 @@ def _metadata_commands_with_aliases(
             name: tuple(overloads) for name, overloads in commands.items()
         }
         additions.update({alias.name: alias for alias in candidate.aliases})
-        _discard_overridden_command_trees(definitions, additions)
+        discard_overridden_command_trees(definitions, additions)
         definitions.update(additions)
 
     def expand(
@@ -505,25 +505,6 @@ def _all_metadata_commands(metadata_registry: MetadataRegistry) -> tuple[Metadat
     return tuple(commands)
 
 
-@metadata_lru_cache(maxsize=1)
-def all_metadata_language_extends(metadata_registry: MetadataRegistry) -> dict[str, bool]:
-    language_extends: dict[str, bool] = {}
-    for _, layer_paths in metadata_registry.metadata_file_layers():
-        layer_extends: dict[str, bool] = {}
-        for metadata_path in layer_paths:
-            for language_name, extends_tcl in metadata_file_summary(metadata_path).language_extends:
-                # Repeated `meta language name { ... }` blocks compose within
-                # one metadata root, so any extending block keeps the language
-                # open inside that layer.
-                layer_extends[language_name] = (
-                    layer_extends.get(language_name, False) or extends_tcl
-                )
-        # Later metadata roots override earlier roots, including whether a
-        # language stays open to Tcl fallback.
-        language_extends.update(layer_extends)
-    return language_extends
-
-
 def file_scoped_annotated_metadata_commands(
     *,
     metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
@@ -570,7 +551,7 @@ def _file_scoped_annotated_metadata_commands(
 
         for lookup_name, override_names in layer_overrides_by_lookup_name.items():
             commands = commands_by_lookup_name.setdefault(lookup_name, {})
-            _discard_overridden_command_trees(commands, override_names)
+            discard_overridden_command_trees(commands, override_names)
             commands.update(layer_commands_by_lookup_name.get(lookup_name, {}))
 
     return {
@@ -629,17 +610,22 @@ def _file_scoped_annotated_entries_for_file(
     return tuple(override_entries), annotated
 
 
-def _discard_overridden_command_trees[CommandValue](
+def discard_overridden_command_trees[CommandValue](
     commands: dict[str, CommandValue],
     override_commands: Mapping[str, object],
 ) -> None:
-    override_names = tuple(override_commands)
     for existing_name in tuple(commands):
-        if any(
-            existing_name == override_name or existing_name.startswith(f'{override_name} ')
-            for override_name in override_names
-        ):
+        if any(prefix in override_commands for prefix in command_tree_prefixes(existing_name)):
             commands.pop(existing_name, None)
+
+
+def command_tree_prefixes(name: str) -> Iterator[str]:
+    """A command and its parent commands, from most to least specific."""
+    while True:
+        yield name
+        name, separator, _ = name.rpartition(' ')
+        if not separator:
+            return
 
 
 def _parse_metadata_command_entry(
@@ -782,18 +768,19 @@ def _parse_metadata_context_entry(
                 )
             context_extends = 'tcl'
             continue
-        if nested_name != 'command':
+        if nested_name not in {'command', 'override'}:
             raise RuntimeError(
                 f'Metadata language `{context_name}` entries must use '
                 '`command name {args}`, `command name variants { ... }`, '
-                'or `extends tcl`.'
+                '`override name {args}`, or `extends tcl`.'
             )
         nested_command_entries.append(nested_command)
 
     commands: list[MetadataCommand] = []
     for nested_command in nested_command_entries:
         commands.extend(
-            _parse_metadata_command_entry(
+            replace(entry, is_override=word_static_text(nested_command.words[0]) == 'override')
+            for entry in _parse_metadata_command_entry(
                 nested_command,
                 metadata_path=metadata_path,
                 metadata_uri=metadata_uri,

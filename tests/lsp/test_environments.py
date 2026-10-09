@@ -13,6 +13,8 @@ def project(tmp_path: Path) -> Path:
     (tmp_path / 'generated.meta.tcl').write_text(
         'meta module ExampleTool -environment\n'
         'meta command prove args\n'
+        'meta command tool_write {name} {bind 1 set}\n'
+        'meta command tool_loop {var values body} {bind list 1 foreach; enter tcl body 3}\n'
         'meta command tool::prove args\n'
         'meta command tcl_clock args\n'
         'meta command encoding args\n'
@@ -245,3 +247,288 @@ puts ok
         (4, 'invalid-environment'),
         (5, 'invalid-environment'),
     ]
+
+
+@pytest.mark.parametrize(
+    ('statement', 'selected'),
+    [
+        ('if {1} {set ::tool other}', False),
+        ('if {0} {set ::tool other}', True),
+        ('if {$choice} {set ::tool other}', False),
+        ('if {$choice} {set ::tool example} else {set ::tool example}', True),
+        ('switch -- $choice {one {set ::tool other} default {set ::tool example}}', False),
+        ('eval {set ::tool other}', False),
+        ('tool_body {set ::tool other}', False),
+        ('tool_body {puts ok}', True),
+        ('catch {set ::tool other}', False),
+        ('try {set ::tool other} finally {set ::tool example}', True),
+        ('foreach item {a b} {set ::tool other}', False),
+        ('while {$condition} {set ::tool other}', False),
+        ('for {set n 0} {$n < 2} {incr n} {set ::tool other}', False),
+        ('set result [set ::tool other]', False),
+        ('append ::tool other', False),
+        ('tool_write ::tool', False),
+        ('set ::tool other; if {0 && [set ::tool example]} {}', False),
+        ('set $unknown other', False),
+        (
+            'set ::tool other; if {$choice} {set name ::tool} else {set name ::other}; '
+            'set $name example',
+            False,
+        ),
+        ('source $path', False),
+        ('proc delayed {} {set ::tool other}', True),
+        ('namespace eval nested {set ::tool other}', False),
+        ('set ::tool other; while {$::tool eq "example"} {puts ok}', False),
+        ('set ::tool other; for {} {0} {} {set ::tool example}', False),
+        ('while {$choice} {puts ok}', True),
+        ('catch {puts ok}', True),
+    ],
+)
+def test_environment_rules_follow_command_effects(
+    project: Path, statement: str, selected: bool
+) -> None:
+    uri = (project / 'effects.tcl').as_uri()
+    text = f'set ::tool example\n{statement}\nprove\nclock nonsense\n'
+    server = LanguageServer()
+    try:
+        diagnostics = server.open_document(uri, text, 1)
+        assert any(d.span.start.line == 2 for d in diagnostics) is not selected
+        assert any(d.span.start.line == 3 for d in diagnostics) is not selected
+        snapshot = server.analysis_snapshot()
+        completions = completion_items(
+            snapshot.documents,
+            workspace_index=snapshot.workspace_index,
+            metadata_registry=snapshot.metadata_registry,
+            uri=uri,
+            line=2,
+            character=2,
+        )
+        assert ('prove' in {item.label for item in completions.items}) is selected
+    finally:
+        server.shutdown()
+
+
+def test_embedded_languages_use_the_selected_environment_stack(project: Path) -> None:
+    (project / 'base.meta.tcl').write_text(
+        'meta module Tcl\n'
+        'meta command run {body} {enter sample body 1}\n'
+        'meta language sample {command base {}}\n',
+        encoding='utf-8',
+    )
+    with (project / 'generated.meta.tcl').open('a', encoding='utf-8') as metadata:
+        metadata.write('meta language sample {extends tcl; command native {}}\n')
+    (project / 'closed.meta.tcl').write_text(
+        'meta module ClosedTool -environment\nmeta language sample {}\n', encoding='utf-8'
+    )
+    with (project / 'tcllsrc.tcl').open('a', encoding='utf-8') as config:
+        config.write('plugin-path base.meta.tcl\nplugin-path closed.meta.tcl\n')
+    text = """run {base; native; puts ok}
+if {1} {
+    # tcl-ls: env ExampleTool
+    run {base; native; puts ok}
+    if {1} {
+        # tcl-ls: env ClosedTool
+        run {base; native; puts ok}
+    }
+    run {base; native; puts ok}
+}
+if {1} {
+    # tcl-ls: env ClosedTool
+    # tcl-ls: env ExampleTool
+    run {base; native; puts ok}
+}
+run {base; native; puts ok}
+"""
+    server = LanguageServer()
+    try:
+        diagnostics = server.open_document((project / 'languages.tcl').as_uri(), text, 1)
+        assert [(d.span.start.line, d.message) for d in diagnostics] == [
+            (0, 'Unresolved command `native`.'),
+            (0, 'Unresolved command `puts`.'),
+            (6, 'Unresolved command `puts`.'),
+            (15, 'Unresolved command `native`.'),
+            (15, 'Unresolved command `puts`.'),
+        ]
+    finally:
+        server.shutdown()
+
+
+@pytest.mark.parametrize(
+    ('initial', 'changed', 'selected'),
+    [
+        ('\npr\n', '# tcl-ls: env ExampleTool\npr\n', True),
+        ('# tcl-ls: env ExampleTool\npr\n', '\npr\n', False),
+        ('set ::tool other\npr\n', 'set ::tool example\npr\n', True),
+        ('set ::tool example\npr\n', 'set ::tool other\npr\n', False),
+        (
+            '# tcl-ls: env ExampleTool\npr\n',
+            'if {1} {\n# tcl-ls: env ExampleTool\n}\npr\n',
+            False,
+        ),
+        ('pr\n', 'if {$::tool eq "example"} {\npr\n', True),
+    ],
+)
+def test_live_completion_uses_current_scopes(
+    server: LanguageServer, project: Path, initial: str, changed: str, selected: bool
+) -> None:
+    from tests.lsp.helpers import (
+        change_server_document,
+        open_server_document,
+        override_schedule_document_change,
+    )
+    from tests.lsp.helpers import (
+        completion_items as request_completions,
+    )
+
+    uri = (project / 'live.tcl').as_uri()
+    original_schedule = server.schedule_document_change
+
+    def skip_change(_uri: str, _version: int) -> None:
+        pass
+
+    try:
+        open_server_document(server, initial, uri=uri)
+        # Hold background analysis so the request must use the live buffer.
+        override_schedule_document_change(server, skip_change)
+        change_server_document(server, changed, uri=uri)
+        items = request_completions(
+            server, uri=uri, line=len(changed.splitlines()) - 1, character=2
+        )
+        assert ('prove' in {item['label'] for item in items}) is selected
+        assert server.documents[uri].text == initial
+    finally:
+        override_schedule_document_change(server, original_schedule)
+
+
+@pytest.mark.parametrize(
+    'loop',
+    [
+        'foreach item {a b}',
+        'lmap item {a b}',
+        'tool_loop item {a b}',
+        'while {$again}',
+        'for {} {$again} {}',
+    ],
+)
+def test_loop_bodies_do_not_reuse_values_written_by_an_earlier_iteration(
+    project: Path, loop: str
+) -> None:
+    source = project / 'loop.tcl'
+    source.write_text(
+        f'set ::tool example\n{loop} {{\nprove\nset ::tool other\n}}\n',
+        encoding='utf-8',
+    )
+    report = check_project(source, threads=1)
+    assert any(
+        item.diagnostic.message == 'Unresolved command `prove`.' for item in report.diagnostics
+    )
+
+
+@pytest.mark.parametrize(
+    'text',
+    [
+        'set tool example\nprove\nset ::tool other\nprove # unresolved\n',
+        'namespace eval nested {\nset ::tool example\nset tool other\n'
+        'append tool value\nprove\n}\n',
+        'proc run {} {\nset ::tool example\nset tool other\nappend tool value\nprove\n}\n',
+        'proc run {} {\nglobal tool\nset tool example\nprove\n'
+        'set ::tool other\nprove # unresolved\n}\n',
+        'namespace eval nested {proc run {} {\nvariable tool\nset tool example\n'
+        'if {$::nested::tool eq "example"} {set ::tool example}\nprove\n}}\n',
+        'proc run {} {\nif {$choice} {global tool}\nset ::tool example\n'
+        'set tool other\nprove # unresolved\n}\n',
+        'proc run {} {\nupvar #0 ::tool alias\nset ::tool example\n'
+        'set alias other\nprove # unresolved\n}\n',
+    ],
+)
+def test_environment_rules_resolve_variable_identity(project: Path, text: str) -> None:
+    server = LanguageServer()
+    try:
+        diagnostics = server.open_document((project / 'identity.tcl').as_uri(), text, 1)
+        assert [
+            d.span.start.line for d in diagnostics if d.message == 'Unresolved command `prove`.'
+        ] == [line for line, source in enumerate(text.splitlines()) if '# unresolved' in source]
+    finally:
+        server.shutdown()
+
+
+@pytest.mark.parametrize(
+    'statement',
+    [
+        'try {error other} on error {::tool} {}',
+        'try {error other} trap {} {::tool} {}',
+        'switch -regexp -matchvar ::tool other {other {}}',
+        'switch -regexp -indexvar ::tool other {other {}}',
+    ],
+)
+@pytest.mark.parametrize('repeated', [False, True])
+def test_structured_output_variables_invalidate_environment_rules(
+    project: Path, statement: str, repeated: bool
+) -> None:
+    text = (
+        f'set ::tool example\nwhile {{$again}} {{\nprove\n{statement}\n}}\n'
+        if repeated
+        else f'set ::tool example\n{statement}\nprove\n'
+    )
+    server = LanguageServer()
+    try:
+        diagnostics = server.open_document((project / 'output.tcl').as_uri(), text, 1)
+        assert any(d.message == 'Unresolved command `prove`.' for d in diagnostics)
+    finally:
+        server.shutdown()
+
+
+def test_environment_can_explicitly_override_an_embedded_command(project: Path) -> None:
+    (project / 'base.meta.tcl').write_text(
+        'meta module Tcl\nmeta command run {body} {enter sample body 1}\n'
+        'meta language sample {command action {body} {enter tcl body 1}}\n',
+        encoding='utf-8',
+    )
+    with (project / 'generated.meta.tcl').open('a', encoding='utf-8') as metadata:
+        # Generated inventories must not remove the body's precise metadata.
+        metadata.write('meta language sample {command action args}\n')
+    (project / 'second.meta.tcl').write_text(
+        'meta module SecondTool -environment\nmeta language sample {override action args}\n',
+        encoding='utf-8',
+    )
+    with (project / 'tcllsrc.tcl').open('a', encoding='utf-8') as config:
+        config.write('plugin-path base.meta.tcl\nplugin-path second.meta.tcl\n')
+    text = """run {action {missing}}
+# tcl-ls: env ExampleTool
+run {action {missing}}
+if {1} {
+    # tcl-ls: env SecondTool
+    run {action {missing}}
+}
+run {action {missing}}
+"""
+    server = LanguageServer()
+    try:
+        diagnostics = server.open_document((project / 'override.tcl').as_uri(), text, 1)
+        assert [(d.span.start.line, d.message) for d in diagnostics] == [
+            (0, 'Unresolved command `missing`.'),
+            (2, 'Unresolved command `missing`.'),
+            (7, 'Unresolved command `missing`.'),
+        ]
+    finally:
+        server.shutdown()
+
+
+@pytest.mark.parametrize(
+    'body',
+    [
+        'catch {global tool}',
+        'try {global tool} finally {}',
+        'while {$again} {global tool}',
+        'set ::tool example; tool_body {global tool}',
+        'eval {global tool}',
+    ],
+)
+def test_uncertain_bodies_invalidate_variable_links(project: Path, body: str) -> None:
+    text = f'proc run {{}} {{\n{body}\nset ::tool example\nset tool other\nprove\n}}\n'
+    server = LanguageServer()
+    try:
+        diagnostics = server.open_document((project / 'links.tcl').as_uri(), text, 1)
+        assert any(d.message == 'Unresolved command `prove`.' for d in diagnostics)
+    finally:
+        server.shutdown()
