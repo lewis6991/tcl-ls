@@ -17,7 +17,7 @@ from tcl_lsp.analysis.metadata_effects import dependency_required_packages
 from tcl_lsp.common import Diagnostic
 from tcl_lsp.metadata_paths import MetadataRegistry, create_metadata_registry
 from tcl_lsp.parser import Parser
-from tcl_lsp.project.config import configured_library_paths, configured_plugin_paths
+from tcl_lsp.project.config import configured_library_paths, configured_metadata_paths
 from tcl_lsp.project.indexing import (
     PackageIndexCatalog,
     apply_package_index_catalog,
@@ -105,7 +105,7 @@ def check_project(
     path: Path,
     *,
     threads: int = DEFAULT_WORKER_COUNT,
-    plugin_paths: Sequence[Path | str] = (),
+    metadata_paths: Sequence[Path | str] = (),
     reporter: StreamReporter | None = None,
     environment: str | None = None,
 ) -> CheckReport:
@@ -113,7 +113,7 @@ def check_project(
         path,
         reporter=reporter,
         threads=threads,
-        plugin_paths=plugin_paths,
+        metadata_paths=metadata_paths,
         environment=environment,
     )
 
@@ -123,13 +123,13 @@ def _run_check(
     reporter: StreamReporter | None = None,
     *,
     threads: int = 1,
-    plugin_paths: Sequence[Path | str] = (),
+    metadata_paths: Sequence[Path | str] = (),
     environment: str | None = None,
 ) -> CheckReport:
     target = path.expanduser().resolve(strict=False)
-    active_plugin_paths = (*configured_plugin_paths(target), *plugin_paths)
+    active_metadata_paths = (*configured_metadata_paths(target), *metadata_paths)
     active_library_paths = configured_library_paths(target)
-    metadata_registry = create_metadata_registry(active_plugin_paths, environment=environment)
+    metadata_registry = create_metadata_registry(active_metadata_paths, environment=environment)
     worker_count = _worker_count(threads)
     started = time.monotonic()
     units = _discover_analysis_units(target)
@@ -159,7 +159,7 @@ def _run_check(
     executor = _create_unit_executor(
         worker_count,
         package_index_catalog,
-        active_plugin_paths,
+        active_metadata_paths,
         environment,
     )
     executor_context = executor if executor is not None else nullcontext(None)
@@ -501,11 +501,11 @@ def _analyze_source_document(
 
 def _initialize_unit_worker(
     package_index_catalog: PackageIndexCatalog,
-    plugin_paths: tuple[str, ...],
+    metadata_paths: tuple[str, ...],
     environment: str | None = None,
 ) -> None:
     global _worker_document_cache, _worker_package_index_catalog, _worker_resolver
-    metadata_registry = create_metadata_registry(plugin_paths, environment=environment)
+    metadata_registry = create_metadata_registry(metadata_paths, environment=environment)
     parser = Parser()
     extractor = FactExtractor(parser, metadata_registry=metadata_registry)
     _worker_document_cache = _DocumentCache(parser=parser, extractor=extractor)
@@ -539,7 +539,7 @@ def _worker_services() -> tuple[
 def _create_unit_executor(
     worker_count: int,
     package_index_catalog: PackageIndexCatalog,
-    plugin_paths: Sequence[Path | str],
+    metadata_paths: Sequence[Path | str],
     environment: str | None = None,
 ) -> ProcessPoolExecutor | None:
     if worker_count <= 1:
@@ -550,7 +550,7 @@ def _create_unit_executor(
             initializer=_initialize_unit_worker,
             initargs=(
                 package_index_catalog,
-                tuple(str(path) for path in plugin_paths),
+                tuple(str(path) for path in metadata_paths),
                 environment,
             ),
         )

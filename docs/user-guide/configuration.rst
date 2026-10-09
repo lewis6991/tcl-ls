@@ -1,59 +1,143 @@
 Project Configuration
 =====================
 
-Both ``tcl-ls`` and ``tcl-check`` automatically read project-local config from
-``tcllsrc.tcl`` files.
-
-Discovery Rules
----------------
-
-When the server opens a document, or when the checker analyzes a path, the
-tool walks upward from that path toward the filesystem root and collects every
-``tcllsrc.tcl`` file it finds. Relative paths inside each config file are
-resolved relative to the directory that contains that file.
-
-Supported Commands
-------------------
-
-``tcllsrc.tcl`` currently supports these static commands:
-
-* ``plugin-path path``
-* ``lib-path path``
-* ``library-path path``
-* ``environment name when {condition}``
-
-Paths must be literal strings. Dynamic Tcl in the config file is rejected.
-
-Typical Example
----------------
+Both ``tcl-ls`` and ``tcl-check`` read project settings from ``tcllsrc.tcl``.
+For example:
 
 .. code-block:: tcl
 
-   plugin-path .tcl-ls
+   source .tcl-ls/tools.meta.tcl
    lib-path ../vendor/tcllib
 
-``plugin-path`` accepts:
+Discovery And Syntax
+--------------------
 
-* a directory containing ``*.meta.tcl`` files
-* a single ``.meta.tcl`` file
-* a Tcl plugin script ending in ``.tcl`` or ``.tm``
+Config discovery searches a directory and all its parents, reading parent
+settings first:
 
-When a plugin script is passed, sibling metadata files are discovered from the
-script's parent directory.
+* The language server starts from each opened file's directory.
+* The checker starts from its target directory (or its target file's directory)
+  for metadata and library settings.
+* Both tools start from each analyzed source file's directory for diagnostic
+  and environment rules.
 
-``lib-path`` and ``library-path`` are synonyms. Their directories are scanned
-for ``pkgIndex.tcl`` files so external library trees can satisfy
-``package require`` without being copied into the main project.
+Relative paths resolve from the file that contains the declaration.
+
+Config files accept these commands:
+
+* ``source path`` includes a file of metadata or config declarations.
+* ``lib-path path`` searches a directory for ``pkgIndex.tcl`` files to resolve
+  external packages. ``library-path`` is a synonym.
+* ``meta`` declares metadata directly; see :ref:`project-metadata`.
+* ``diagnostic code level ?-path pattern?`` controls diagnostics.
+* ``environment name when {condition}`` selects a tool environment when a
+  condition is known to be true.
+
+Config files are read as static declarations. Paths and other arguments must
+be literal Tcl words; Tcl commands are not executed. Brace conditions and words
+that contain spaces or brackets.
+
+Use config files for settings shared by the editor and checker. For temporary
+metadata, use the checker's ``--meta-path`` option; see
+:doc:`../reference/cli`.
+
+.. _project-metadata:
+
+Metadata Includes
+-----------------
+
+``source`` includes one file at that position. Included files can include other
+files, so a shared metadata file can collect declarations in the required order.
+The path must name a file, not a directory.
+
+Metadata can also be declared directly in the config:
+
+.. code-block:: tcl
+
+   meta module JasperGold -environment {
+       source .tcl-ls/jasper-commands.meta.tcl
+   }
+
+Here, the included declarations belong to ``JasperGold`` unless they declare
+their own module. See :ref:`metadata-composition` for module and include rules,
+and :doc:`../meta` for writing or generating metadata.
+
+.. _diagnostic-configuration:
+
+Diagnostic Controls
+-------------------
+
+Use ``diagnostic`` to change severity or disable a diagnostic:
+
+.. code-block:: tcl
+
+   diagnostic unresolved-variable off
+   diagnostic unresolved-command error
+   diagnostic unknown-option hint -path vendor
+   diagnostic * off -path generated/**
+   diagnostic unresolved-command default -path generated/handwritten.tcl
+
+Levels are ``error``, ``warning``, ``information``, ``hint``, ``off``, and
+``default``. ``off`` disables a diagnostic. ``default`` enables it at its
+built-in severity, including when an earlier rule disabled it. Codes accept
+wildcards, such as ``unresolved-*`` or ``*`` for all diagnostics. See the
+:doc:`diagnostic catalog <../reference/diagnostics>` for available codes.
+
+Project rules apply in declaration order; the last matching rule wins. A rule
+without ``-path`` applies to all files covered by that config, including
+subdirectories.
+
+Path patterns are relative to the declaring file's directory and use ``/``
+separators. A directory name includes its descendants. ``*``, ``?``, and
+``[abc]`` match within one path component; ``**`` matches zero or more
+components. Thus, ``vendor/*.tcl`` selects files directly under ``vendor``,
+while ``vendor/**/*.tcl`` also selects nested files. Absolute paths and ``..``
+components are rejected.
+
+File And Statement Directives
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Source comments can override project rules. A ``file`` directive applies to the
+whole file, including code before the comment:
+
+.. code-block:: tcl
+
+   # tcl-ls: diagnostic file unresolved-variable off
+
+A ``statement`` directive applies to the next Tcl statement:
+
+.. code-block:: tcl
+
+   # tcl-ls: diagnostic statement unresolved-command off
+   tool_command argument
+
+It covers the complete statement, including nested bodies and command
+substitutions. The statement must be in the same Tcl body as the comment. The
+rule does not extend to a second statement, even on the same line.
+
+Statement rules override file rules, which override project rules. Within each
+scope, the last matching rule wins. Directives accept the same codes and levels
+as project rules, but do not accept ``-path``. They must be Tcl comments; text
+inside strings or data words has no effect.
+
+These controls apply to parser and analysis diagnostics in both tools. They do
+not disable parsing, symbol resolution, or completion.
+``--fail-on-diagnostics`` considers only enabled diagnostics.
+
+.. _tool-environments:
 
 Tool Environments
 -----------------
 
 An environment adds a named metadata module above the standard Tcl commands.
-Declare the module with ``meta module name -environment`` and load its metadata
-with ``plugin-path``. Tool modules are separate from Tcl packages and remain
-inactive until selected.
+Declare it with ``meta module name -environment {body}``, as above. Loading the
+metadata makes the environment available; selecting it makes its commands
+active. Environments are separate from Tcl packages.
 
-Select an environment in Tcl source with a comment:
+Source Directives
+~~~~~~~~~~~~~~~~~
+
+Select an environment with a Tcl comment:
 
 .. code-block:: tcl
 
@@ -66,48 +150,59 @@ Select an environment in Tcl source with a comment:
 The directive applies from the comment to the end of the enclosing Tcl body.
 Nested bodies inherit it and can add another environment above it. Leaving a
 body restores the previous environment. A top-level directive applies to the
-rest of the file. No explicit push or pop is needed. Comments inside data
-strings do not select environments. Unknown names produce diagnostics.
+rest of the file. Text inside data strings has no effect, and unknown
+environment names produce diagnostics.
 
-For shared code, a project rule can select an environment from known variable
-values:
+Conditional Rules
+~~~~~~~~~~~~~~~~~
+
+A project rule can select an environment from known variable values:
 
 .. code-block:: tcl
 
    environment JasperGold when {$::fts::TOOL eq "jg"}
 
-The rule does not assert that the condition is true. It selects Jasper where
-static analysis knows the condition is true, such as the matching ``if`` or
-``switch`` branch. Unknown values do not select it. Conditions use the existing
-static expression analysis; Tcl commands are never executed. Use fully qualified
-variable names for project-wide conditions. Rules are applied in config order,
-above explicitly selected environments.
+This selects JasperGold where static analysis knows the condition is true,
+such as the matching ``if`` or ``switch`` branch. It does not assert the
+condition or execute Tcl commands. An unknown condition does not select the
+environment. Use fully qualified variable names for project-wide conditions.
+Matching rules apply in config order, above explicitly selected environments.
 
-Value tracking uses visible assignments and metadata ``bind`` effects. After a
-branch, a value is known only if every possible path establishes it. Loops and
-caught errors invalidate variables their bodies may write. Dynamic execution,
-such as ``eval`` or ``source``, discards tracked values. Effects inside called
-procedures are not inferred; describe caller-variable writes with ``bind``
-metadata. Fully qualified names and their namespace-local spellings refer to
-the same variable. Procedure locals remain separate unless ``global`` or
-``variable`` links them. Unknown or conditional links are handled conservatively.
-Explicit environment directives do not depend on variable values.
+Value tracking has these limits:
 
-Each environment can add commands. Replacing a command from Tcl or a lower
-environment requires ``meta override``. This keeps generated ``args`` stubs
-from hiding precise command metadata. Embedded-language commands and
-``extends tcl`` declarations follow the same environment selection and stack
-order; loading an inactive environment does not change an embedded language.
-Inside ``meta language``, use ``override name {shape}`` to replace a command
-from a lower environment.
+* Visible assignments and metadata ``bind`` effects update tracked values.
+  After a branch, a value is known only if every possible path establishes it.
+* Loops and caught errors invalidate variables their bodies may write.
+  Dynamic execution, such as ``eval`` or ``source``, discards tracked values.
+* Writes inside called procedures are not inferred. Use ``bind`` metadata to
+  describe writes to caller variables.
+* Qualified names and their namespace-local spellings refer to the same
+  variable. Procedure locals remain separate unless ``global`` or ``variable``
+  links them. Uncertain links are treated as unknown.
+
+Explicit environment directives do not depend on tracked values.
+
+Environment Precedence
+~~~~~~~~~~~~~~~~~~~~~~
+
+Environments can add commands. Replacing a command from Tcl or a lower
+environment requires ``meta override``. Embedded languages use the same active
+environment order; inactive environments do not change them. See
+:ref:`metadata-precedence` for replacement rules.
 
 ``tcl-check --environment name`` selects an initial environment for the whole
 check. Source directives and conditional rules still apply. Editor environments
 are local to the source position and do not affect other open files.
 
-When To Use Config Vs CLI Flags
--------------------------------
+Editing Config Files
+--------------------
 
-Use ``tcllsrc.tcl`` for project settings that should apply to every editor and
-checker run. Use the ``tcl-check --plugin-path`` flag for temporary or
-one-off metadata injection.
+Files named ``tcllsrc.tcl`` have completion, hover text, signature help, and
+navigation for config commands. Invalid entries produce
+``invalid-project-config`` diagnostics; incomplete Tcl syntax produces parser
+diagnostics. Invalid saved config files prevent their settings from loading.
+
+A config file is analyzed with its parent settings, excluding its own settings,
+so it can be opened and corrected. Its own diagnostic rules do not apply to
+itself, but source directives do. Saved changes take effect when a source is
+next analyzed, for example after editing or reopening it.

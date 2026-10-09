@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from tcl_lsp.analysis.control_flow import ControlFlowScript
     from tcl_lsp.analysis.environments import EnvironmentScope
     from tcl_lsp.project.config import EnvironmentRule
+    from tcl_lsp.project.diagnostics import DiagnosticRule
 
 type BindingKind = Literal[
     'append',
@@ -271,6 +272,7 @@ class DocumentFacts:
     diagnostics: tuple[Diagnostic, ...]
     environment_scopes: tuple[EnvironmentScope, ...] = ()
     environment_rules: tuple[EnvironmentRule, ...] = ()
+    diagnostic_rules: tuple[DiagnosticRule, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

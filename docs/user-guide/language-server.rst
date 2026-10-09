@@ -1,75 +1,35 @@
 Language Server
 ===============
 
-The ``tcl-ls`` command starts a JSON-RPC language server over stdio. It does
-not currently expose standalone flags or subcommands, so most editor setups
-only need a command and a Tcl file association.
+Use the supplied :doc:`neovim` config or :doc:`vscode` extension, or configure
+another LSP client as described below. The :doc:`../reference/lsp-features`
+reference lists supported features and protocol limits.
 
 Connecting An Editor
 --------------------
 
-Point your LSP client at one of these commands:
+Configure the client to launch ``tcl-ls`` over stdio for Tcl files. The command
+must be available in the editor's environment. An absolute executable path
+can help if a GUI editor has a different ``PATH`` from your terminal.
 
-* ``tcl-ls`` if the package is installed into your environment
-* ``uv run tcl-ls`` when working from a repository checkout
+For a development checkout prepared as described in :doc:`../development`,
+use:
 
-In practice, editor setups usually also want:
+.. code-block:: sh
 
-* Tcl filetypes such as ``.tcl`` and ``.tm``
-* a project root marker such as ``tcllsrc.tcl`` or ``pkgIndex.tcl``
-* stdio transport instead of TCP
+   uv run --directory /absolute/path/to/tcl-ls tcl-ls
 
-If your project tree has neither marker, configure the workspace root in your
-editor or add a ``tcllsrc.tcl`` file for shared project settings.
-
-The repository also includes a Neovim 0.11+ config under ``editors/nvim`` and
-a VS Code extension under ``editors/vscode``. See :doc:`neovim` or
-:doc:`vscode` for those workflows.
+Use ``tcllsrc.tcl`` or ``pkgIndex.tcl`` as project root markers if your client
+supports them. Otherwise, select the workspace root in the editor.
 
 Workspace Behavior
 ------------------
 
-The server builds its view of the workspace when a document is opened. It
-loads project config from any ``tcllsrc.tcl`` files found between the opened
-file and the filesystem root, then uses that config to discover extra metadata
-and package roots.
+The server analyzes open files and loads dependencies from resolvable
+``source`` calls, metadata, and ``package require``. It discovers package
+indexes near those files and under configured library roots. It does not scan
+every Tcl source in the workspace.
 
-Package discovery is conservative:
-
-* directories rooted by ``pkgIndex.tcl`` are treated as package workspaces
-* external library roots can be added through ``lib-path`` or ``library-path``
-* extra metadata can be added through ``plugin-path``
-
-Supported Editor Features
--------------------------
-
-The current server supports:
-
-* diagnostics on open, change, and close
-* go to definition
-* go to declaration
-* go to implementation
-* find references
-* rename
-* hover
-* document symbols
-* workspace symbols
-* command, package, and variable completion
-* signature help
-* semantic tokens
-* document highlights
-* folding ranges
-* document links for ``source`` directives and uniquely resolved package sources
-
-Current Limits
---------------
-
-The server is usable, but it is still an early implementation:
-
-* text synchronization is full-document only
-* dynamic Tcl constructs are intentionally analyzed conservatively
-* unopened files are discovered opportunistically rather than through full
-  workspace scanning
-* code actions, formatting, code lens, and inlay hints are not implemented yet
-* the repository ships a Neovim 0.11+ config and a VS Code extension; other
-  editors still need manual LSP configuration
+Project settings come from ``tcllsrc.tcl``. See :doc:`configuration` to add
+external libraries, include metadata, or change diagnostics. For unresolved
+commands or missing editor features, see :doc:`../support`.

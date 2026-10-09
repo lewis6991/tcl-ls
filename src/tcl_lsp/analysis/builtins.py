@@ -12,14 +12,14 @@ from tcl_lsp.analysis.metadata_commands import (
     discard_overridden_command_trees,
     load_metadata_commands,
     metadata_environment_names,
-    metadata_file_module_info,
+    metadata_modules,
 )
 from tcl_lsp.analysis.metadata_view import metadata_view
 from tcl_lsp.analysis.model import CommandArity, DefinitionTarget
 from tcl_lsp.analysis.signature_matching import display_metadata_signature
 from tcl_lsp.cache import metadata_lru_cache
 from tcl_lsp.common import Span, lsp_location
-from tcl_lsp.metadata_paths import DEFAULT_METADATA_REGISTRY, MetadataRegistry
+from tcl_lsp.metadata_paths import DEFAULT_METADATA_REGISTRY, MetadataRegistry, MetadataRevision
 
 _CORE_PACKAGE = 'Tcl'
 _PACKAGE_ALIASES = {
@@ -68,7 +68,7 @@ def _builtin_commands(metadata_registry: MetadataRegistry) -> dict[str, BuiltinC
     return commands
 
 
-@metadata_lru_cache(maxsize=None)
+@metadata_lru_cache(maxsize=128)
 def _environment_commands(metadata_registry: MetadataRegistry) -> dict[str, BuiltinCommand]:
     return {
         name: _builtin_commands_for_package(command.module_name, metadata_registry)[name]
@@ -126,7 +126,7 @@ def _annotated_metadata_commands_by_package(
     }
 
 
-@metadata_lru_cache(maxsize=None)
+@metadata_lru_cache(maxsize=128)
 def _annotated_metadata_commands_for_package(
     package_name: str,
     metadata_registry: MetadataRegistry,
@@ -140,6 +140,7 @@ def _annotated_metadata_commands_for_package(
         package_name=package_name,
         metadata_path_layers=metadata_path_layers,
         alias_paths=metadata_registry.metadata_files(),
+        revision=metadata_registry.revision,
     )
 
 
@@ -151,7 +152,7 @@ def annotated_metadata_commands_for_packages(
     return _annotated_metadata_commands_for_packages(required_packages, metadata_registry)
 
 
-@metadata_lru_cache(maxsize=None)
+@metadata_lru_cache(maxsize=128)
 def _annotated_metadata_commands_for_packages(
     required_packages: frozenset[str],
     metadata_registry: MetadataRegistry,
@@ -202,7 +203,7 @@ def _builtin_commands_by_package(
     }
 
 
-@metadata_lru_cache(maxsize=None)
+@metadata_lru_cache(maxsize=128)
 def _builtin_commands_for_package(
     package_name: str,
     metadata_registry: MetadataRegistry,
@@ -216,6 +217,7 @@ def _builtin_commands_for_package(
         package_name=package_name,
         metadata_path_layers=metadata_path_layers,
         alias_paths=metadata_registry.metadata_files(),
+        revision=metadata_registry.revision,
     )
 
 
@@ -349,11 +351,17 @@ def _load_metadata_file(
     package_name: str,
     metadata_path: Path,
     alias_paths: tuple[Path, ...],
+    revision: MetadataRevision,
 ) -> dict[str, BuiltinCommand]:
     commands: dict[str, list[BuiltinOverload]] = {}
     override_names: set[str] = set()
-    for metadata_command in load_metadata_commands(metadata_path, alias_paths=alias_paths):
-        if metadata_command.context_name is not None:
+    for metadata_command in load_metadata_commands(
+        metadata_path, alias_paths=alias_paths, revision=revision
+    ):
+        if (
+            metadata_command.context_name is not None
+            or metadata_command.module_name != package_name
+        ):
             continue
         if metadata_command.is_override:
             override_names.add(metadata_command.name)
@@ -401,6 +409,7 @@ def _load_metadata_package(
     package_name: str,
     metadata_path_layers: tuple[tuple[Path, ...], ...],
     alias_paths: tuple[Path, ...],
+    revision: MetadataRevision,
 ) -> dict[str, BuiltinCommand]:
     package_commands: dict[str, BuiltinCommand] = {}
     for metadata_paths in metadata_path_layers:
@@ -410,6 +419,7 @@ def _load_metadata_package(
                 package_name=package_name,
                 metadata_path=metadata_path,
                 alias_paths=alias_paths,
+                revision=revision,
             ).items():
                 if name in layer_commands:
                     raise RuntimeError(
@@ -429,6 +439,7 @@ def _load_annotated_metadata_package(
     package_name: str,
     metadata_path_layers: tuple[tuple[Path, ...], ...],
     alias_paths: tuple[Path, ...],
+    revision: MetadataRevision,
 ) -> dict[str, MetadataCommand]:
     annotated: dict[str, MetadataCommand] = {}
     for metadata_paths in metadata_path_layers:
@@ -439,6 +450,7 @@ def _load_annotated_metadata_package(
                 package_name=package_name,
                 metadata_path=metadata_path,
                 alias_paths=alias_paths,
+                revision=revision,
             )
             for command_name in file_override_names:
                 if command_name in layer_override_names:
@@ -461,15 +473,8 @@ def _builtin_metadata_path_layers_by_package(
     for _, layer_paths in metadata_registry.metadata_file_layers():
         layer_paths_by_package: dict[str, list[Path]] = {}
         for metadata_path in layer_paths:
-            module_info = metadata_file_module_info(metadata_path)
-            if module_info.module_declaration_count > 1:
-                raise RuntimeError(
-                    f'Builtin metadata file `{metadata_path.name}` declares multiple module names.'
-                )
-            package_name = module_info.module_name
-            if package_name is None:
-                continue
-            layer_paths_by_package.setdefault(package_name, []).append(metadata_path)
+            for module in metadata_modules(metadata_path):
+                layer_paths_by_package.setdefault(module.name, []).append(metadata_path)
         for package_name, package_paths in layer_paths_by_package.items():
             path_layers_by_package.setdefault(package_name, []).append(tuple(package_paths))
 
@@ -487,11 +492,17 @@ def _annotated_entries_for_file(
     package_name: str,
     metadata_path: Path,
     alias_paths: tuple[Path, ...],
+    revision: MetadataRevision,
 ) -> tuple[tuple[str, ...], dict[str, MetadataCommand]]:
     override_entries: dict[str, MetadataCommand | None] = {}
     annotated: dict[str, MetadataCommand] = {}
-    for metadata_command in load_metadata_commands(metadata_path, alias_paths=alias_paths):
-        if metadata_command.context_name is not None:
+    for metadata_command in load_metadata_commands(
+        metadata_path, alias_paths=alias_paths, revision=revision
+    ):
+        if (
+            metadata_command.context_name is not None
+            or metadata_command.module_name != package_name
+        ):
             continue
         annotated_command = (
             metadata_command

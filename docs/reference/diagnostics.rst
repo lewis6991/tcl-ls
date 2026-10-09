@@ -1,37 +1,25 @@
 Diagnostics
 ===========
 
-``tcl-ls`` emits diagnostics from two stages:
+The language server and ``tcl-check`` report the same diagnostic codes. Each
+diagnostic has a code, message, severity, source, and source location.
 
-* the parser, which reports Tcl syntax and tokenization problems
-* the analysis pipeline, which reports structural and semantic issues in code
-  that parsed successfully enough to continue analysis
+Severity And Source
+-------------------
 
-The same diagnostic set is used by both ``tcl-check`` and the language server.
-In CLI output you see the formatted message, code, and source context. In LSP
-clients, diagnostics are published with ``code``, ``source``, ``severity``, and
-``message`` fields.
+All diagnostics default to ``error``, except resolution diagnostics
+(``warning``) and ``unreachable-code`` (``hint``). Project rules and source
+comments can change severity or disable diagnostics for files or statements;
+see :ref:`diagnostic-configuration`.
 
-Sources And Severity
---------------------
+The ``source`` field identifies the origin:
 
-Diagnostic ``source`` values:
-
-* ``parser`` for syntax diagnostics
-* ``analysis`` for lowering, resolution, metadata-driven, and semantic
-  diagnostics
-
-Current severity conventions:
-
-* parser diagnostics are errors
-* malformed static command forms are errors
-* metadata and arity validation failures are errors
-* unresolved and ambiguous resolution results are warnings
+* ``parser``: Tcl syntax errors.
+* ``analysis``: command structure, resolution, and metadata checks.
+* ``tcl-ls``: invalid config entries or source directives.
 
 Parser Diagnostics
 ------------------
-
-These come directly from the Tcl parser:
 
 ``unmatched-quote``
    A quoted word started with ``"`` but did not close.
@@ -43,14 +31,25 @@ These come directly from the Tcl parser:
    A command substitution started with ``[`` but did not close.
 
 ``malformed-variable``
-   A variable substitution such as ``${name}`` is syntactically incomplete or
-   malformed.
+   A variable substitution, such as ``${name}``, is incomplete or malformed.
 
-Structural Analysis Diagnostics
--------------------------------
+Configuration And Directive Diagnostics
+---------------------------------------
 
-These are emitted while lowering and normalizing certain Tcl forms before the
-main semantic pass.
+``invalid-project-config``
+   A config declaration is unsupported, has invalid arguments, or uses dynamic
+   values where static words are required. This also covers metadata and
+   include errors found when validating ``tcllsrc.tcl``.
+
+``invalid-diagnostic-directive``
+   A diagnostic comment has invalid syntax, scope, or level, or a statement
+   directive has no following statement in its Tcl body.
+
+``invalid-environment``
+   An environment comment has invalid syntax or names an unknown environment.
+
+Structural Diagnostics
+----------------------
 
 ``malformed-if``
    A statically analyzable ``if`` command has an invalid word layout.
@@ -59,23 +58,27 @@ main semantic pass.
    A statically analyzable ``switch`` command has an invalid option or branch
    layout.
 
-Semantic And Resolution Diagnostics
------------------------------------
+``duplicate-proc``
+   The same qualified procedure name is declared more than once in the active
+   workspace.
 
-These are emitted by the semantic resolver and diagnostic checkers.
+``unreachable-code``
+   A command cannot run because an earlier command always leaves the script or
+   a statically known condition excludes its branch.
 
-Warnings:
+Resolution Diagnostics
+----------------------
 
 ``unresolved-command``
-   A command call could not be resolved to a builtin command, procedure, or
-   metadata-backed command.
+   A command call could not be resolved to a builtin, procedure, or command
+   described by metadata.
 
 ``ambiguous-command``
-   A command name resolved to multiple procedure candidates.
+   A command name matched multiple procedure candidates.
 
 ``unresolved-package``
-   A ``package require`` target could not be found in builtin metadata or the
-   discovered workspace/package roots.
+   A ``package require`` target was not found in builtin metadata or discovered
+   package roots.
 
 ``unresolved-variable``
    A procedure-scoped variable reference could not be resolved confidently.
@@ -83,56 +86,41 @@ Warnings:
 ``ambiguous-variable``
    A procedure-scoped variable reference matched multiple bindings.
 
-Hints:
-
-``unreachable-code``
-   A later command in the same statically analyzed script cannot run because
-   control flow always leaves the script first.
-
-Errors:
-
-``duplicate-proc``
-   The same qualified procedure name is declared multiple times in the active
-   workspace.
-
-Metadata-Driven Command Diagnostics
------------------------------------
-
-These rely on builtin or project metadata for command shape and option parsing.
+Command And Metadata Diagnostics
+--------------------------------
 
 ``wrong-argument-count``
-   The command call does not match any known arity for the resolved command.
+   A command call has too few or too many arguments for its known signatures.
+
+``invalid-arguments``
+   The argument count matches a signature, but the arguments do not match its
+   required structure or literal values.
 
 ``unknown-subcommand``
-   The first positional argument does not match a known subcommand for the
-   resolved command.
+   The first positional argument does not match a known subcommand.
 
 ``unknown-option``
-   An option-like argument does not match any declared metadata option for the
-   resolved command.
+   An option does not match any declared option for the resolved command.
 
 ``missing-option-value``
-   A known metadata option that requires a value is missing that following
-   value.
+   An option that requires a value has no following value.
 
 ``invalid-regex``
    A statically known pattern for ``regexp`` or ``regsub`` fails Tcl regular
    expression compilation.
 
-Practical Notes
+``conflicting-embedded-language``
+   Metadata ``enter`` clauses select overlapping command bodies.
+
+``unsupported-special-enter``
+   An ``enter body`` selector for a structured Tcl command does not select one
+   existing script-body argument. See :doc:`meta-syntax` for selector rules.
+
+Analysis Limits
 ---------------
 
-The diagnostic set is intentionally conservative:
-
-* dynamic Tcl patterns may suppress diagnostics instead of guessing
-* metadata only drives checks when command resolution is confident enough
-* some issues that would require runtime evaluation are intentionally not
-  reported
-
-For the best results:
-
-* keep project metadata current
-* add ``plugin-path`` or ``lib-path`` entries in ``tcllsrc.tcl`` when your
-  project depends on custom DSLs or external package trees
-* use ``uv run tcl-check --context-lines 2 path/to/project`` when you need the
-  most readable terminal diagnostics
+Diagnostics depend on what static analysis can establish. Dynamic values can
+prevent a check, and metadata checks require sufficiently confident command
+resolution. The tools do not evaluate project Tcl code to detect runtime
+errors. Keep metadata current so checks reflect the commands available to the
+program.

@@ -56,7 +56,7 @@ def test_check_project_applies_dynamic_plugin_effect_clauses(tmp_path: Path) -> 
         encoding='utf-8',
     )
 
-    report = check_project(project_root, plugin_paths=(plugin_path,))
+    report = check_project(project_root, metadata_paths=(plugin_path,))
 
     assert report.diagnostics == ()
 
@@ -69,7 +69,7 @@ def test_check_project_reports_plugin_ref_effect_references(tmp_path: Path) -> N
         encoding='utf-8',
     )
 
-    report = check_project(project_root, plugin_paths=(plugin_path,))
+    report = check_project(project_root, metadata_paths=(plugin_path,))
 
     assert [item.diagnostic.code for item in report.diagnostics] == ['unresolved-variable']
 
@@ -84,7 +84,7 @@ def test_check_project_expands_plugin_source_list_selectors(tmp_path: Path) -> N
         encoding='utf-8',
     )
 
-    report = check_project(project_root, plugin_paths=(plugin_path,))
+    report = check_project(project_root, metadata_paths=(plugin_path,))
 
     assert report.diagnostics == ()
 
@@ -263,7 +263,7 @@ def test_check_project_loads_external_plugin_metadata_from_plugin_path(tmp_path:
     )
 
     baseline_report = check_project(project_root)
-    plugin_report = check_project(project_root, threads=2, plugin_paths=(plugin_path,))
+    plugin_report = check_project(project_root, threads=2, metadata_paths=(plugin_path,))
     restored_report = check_project(project_root)
 
     assert [item.diagnostic.code for item in baseline_report.diagnostics] == [
@@ -289,7 +289,7 @@ def test_check_project_loads_external_declaration_plugin_metadata(tmp_path: Path
     )
 
     baseline_report = check_project(project_root)
-    plugin_report = check_project(project_root, threads=2, plugin_paths=(plugin_path,))
+    plugin_report = check_project(project_root, threads=2, metadata_paths=(plugin_path,))
 
     assert [item.diagnostic.code for item in baseline_report.diagnostics] == [
         'unresolved-command',
@@ -320,7 +320,7 @@ def test_check_project_prefers_plugin_implementations_over_declarations(
         encoding='utf-8',
     )
 
-    report = check_project(project_root, threads=2, plugin_paths=(plugin_path,))
+    report = check_project(project_root, threads=2, metadata_paths=(plugin_path,))
 
     assert report.diagnostics == ()
 
@@ -332,7 +332,7 @@ def test_check_project_loads_plugin_metadata_from_tcllsrc(tmp_path: Path) -> Non
     package_root.mkdir(parents=True)
 
     (project_root / 'tcllsrc.tcl').write_text(
-        'plugin-path .tcl-ls/sample.tcl\n',
+        'source .tcl-ls/sample.meta.tcl\n',
         encoding='utf-8',
     )
     (package_root / 'main.tcl').write_text(
@@ -379,13 +379,13 @@ def test_check_project_loads_generated_project_metadata_without_docs(tmp_path: P
     package_root = project_root / 'pkg'
     write_sample_plugin_bundle(project_root / '.tcl-ls')
     (project_root / '.tcl-ls' / 'generated.meta.tcl').write_text(
-        'meta module Tcl\nmeta command external {args}\n',
+        ('meta module Tcl {\n    meta command external {args}\n}\n'),
         encoding='utf-8',
     )
     package_root.mkdir(parents=True)
 
     (project_root / 'tcllsrc.tcl').write_text(
-        'plugin-path .tcl-ls/sample.tcl\n',
+        'source .tcl-ls/sample.meta.tcl\nsource .tcl-ls/generated.meta.tcl\n',
         encoding='utf-8',
     )
     (package_root / 'main.tcl').write_text(
@@ -403,7 +403,7 @@ def test_check_project_restores_project_metadata_between_calls(tmp_path: Path) -
     project_without_plugin = tmp_path / 'without-plugin'
     write_sample_plugin_bundle(project_with_plugin / '.tcl-ls')
     (project_with_plugin / 'tcllsrc.tcl').write_text(
-        'plugin-path .tcl-ls/sample.tcl\n',
+        'source .tcl-ls/sample.meta.tcl\n',
         encoding='utf-8',
     )
     project_without_plugin.mkdir()
@@ -431,7 +431,7 @@ def test_check_project_repo_root_uses_pkgindex_workspaces_and_shared_tcllsrc(
     package_root.mkdir(parents=True)
 
     (project_root / 'tcllsrc.tcl').write_text(
-        'plugin-path .tcl-ls/sample.tcl\n',
+        'source .tcl-ls/sample.meta.tcl\n',
         encoding='utf-8',
     )
     (project_root / 'scratch.tcl').write_text(

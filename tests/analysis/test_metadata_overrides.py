@@ -71,7 +71,7 @@ def test_analysis_project_metadata_can_clear_bundled_builtin_annotations(
 ) -> None:
     override_path = tmp_path / 'override.meta.tcl'
     override_path.write_text(
-        'meta module Tcl\nmeta command regexp {args}\n',
+        ('meta module Tcl {\n    meta command regexp {args}\n}\n'),
         encoding='utf-8',
     )
     source_path = tmp_path / 'main.tcl'
@@ -96,7 +96,7 @@ def test_analysis_project_metadata_can_replace_bundled_builtin_annotations(
 ) -> None:
     override_path = tmp_path / 'override.meta.tcl'
     override_path.write_text(
-        'meta module Tcl\nmeta command regexp {args} {\n    bind 1 set\n}\n',
+        ('meta module Tcl {\n    meta command regexp {args} {\n        bind 1 set\n    }\n}\n'),
         encoding='utf-8',
     )
     source_path = tmp_path / 'main.tcl'

@@ -52,7 +52,7 @@ from tcl_lsp.metadata_paths import (
     create_metadata_registry,
 )
 from tcl_lsp.parser import Parser
-from tcl_lsp.project.config import configured_library_paths, configured_plugin_paths
+from tcl_lsp.project.config import configured_library_paths, configured_metadata_paths
 from tcl_lsp.project.paths import source_id_to_path
 
 _DIAGNOSTIC_SEVERITY_MAP = {
@@ -82,11 +82,11 @@ class _CachedDiskDocument:
     document: ManagedDocument
 
 
-def _active_plugin_paths(snapshot: DocumentBuildSnapshot) -> tuple[Path, ...]:
+def _active_metadata_paths(snapshot: DocumentBuildSnapshot) -> tuple[Path, ...]:
     active_paths: dict[Path, None] = {}
     for uri in snapshot.open_document_uris:
-        for plugin_path in snapshot.plugin_paths_by_uri.get(uri, ()):
-            active_paths.setdefault(plugin_path, None)
+        for metadata_path in snapshot.metadata_paths_by_uri.get(uri, ()):
+            active_paths.setdefault(metadata_path, None)
     return tuple(active_paths)
 
 
@@ -103,7 +103,7 @@ class LanguageServer(PyglsLanguageServer):
     _next_server_request_id: int
     _open_document_uris: set[str]
     _parser: Parser
-    _plugin_paths_by_uri: dict[str, tuple[Path, ...]]
+    _metadata_paths_by_uri: dict[str, tuple[Path, ...]]
     _resolver: Resolver
     _scanned_package_roots: set[Path]
     _semantic_token_results_by_uri: dict[str, OrderedDict[str, _SemanticTokenResult]]
@@ -229,14 +229,14 @@ class LanguageServer(PyglsLanguageServer):
 
             open_document_uris = set(self._open_document_uris)
             open_document_uris.discard(uri)
-            plugin_paths_by_uri = dict(self._plugin_paths_by_uri)
-            plugin_paths_by_uri.pop(uri, None)
+            metadata_paths_by_uri = dict(self._metadata_paths_by_uri)
+            metadata_paths_by_uri.pop(uri, None)
             library_paths_by_uri = dict(self._library_paths_by_uri)
             library_paths_by_uri.pop(uri, None)
             snapshot = DocumentBuildSnapshot(
                 documents=dict(self.documents),
                 open_document_uris=tuple(open_document_uris),
-                plugin_paths_by_uri=plugin_paths_by_uri,
+                metadata_paths_by_uri=metadata_paths_by_uri,
                 library_paths_by_uri=library_paths_by_uri,
                 workspace_index=self._workspace_index,
                 scanned_package_roots=tuple(self._scanned_package_roots),
@@ -640,7 +640,7 @@ class LanguageServer(PyglsLanguageServer):
         self.documents = {}
         self._scanned_package_roots = set()
         self._open_document_uris = set()
-        self._plugin_paths_by_uri = {}
+        self._metadata_paths_by_uri = {}
         self._library_paths_by_uri = {}
 
     def _document_build_snapshot(self) -> DocumentBuildSnapshot:
@@ -648,7 +648,7 @@ class LanguageServer(PyglsLanguageServer):
             return DocumentBuildSnapshot(
                 documents=dict(self.documents),
                 open_document_uris=tuple(self._open_document_uris),
-                plugin_paths_by_uri=dict(self._plugin_paths_by_uri),
+                metadata_paths_by_uri=dict(self._metadata_paths_by_uri),
                 library_paths_by_uri=dict(self._library_paths_by_uri),
                 workspace_index=self._workspace_index,
                 scanned_package_roots=tuple(self._scanned_package_roots),
@@ -662,7 +662,7 @@ class LanguageServer(PyglsLanguageServer):
             documents = dict(self.documents)
             open_document_uris = set(self._open_document_uris)
             existing_open_document_uris = set(open_document_uris)
-            plugin_paths_by_uri = dict(self._plugin_paths_by_uri)
+            metadata_paths_by_uri = dict(self._metadata_paths_by_uri)
             library_paths_by_uri = dict(self._library_paths_by_uri)
             workspace_index = self._workspace_index
             scanned_package_roots = tuple(self._scanned_package_roots)
@@ -670,26 +670,26 @@ class LanguageServer(PyglsLanguageServer):
         path_settings_changed = False
         for uri, _, _ in pending_documents:
             path = source_id_to_path(uri)
-            plugin_paths = () if path is None else configured_plugin_paths(path)
+            metadata_paths = () if path is None else configured_metadata_paths(path)
             library_paths = () if path is None else configured_library_paths(path)
             if uri in existing_open_document_uris and (
-                plugin_paths_by_uri.get(uri, ()) != plugin_paths
+                metadata_paths_by_uri.get(uri, ()) != metadata_paths
                 or library_paths_by_uri.get(uri, ()) != library_paths
             ):
                 path_settings_changed = True
             open_document_uris.add(uri)
-            plugin_paths_by_uri[uri] = plugin_paths
+            metadata_paths_by_uri[uri] = metadata_paths
             library_paths_by_uri[uri] = library_paths
 
         snapshot = DocumentBuildSnapshot(
             documents=documents,
             open_document_uris=tuple(open_document_uris),
-            plugin_paths_by_uri=plugin_paths_by_uri,
+            metadata_paths_by_uri=metadata_paths_by_uri,
             library_paths_by_uri=library_paths_by_uri,
             workspace_index=workspace_index,
             scanned_package_roots=scanned_package_roots,
         )
-        target_metadata_registry = create_metadata_registry(_active_plugin_paths(snapshot))
+        target_metadata_registry = create_metadata_registry(_active_metadata_paths(snapshot))
         return snapshot, target_metadata_registry, path_settings_changed
 
     def _load_documents(
@@ -791,7 +791,7 @@ class LanguageServer(PyglsLanguageServer):
             self._workspace_index = rebuild_result.workspace_index
             self._scanned_package_roots = rebuild_result.scanned_package_roots
             self._open_document_uris = set(snapshot.open_document_uris)
-            self._plugin_paths_by_uri = dict(snapshot.plugin_paths_by_uri)
+            self._metadata_paths_by_uri = dict(snapshot.metadata_paths_by_uri)
             self._library_paths_by_uri = dict(snapshot.library_paths_by_uri)
         return True
 

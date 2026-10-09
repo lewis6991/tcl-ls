@@ -24,14 +24,14 @@ def test_tepam_wrappers_bind_parameters_at_their_source_locations(
     parser: Parser, tmp_path: Path, parameter_format: str, parameters: str
 ) -> None:
     (tmp_path / 'custom.meta.tcl').write_text(
-        'meta module Tcl\n'
+        'meta module Tcl {\n'
         'meta command declare {name attributes body} {\n'
         '    procedure {\n'
         '        name select 1\n'
         f'        params select 2 format {parameter_format}\n'
         '        body select 3\n'
         '    }\n'
-        '}\n',
+        '}\n}\n',
         encoding='utf-8',
     )
     text = (

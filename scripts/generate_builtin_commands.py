@@ -29,7 +29,9 @@ _DESCRIPTION_LINE_PATTERN = re.compile(
     r'^# Descriptions are adapted from the Tcl .+ command manual\.$',
     re.MULTILINE,
 )
-_GENERIC_SUBCOMMAND_PATTERN = re.compile(r'^meta command (\S+) \{subcommand(?: [^}]*)?\}$')
+_GENERIC_SUBCOMMAND_PATTERN = re.compile(
+    r'^(?P<indent>\s*)meta command (?P<command>\S+) \{subcommand(?: [^}]*)?\}$'
+)
 _DT_PATTERN = re.compile(
     r'<DT><A NAME="[^"]+">(.*?)</A><DD>(.*?)(?=<P><DT><A NAME=|<DT><A NAME=|'
     r'<P></DL>|</DL>|<H3><A NAME=|$)',
@@ -221,15 +223,19 @@ def update_metadata(
             rendered_lines.append(line)
             continue
 
-        command = match.group(1)
+        command = match['command']
         generated_entries = generated_entries_by_command.get(command, ())
         if not generated_entries:
             rendered_lines.append(line)
             continue
 
         rendered_lines.append(f'{line} {{')
-        rendered_lines.extend(render_generated_block(command, generated_entries, version_label))
-        rendered_lines.append('}')
+        rendered_lines.extend(
+            render_generated_block(
+                command, generated_entries, version_label, indent=match['indent'] + '    '
+            )
+        )
+        rendered_lines.append(match['indent'] + '}')
 
     return '\n'.join(rendered_lines).rstrip() + '\n'
 
@@ -294,7 +300,7 @@ def generic_command_roots(source_text: str) -> tuple[str, ...]:
         match = _GENERIC_SUBCOMMAND_PATTERN.fullmatch(line)
         if match is None:
             continue
-        command = match.group(1)
+        command = match['command']
         if command not in commands:
             commands.append(command)
     return tuple(commands)
@@ -311,6 +317,9 @@ def meta_command_names(source_text: str) -> set[str]:
         if word_static_text(command.words[0]) != 'meta':
             continue
         entry_kind = word_static_text(command.words[1])
+        if entry_kind == 'module':
+            names.update(meta_command_names(_metadata_body_text(command.words[-1])))
+            continue
         if entry_kind == 'command':
             names.update(_collect_metadata_command_names(command))
             continue
@@ -387,8 +396,9 @@ def render_generated_block(
     command: str,
     entries: tuple[GeneratedEntry, ...],
     version_label: str,
+    *,
+    indent: str = '    ',
 ) -> list[str]:
-    indent = '    '
     lines = [f'{indent}{_GENERATED_BEGIN_PREFIX}{command} (Tcl {version_label})', '']
     root = _build_generated_tree(command, entries)
     child_nodes = tuple(root.children.values())

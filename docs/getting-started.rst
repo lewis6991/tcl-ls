@@ -1,108 +1,50 @@
 Getting Started
 ===============
 
-``tcl-ls`` can be used in three ways:
+Choose the Python package for all three commands, or a prebuilt server for
+editor use.
 
-* as an editor language server
-* as a batch checker through ``tcl-check``
-* as a metadata helper toolkit through ``tcl-meta``
+Python Package
+--------------
 
-Prerequisites
--------------
-
-* Python 3.12 or newer
-* ``uv`` for local development and repeatable tool execution
-* ``tclsh`` if you want to run ``tcl-meta``
-* an editor with LSP support if you want interactive language-server features
-
-Install From PyPI
------------------
-
-For normal usage, install ``tcl-ls`` from PyPI:
+With Python 3.12 or newer, install:
 
 .. code-block:: sh
 
-   python -m pip install tcl-ls
+   python3 -m pip install tcl-ls
 
-This installs three CLI entry points:
+The package provides:
 
-* ``tcl-ls`` for the language server
-* ``tcl-check`` for batch diagnostics
-* ``tcl-meta`` for metadata-helper workflows
+* ``tcl-ls`` — the editor language server
+* ``tcl-check`` — the batch checker
+* ``tcl-meta`` — the metadata generation helper
 
-Install From GitHub Releases
-----------------------------
+Prebuilt Server And VS Code Extension
+-------------------------------------
 
-If you want prebuilt packaged assets instead of a Python installation, download
-them from the `GitHub Releases <https://github.com/lewis6991/tcl-ls/releases>`_
-page.
+Download an asset for your platform from
+`GitHub Releases <https://github.com/lewis6991/tcl-ls/releases>`_. Server
+archives are built for Linux, macOS, and Windows and do not require a separate
+Python installation. Extract the archive, keep its files together, and add
+the server directory to your ``PATH``.
 
-Release assets currently include:
+The release VS Code extension includes the server. See
+:doc:`user-guide/vscode` for installation and settings.
 
-* packaged frozen server archives for Linux, macOS, and Windows
-* bundled VS Code extension packages
+Start Using tcl-ls
+------------------
 
-Install From A Checkout
------------------------
+For editor support, follow :doc:`user-guide/neovim`, :doc:`user-guide/vscode`,
+or the :doc:`user-guide/language-server` guide for other LSP clients.
 
-For repository development, sync the environment once and then prefer
-``uv run ...`` for commands:
-
-.. code-block:: sh
-
-   uv sync
-
-If you want plain entry points on your ``PATH``, install the package instead:
-
-.. code-block:: sh
-
-   python -m pip install .
-
-First Commands To Try
----------------------
-
-Check a project tree from the terminal:
+To check a file or project directory:
 
 .. code-block:: sh
 
    tcl-check path/to/project
 
-Start the language server on stdio for an editor to manage:
+See :doc:`user-guide/checker` for terminal and CI use. Projects can share
+library, metadata, and diagnostic settings in :doc:`user-guide/configuration`.
 
-.. code-block:: sh
-
-   tcl-ls
-
-Print the bundled metadata helper path:
-
-.. code-block:: sh
-
-   tcl-meta helper-path
-
-When working from a checkout instead of an installed package, prefix those
-commands with ``uv run``.
-
-The repository also includes editor-specific setup under ``editors/``:
-
-* a Neovim 0.11+ config under ``editors/nvim``; see :doc:`user-guide/neovim`
-* a VS Code extension under ``editors/vscode``; see :doc:`user-guide/vscode`
-
-Local Documentation Build
--------------------------
-
-Build the Sphinx site with:
-
-.. code-block:: sh
-
-   make docs
-
-The generated HTML lives under ``docs/_build/html``.
-
-Where To Go Next
-----------------
-
-* Read the :doc:`user-guide/index` for editor, checker, and configuration
-  workflows.
-* Read :doc:`meta` if you need custom command metadata or Tcl-side helper
-  integration.
-* Read :doc:`reference/index` for the current CLI and LSP surface area.
+If commands need custom metadata, start with :doc:`meta`. To work from a
+source checkout, see :doc:`development`.

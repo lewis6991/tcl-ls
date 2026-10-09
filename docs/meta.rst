@@ -1,132 +1,107 @@
-Metadata And Meta Tools
-=======================
+Writing And Generating Metadata
+===============================
 
-``tcl-ls`` relies on declarative metadata to understand builtin Tcl commands
-and project-specific command behavior. The repository ships a bundled metadata
-registry under ``meta/``, and both the language server and checker can load
-extra metadata from project config or CLI flags.
+Metadata describes command signatures and behavior that static analysis cannot
+infer from Tcl source. Use it for tool commands, callback bodies, variable
+bindings, and wrappers around ``source`` or ``package require``. The language
+server and checker use the same metadata for diagnostics. The server also uses
+it for navigation, hover, and completion.
 
-Metadata Discovery
-------------------
+Load Project Metadata
+---------------------
 
-The active metadata registry is assembled from:
-
-* the bundled ``meta/`` directory shipped with the package
-* any paths provided by ``plugin-path`` in ``tcllsrc.tcl``
-* any paths passed through ``tcl-check --plugin-path``
-
-Directories are scanned recursively for ``*.meta.tcl`` files. A direct
-``.meta.tcl`` path is loaded as-is. A ``.tcl`` or ``.tm`` plugin path causes
-the containing directory to be scanned for sibling metadata files.
-
-Metadata roots also define override precedence. Later roots override earlier
-command trees on exact command names or prefixes, which lets project metadata
-replace bundled metadata cleanly. Within a single root, conflicting exact
-command declarations are treated as errors rather than order-dependent
-overrides. Sibling ``foo.meta.tcl`` files are auto-associated with
-``foo.tcl``/``foo.tm`` only when that match is unambiguous.
-
-File-scoped metadata can record dependencies that use runtime paths. For
-example, ``loader.meta.tcl`` can contain ``meta source ../src/common.tcl``.
-The checker then reads that dependency when it reads ``loader.tcl``. Paths
-are relative to the metadata file; no project Tcl code is executed.
-
-Use ``meta alias tcl_trace trace`` under ``meta module Tcl`` to reuse the
-metadata of a command that the program has aliased or renamed. This also
-reuses its subcommands and annotations, so the declaration stays in sync
-with the original command's metadata.
-
-Basic Metadata Shape
---------------------
-
-Metadata files use ``meta`` commands:
+The bundled ``meta/`` directory describes Tcl and supported packages. To add
+project metadata, include a file from ``tcllsrc.tcl``:
 
 .. code-block:: tcl
 
-   # Leading comments become command documentation.
-   meta command regexp {args} {
-       option -start value
-       option -- stop
-       bind after-options 3..
+   source .tcl-ls/project.meta.tcl
+
+Paths are relative to the containing file. Metadata files can include other
+files with ``source``; these are static declarations, not Tcl execution. See
+:ref:`metadata-composition` for module scope and :ref:`metadata-precedence` for
+override rules.
+
+For a one-off checker run, use ``tcl-check --meta-path``. It accepts a metadata
+file or directory; see :doc:`reference/cli` for path discovery rules.
+
+Describe A Command
+------------------
+
+Create ``.tcl-ls/project.meta.tcl`` with a module block:
+
+.. code-block:: tcl
+
+   meta module Tcl {
+       # Run a script with a package loaded and store its result.
+       meta command project::run {packageName script resultVar} {
+           package select 1
+           enter tcl body 2
+           bind 3 set
+       }
    }
 
-The command name and signature must be static. Leading comments are used as
-documentation for hover and completion details.
+The shape ``{packageName script resultVar}`` describes three arguments.
+Annotations record the package dependency, parse the script body, and bind the
+result variable. Selectors count arguments from 1. Leading comments supply
+command documentation.
 
-For the full declaration grammar, selector rules, annotation forms, and Tcl
-plugin contract, see :doc:`reference/meta-syntax`.
+Use the ``Tcl`` module for commands available throughout the project, a package
+name for package commands, or ``-environment`` for commands that belong to a
+tool. Select tool environments through :ref:`project configuration or source
+comments <tool-environments>`.
 
-Supported Annotations
----------------------
+For more command models, see the :doc:`reference/meta-syntax`:
 
-Common annotations:
+* ``option`` and nested ``command`` describe flags and subcommands.
+* ``bind`` and ``ref`` describe variable writes and references.
+* ``meta language``, ``enter``, and ``procedure`` describe embedded scripts and
+  procedure declarations.
+* ``source`` and ``package`` describe dependencies.
+* ``meta alias`` reuses metadata for an alias or renamed command.
+* ``plugin`` calls a Tcl hook when declarations cannot express the behavior.
 
-* ``option`` describes flag, value, and ``--`` handling
-* nested ``command`` declarations add child command names
-* ``bind`` marks arguments that introduce variable bindings
-* ``ref`` marks arguments that reference variables
-* ``enter tcl body ...`` reparses selected arguments as Tcl bodies
-* ``source`` records sourced files relative to the call site or procedure file
-* ``package`` records required packages
+Generate A Tool Inventory
+-------------------------
 
-Advanced annotations:
-
-* ``language`` defines a named embedded command language
-* ``procedure`` describes commands that declare procedures or methods
-* ``plugin`` links a metadata entry to a Tcl-side plugin procedure
-
-Selectors are 1-based and can target single arguments, ranges such as ``3..``,
-or reverse offsets such as ``last`` and ``last-1``. They also support
-``after-options``, ``list``, and ranged ``step N`` forms for commands that
-need more precise argument modeling.
-
-Meta Helper CLI
----------------
-
-``tcl-meta`` exposes the bundled helper script used for tool-specific metadata
-generation:
+``tcl-meta`` can inspect commands in a tool's Tcl interpreter. First, locate
+the bundled helper:
 
 .. code-block:: sh
 
-   uv run tcl-meta helper-path
-   uv run tcl-meta build-file path/to/output.meta.tcl
+   tcl-meta helper-path
 
-``helper-path`` prints the bundled ``tcl_meta.tcl`` path so a tool-specific
-Tcl shell can ``source`` it directly. ``build-file`` runs the same helper via
-``tclsh`` and writes a ``.meta.tcl`` file to the requested output path.
-
-By default, generation calls discovered commands with test arguments to infer
-subcommands. Use ``--no-probe`` for tools whose commands must not be invoked:
+Source that path inside the tool, then generate its command inventory.
+Generation requires ``tclsh`` on ``PATH`` to obtain a plain Tcl baseline:
 
 .. code-block:: tcl
 
    source /path/printed/by/helper-path/tcl_meta.tcl
-   tcl-meta build-file --no-probe output.meta.tcl
+   tcl-meta build-file --no-probe --new-only --environment JasperGold jasper.meta.tcl
 
-For a separate tool environment, use:
+This example inspects definitions without calling tool commands. It keeps
+procedure parameters, uses ``args`` for native commands, and excludes names
+present in plain Tcl. Without ``--no-probe``, the helper calls commands with
+test arguments to infer subcommands. See :doc:`reference/cli` for all options
+and the standalone ``tclsh`` workflow.
+
+Keep reviewed signatures, annotations, and replacements in a separate file so
+regeneration preserves them. Load that file after the inventory:
 
 .. code-block:: tcl
 
-   tcl-meta build-file --no-probe --new-only --environment JasperGold jasper.meta.tcl
+   # .tcl-ls/project.meta.tcl
+   source jasper.meta.tcl
+   source jasper-overrides.meta.tcl
 
-This inventory excludes commands present in plain Tcl. Keep tool replacements
-in a separate file with ``meta module JasperGold -environment`` and explicit
-``meta override`` declarations. Load that file after the inventory. Select the
-environment with a source comment or a conditional project rule, as described
-in :doc:`user-guide/configuration`.
+For example, ``jasper-overrides.meta.tcl`` can declare a tool replacement and
+retain metadata for the original Tcl command under its renamed name:
 
-This mode inspects command definitions only. Tcl procedures keep their declared
-parameters; native commands use a general ``args`` signature. It does not infer
-subcommands. The shell CLI accepts the same option.
+.. code-block:: tcl
 
-When To Reach For Metadata
---------------------------
+   meta module JasperGold -environment {
+       meta override clock {args}
+       meta alias tcl_clock clock -module Tcl
+   }
 
-Add metadata when the analyzer needs help understanding project-specific Tcl
-APIs that are otherwise too dynamic to infer safely, such as:
-
-* commands with option-driven argument shapes
-* commands that execute callback bodies
-* wrappers around ``source`` or ``package require``
-* plugin-defined commands that should participate in hover, completion, or
-  diagnostics
+Replace the general ``args`` shape with a precise signature when available.

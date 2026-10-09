@@ -4,72 +4,78 @@ CLI Reference
 ``tcl-ls``
 ----------
 
-``tcl-ls`` starts the language server on stdio. It does not currently define
-additional CLI flags or subcommands.
+Starts the language server over stdio. It has no additional flags or
+subcommands. See :doc:`../user-guide/language-server` for editor setup.
 
 ``tcl-check``
 -------------
-
-Usage:
 
 .. code-block:: text
 
    tcl-check [options] path
 
-Options:
+``path`` is a source file or project directory. Project config is read
+automatically; see :doc:`../user-guide/configuration`.
 
 ``--color {auto,always,never}``
-   Control ANSI color output. ``auto`` only enables color when stdout is a
-   terminal and ``NO_COLOR`` is not set.
+   Control ANSI color output. The default, ``auto``, enables color only when
+   stdout is a terminal and ``NO_COLOR`` is not set.
 
 ``--context-lines N``
-   Show ``N`` lines of surrounding source context for each diagnostic.
+   Show ``N`` surrounding source lines for each diagnostic. Default: 0.
+   ``N`` must be nonnegative.
 
 ``--fail-on-diagnostics``
-   Exit with status 1 if any diagnostics are reported.
+   Exit with status 1 if any enabled diagnostic is reported, at any severity.
 
 ``--environment NAME``
-   Select an initial tool metadata environment for all checked files. Comment
-   directives and conditional project rules can add environments within a file.
+   Select an initial tool environment. Source directives and project rules
+   can add environments within a file; see :ref:`tool-environments`.
 
 ``-j, --threads N``
-   Analyze source files with ``N`` worker processes. The default is 8.
+   Use ``N`` worker processes. Default: 8. ``N`` must be at least 1.
 
-``--plugin-path PATH``
-   Load additional metadata from a directory, a ``.meta.tcl`` file, or a Tcl
-   plugin script. The flag may be passed more than once.
+``--meta-path PATH``
+   Load additional metadata after the project config. Repeat the flag to add
+   paths in order. A directory is searched recursively for ``*.meta.tcl``;
+   a ``.meta.tcl`` file is read directly. A Tcl plugin script path (``.tcl`` or
+   ``.tm``) selects its parent directory for metadata discovery. This flag does
+   not execute the plugin script.
 
-Exit behavior:
+Exit statuses:
 
-* ``0`` when analysis completes successfully
-* ``1`` for operational failures, or for reported diagnostics when
-  ``--fail-on-diagnostics`` is used
-* ``130`` when interrupted with ``Ctrl-C``
+* ``0``: analysis completed; diagnostics are allowed unless
+  ``--fail-on-diagnostics`` is set
+* ``1``: an operational failure, or diagnostics with ``--fail-on-diagnostics``
+* ``2``: invalid command-line arguments
+* ``130``: interrupted with ``Ctrl-C``
 
 ``tcl-meta``
 ------------
 
-Usage:
-
 .. code-block:: text
 
    tcl-meta helper-path
-   tcl-meta build-file [--no-probe] [--new-only] [--environment NAME] output.meta.tcl
+   tcl-meta build-file [options] output.meta.tcl
 
-Subcommands:
+``helper-path`` prints the bundled Tcl helper's path. ``build-file`` runs it
+through ``tclsh`` and writes metadata to the output file. The latter requires
+``tclsh`` on ``PATH``. To generate metadata in a tool's own interpreter,
+follow :doc:`../meta`.
 
-``helper-path``
-   Print the bundled ``tcl_meta.tcl`` helper path.
+``build-file`` options:
 
-``build-file``
-   Run the bundled helper through ``tclsh`` and write a ``.meta.tcl`` file.
-   Add ``--no-probe`` to inspect definitions without calling discovered commands
-   to infer their subcommands. This option also works when the helper is sourced
-   inside a tool Tcl shell.
+``--no-probe``
+   Inspect definitions without calling discovered commands. By default, the
+   helper calls commands with test arguments to infer subcommands.
 
-   ``--new-only`` omits commands present in a plain Tcl interpreter, including
-   commands replaced by the tool. ``--environment NAME`` writes a named tool
-   module with ``-environment``. Without it, output belongs to the ``Tcl`` module.
-   Keep reviewed overrides in a separate metadata file loaded after this inventory.
+``--new-only``
+   Exclude names present in plain Tcl, including commands replaced by the tool.
+   By default, the inventory also includes Tcl commands whose introspected
+   shape differs from the plain interpreter.
 
-``tcl-meta`` requires ``tclsh`` to be present on ``PATH``.
+``--environment NAME``
+   Write a tool module declared with ``-environment``. Default: ``Tcl``, which
+   writes ordinary Tcl module metadata.
+
+The same options are accepted when the Tcl helper is sourced in a tool shell.

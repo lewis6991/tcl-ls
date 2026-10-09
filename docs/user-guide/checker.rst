@@ -1,72 +1,50 @@
 Project Checking
 ================
 
-``tcl-check`` runs the same parser, metadata registry, and resolver used by
-the language server, but reports diagnostics in a terminal-friendly format.
+``tcl-check`` reports project diagnostics in the terminal using the same
+analysis as the language server.
 
-Common Commands
----------------
+Run A Check
+-----------
 
-Analyze a directory or a single file:
-
-.. code-block:: sh
-
-   uv run tcl-check path/to/project
-   uv run tcl-check path/to/file.tcl
-
-Show source context and fail the command when diagnostics are present:
+Pass a Tcl file or a project directory:
 
 .. code-block:: sh
 
-   uv run tcl-check --context-lines 2 --fail-on-diagnostics path/to/project
+   tcl-check path/to/file.tcl
+   tcl-check path/to/project
 
-Load extra project metadata explicitly:
+Directory checks find ``.tcl``, ``.tm``, and ``.test`` files recursively and
+group them into package workspaces using ``pkgIndex.tcl``. Resolved source and
+package dependencies provide additional definitions for analysis.
 
-.. code-block:: sh
+Results are grouped by source file and include a summary. Interactive terminals
+also show progress. Add ``--context-lines 2`` to show surrounding source lines.
 
-   uv run tcl-check --plugin-path .tcl-ls path/to/project
+Use In CI
+---------
 
-Control worker count:
-
-.. code-block:: sh
-
-   uv run tcl-check --threads 4 path/to/project
-
-What The Checker Does
----------------------
-
-The checker prepares package-scoped workspaces, indexes source files, and then
-prints grouped diagnostics with a summary at the end. In an interactive
-terminal, it also shows live progress as workspaces and source files are
-analyzed.
-
-The checker currently focuses on high-confidence diagnostics, including areas
-such as:
-
-* unresolved commands, packages, and variables
-* ambiguous command or variable resolution
-* duplicate procedures
-* malformed static command forms such as ``if`` and ``switch``
-* metadata-driven option, subcommand, and arity checks
-
-For the full diagnostic catalog and severity/source conventions, see
-:doc:`../reference/diagnostics`.
-
-Project And Dependency Discovery
---------------------------------
-
-``tcl-check`` understands local package layouts instead of treating every file
-as an isolated script:
-
-* ``pkgIndex.tcl`` roots define package workspaces
-* dependent files can be pulled in as background sources when package metadata
-  points at them
-* ``lib-path`` and ``library-path`` extend the set of external package roots
-* ``plugin-path`` adds extra metadata files or Tcl plugin helpers
-
-For repeated workflows against the bundled ``tcllib`` checkout in this
-repository, use:
+Diagnostics do not change the default success exit status. To fail when any
+enabled diagnostic is reported, use:
 
 .. code-block:: sh
 
-   make check-tcllib
+   tcl-check --fail-on-diagnostics path/to/project
+
+Use :ref:`diagnostic-configuration` to choose which diagnostics are reported
+and at what severity. The :doc:`../reference/diagnostics` reference lists their
+codes and meanings.
+
+Project Settings
+----------------
+
+The checker reads ``tcllsrc.tcl`` automatically. Use :doc:`configuration` for
+shared metadata, library paths, and tool environment rules.
+
+For a one-off check with additional metadata:
+
+.. code-block:: sh
+
+   tcl-check --meta-path .tcl-ls path/to/project
+
+See :doc:`../reference/cli` for all options, worker settings, and exit statuses.

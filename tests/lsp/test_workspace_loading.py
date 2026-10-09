@@ -20,7 +20,7 @@ def test_language_service_loads_plugin_metadata_from_tcllsrc(tmp_path: Path) -> 
     project_root = tmp_path / 'workspace'
     write_sample_plugin_bundle(project_root / '.tcl-ls')
     (project_root / 'tcllsrc.tcl').write_text(
-        'plugin-path .tcl-ls/sample.tcl\n',
+        'source .tcl-ls/sample.meta.tcl\n',
         encoding='utf-8',
     )
     source_path = project_root / 'main.tcl'
@@ -39,7 +39,7 @@ def test_language_service_loads_file_metadata_dependencies_and_unloads_them(
     project_root = tmp_path / 'workspace'
     metadata = project_root / '.tcl-ls'
     metadata.mkdir(parents=True)
-    (project_root / 'tcllsrc.tcl').write_text('plugin-path .tcl-ls\n', encoding='utf-8')
+    (project_root / 'tcllsrc.tcl').write_text('source .tcl-ls/loader.meta.tcl\n', encoding='utf-8')
     (metadata / 'loader.meta.tcl').write_text('meta source ../common.tcl\n', encoding='utf-8')
     (project_root / 'pkgIndex.tcl').write_text(
         'package ifneeded loader 1.0 [list source [file join $dir loader.tcl]]\n',
@@ -188,11 +188,11 @@ def test_language_service_loads_generated_project_metadata_without_docs(
     project_root = tmp_path / 'workspace'
     write_sample_plugin_bundle(project_root / '.tcl-ls')
     (project_root / '.tcl-ls' / 'generated.meta.tcl').write_text(
-        'meta module Tcl\nmeta command external {args}\n',
+        ('meta module Tcl {\n    meta command external {args}\n}\n'),
         encoding='utf-8',
     )
     (project_root / 'tcllsrc.tcl').write_text(
-        'plugin-path .tcl-ls/sample.tcl\n',
+        'source .tcl-ls/sample.meta.tcl\nsource .tcl-ls/generated.meta.tcl\n',
         encoding='utf-8',
     )
     source_path = project_root / 'main.tcl'
@@ -208,14 +208,14 @@ def test_language_service_loads_generated_project_metadata_without_docs(
     assert hover.contents == 'builtin command external {args}'
 
 
-def test_language_service_clears_project_metadata_when_plugin_paths_change(
+def test_language_service_clears_project_metadata_when_metadata_paths_change(
     tmp_path: Path,
 ) -> None:
     project_with_plugin = tmp_path / 'with-plugin'
     project_without_plugin = tmp_path / 'without-plugin'
     write_sample_plugin_bundle(project_with_plugin / '.tcl-ls')
     (project_with_plugin / 'tcllsrc.tcl').write_text(
-        'plugin-path .tcl-ls/sample.tcl\n',
+        'source .tcl-ls/sample.meta.tcl\n',
         encoding='utf-8',
     )
     project_without_plugin.mkdir()
@@ -243,7 +243,7 @@ def test_language_service_isolates_project_metadata_between_services(
     project_without_plugin = tmp_path / 'without-plugin'
     write_sample_plugin_bundle(project_with_plugin / '.tcl-ls')
     (project_with_plugin / 'tcllsrc.tcl').write_text(
-        'plugin-path .tcl-ls/sample.tcl\n',
+        'source .tcl-ls/sample.meta.tcl\n',
         encoding='utf-8',
     )
     project_without_plugin.mkdir()
@@ -552,7 +552,7 @@ def test_language_service_reuses_cached_background_documents_until_disk_content_
     assert extract_counts.get(helper_uri, 0) == first_helper_extracts + 1
 
 
-def test_language_service_clears_cached_background_documents_when_plugin_paths_change(
+def test_language_service_clears_cached_background_documents_when_metadata_paths_change(
     tmp_path: Path,
 ) -> None:
     shared_root = tmp_path / 'shared'
@@ -574,7 +574,7 @@ def test_language_service_clears_cached_background_documents_when_plugin_paths_c
     project_without_plugin.mkdir()
 
     (project_with_plugin / 'tcllsrc.tcl').write_text(
-        'plugin-path .tcl-ls/sample.tcl\nlib-path ../shared\n',
+        'source .tcl-ls/sample.meta.tcl\nlib-path ../shared\n',
         encoding='utf-8',
     )
     (project_without_plugin / 'tcllsrc.tcl').write_text(

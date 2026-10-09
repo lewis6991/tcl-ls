@@ -31,7 +31,7 @@ type CachedDocumentSaver = Callable[[ManagedDocument], None]
 class DocumentBuildSnapshot:
     documents: dict[str, ManagedDocument]
     open_document_uris: tuple[str, ...]
-    plugin_paths_by_uri: dict[str, tuple[Path, ...]]
+    metadata_paths_by_uri: dict[str, tuple[Path, ...]]
     library_paths_by_uri: dict[str, tuple[Path, ...]]
     workspace_index: WorkspaceIndex
     scanned_package_roots: tuple[Path, ...]
@@ -70,7 +70,7 @@ class WorkspaceRebuilder:
         load_cached_document: CachedDocumentLoader | None = None,
         cache_document: CachedDocumentSaver | None = None,
     ) -> RebuildResult | None:
-        target_metadata_registry = create_metadata_registry(self._active_plugin_paths(snapshot))
+        target_metadata_registry = create_metadata_registry(self._active_metadata_paths(snapshot))
         parser = Parser()
         extractor = FactExtractor(parser, metadata_registry=target_metadata_registry)
         resolver = Resolver(metadata_registry=target_metadata_registry)
@@ -161,7 +161,7 @@ class WorkspaceRebuilder:
         load_cached_document: CachedDocumentLoader | None = None,
         cache_document: CachedDocumentSaver | None = None,
     ) -> RebuildResult | None:
-        target_metadata_registry = create_metadata_registry(self._active_plugin_paths(snapshot))
+        target_metadata_registry = create_metadata_registry(self._active_metadata_paths(snapshot))
         parser = Parser()
         extractor = FactExtractor(parser, metadata_registry=target_metadata_registry)
         resolver = Resolver(metadata_registry=target_metadata_registry)
@@ -526,11 +526,11 @@ class WorkspaceRebuilder:
             metadata_registry=metadata_registry,
         )
 
-    def _active_plugin_paths(self, snapshot: DocumentBuildSnapshot) -> tuple[Path, ...]:
+    def _active_metadata_paths(self, snapshot: DocumentBuildSnapshot) -> tuple[Path, ...]:
         active_paths: dict[Path, None] = {}
         for uri in snapshot.open_document_uris:
-            for plugin_path in snapshot.plugin_paths_by_uri.get(uri, ()):
-                active_paths.setdefault(plugin_path, None)
+            for metadata_path in snapshot.metadata_paths_by_uri.get(uri, ()):
+                active_paths.setdefault(metadata_path, None)
         return tuple(active_paths)
 
     def _raise_if_cancelled(self) -> None:

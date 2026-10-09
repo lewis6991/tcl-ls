@@ -1,91 +1,90 @@
 Development
 ===========
 
-This page is for contributors and maintainers working on the ``tcl-ls``
-codebase itself.
+Run commands from the repository root. The Python tools use ``uv``.
 
-Repository Layout
------------------
-
-The repository is organized into a few core areas:
-
-* ``src/tcl_lsp/parser`` for the handwritten Tcl parser and AST model
-* ``src/tcl_lsp/analysis`` for fact extraction, resolution, diagnostics, and
-  metadata effects
-* ``src/tcl_lsp/lsp`` for the pygls-based language server surface
-* ``meta/`` for bundled Tcl and Tcllib metadata
-* ``tests/`` for parser, analysis, checker, and LSP coverage
-* ``docs/`` for the Sphinx documentation site
-
-Common Local Commands
----------------------
-
-Set up and run the usual development workflow with:
+Setup And Checks
+----------------
 
 .. code-block:: sh
 
    uv sync
    make test
    make check
-   make docs
 
-Useful one-off commands:
+``make test`` fetches Tcllib into ``.cache/`` on first use and runs the test
+suite. ``make check`` runs type, lint, formatting, and documentation checks,
+with Sphinx warnings treated as errors.
+
+For focused tests or a local checker run:
 
 .. code-block:: sh
 
-   uv run pytest tests/lsp/test_lsp.py
+   uv run pytest tests/lsp
    uv run tcl-check path/to/project
-   uv build
-   make check-tcllib
+
+To inspect diagnostics across the cached Tcllib tree:
+
+.. code-block:: sh
+
+   make check-tcllib TCL_CHECK_ARGS="--context-lines=1 --fail-on-diagnostics"
+
+Repository Layout
+-----------------
+
+* ``src/tcl_lsp/parser``: Tcl parser and syntax tree
+* ``src/tcl_lsp/analysis``: fact extraction, resolution, diagnostics, and metadata effects
+* ``src/tcl_lsp/lsp``: language server
+* ``src/tcl_lsp/checker``: batch analysis and terminal reporting
+* ``meta/``: bundled Tcl and Tcllib metadata
+* ``editors/``: Neovim config and VS Code extension
+* ``tests/``: parser, analysis, checker, and LSP tests
+* ``docs/``: Sphinx site
+
+Metadata Maintenance
+--------------------
+
+Refresh generated builtin subcommand metadata with:
+
+.. code-block:: sh
+
    make generate-builtins
-   make pyinstaller-tcl-ls-smoke
 
-``make test`` clones ``tcllib`` into ``.cache/`` on first use so integration
-tests can run against a realistic package tree.
+This updates ``meta/tcl8.6/tcl.meta.tcl``. The generator,
+``scripts/generate_builtin_commands.py``, accepts ``--input``, ``--output``,
+``--doc-root``, ``--tcl-doc-series``, and ``--version-label`` for other inputs
+or Tcl versions. See :doc:`meta` for authoring metadata and generating tool
+inventories.
 
-Packaging And Release Validation
---------------------------------
-
-The Python package and frozen server builds are part of the normal maintenance
-surface:
-
-* ``uv build`` writes the source distribution and wheel under ``dist/``
-* ``uvx twine check dist/*.whl dist/*.tar.gz`` validates the built package
-  metadata before upload
-* ``make pyinstaller-tcl-ls-smoke`` builds the frozen server and validates a
-  real LSP initialize/shutdown/exit handshake
-* GitHub release workflows build packaged server archives and bundled VS Code
-  extensions for Linux, macOS, and Windows
-
-Before a release, verify that the package metadata in ``pyproject.toml``,
-install instructions in ``README.md`` / ``docs/``, and release notes in
-``CHANGELOG.md`` are all current.
-
-Current Scope
+Documentation
 -------------
 
-The project is already a working typed bootstrap, but it is intentionally
-conservative:
+Update the relevant guide or reference when behavior changes. Build the HTML
+site with:
 
-* the parser covers the tested core Tcl forms rather than the full language
-* semantic analysis focuses on statically knowable behavior
-* builtin metadata is strong for core Tcl, but extension ecosystems still need
-  expansion
-* editor support is centered on diagnostics, navigation, completion, and
-  semantic tokens
+.. code-block:: sh
 
-Areas that still need more work include richer Tcl semantics, broader metadata
-coverage, automatic workspace discovery, and additional editor features such as
-formatting and code actions.
+   make docs
 
-Documentation Maintenance
--------------------------
+Open ``docs/_build/html/index.html``. The Neovim and VS Code pages include
+``editors/nvim/README.md`` and ``editors/vscode/README.md``; edit those source
+files to keep the repository and published guides consistent.
 
-Documentation is part of the normal quality bar:
+Packaging
+---------
 
-* ``make docs`` builds the HTML site
-* ``make check`` treats Sphinx warnings as errors
-* user-facing behavior changes should update the relevant page under ``docs/``
+.. code-block:: sh
 
-The more detailed engineering backlog and implementation notes still live in
-``STATUS.md``.
+   uv build
+   uvx twine check dist/*.whl dist/*.tar.gz
+   make pyinstaller-tcl-ls-smoke
+
+The first two commands build and validate the Python distributions in ``dist/``.
+The smoke target builds a standalone server and checks an LSP
+initialize/shutdown/exit exchange. ``make pyinstaller-tcl-ls-archive`` also
+packages the server for distribution. See :doc:`user-guide/vscode` for VSIX
+builds.
+
+Before a release, check the version in ``pyproject.toml``, installation
+instructions, and ``CHANGELOG.md``. Engineering plans and implementation notes
+are kept in ``STATUS.md``.

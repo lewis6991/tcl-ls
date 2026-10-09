@@ -37,12 +37,15 @@ def write_sample_plugin_bundle(metadata_root: Path) -> Path:
         encoding='utf-8',
     )
     (metadata_root / 'sample.meta.tcl').write_text(
-        '# Project metadata loaded from project-local plugin configuration.\n'
-        'meta module Tcl\n'
-        '# Define a procedure using a project-local wrapper command.\n'
-        'meta command dsl::define {name params body} {\n'
-        '    plugin sample.tcl ::tcl_lsp::plugins::sample::procedure\n'
-        '}\n',
+        (
+            '# Project metadata loaded from project-local plugin configuration.\n'
+            'meta module Tcl {\n'
+            '    # Define a procedure using a project-local wrapper command.\n'
+            '    meta command dsl::define {name params body} {\n'
+            '        plugin sample.tcl ::tcl_lsp::plugins::sample::procedure\n'
+            '    }\n'
+            '}\n'
+        ),
         encoding='utf-8',
     )
     return plugin_path
@@ -113,12 +116,15 @@ def write_declaration_plugin_bundle(metadata_root: Path) -> Path:
         encoding='utf-8',
     )
     (metadata_root / 'declaration.meta.tcl').write_text(
-        '# Project metadata loaded from project-local plugin configuration.\n'
-        'meta module Tcl\n'
-        '# Declare a procedure using a project-local wrapper command.\n'
-        'meta command dsl::declare {name params} {\n'
-        '    plugin declaration.tcl ::tcl_lsp::plugins::sample::declaration\n'
-        '}\n',
+        (
+            '# Project metadata loaded from project-local plugin configuration.\n'
+            'meta module Tcl {\n'
+            '    # Declare a procedure using a project-local wrapper command.\n'
+            '    meta command dsl::declare {name params} {\n'
+            '        plugin declaration.tcl ::tcl_lsp::plugins::sample::declaration\n'
+            '    }\n'
+            '}\n'
+        ),
         encoding='utf-8',
     )
     return plugin_path
@@ -160,17 +166,20 @@ def write_effect_clause_plugin_bundle(metadata_root: Path) -> Path:
         encoding='utf-8',
     )
     (metadata_root / 'effects.meta.tcl').write_text(
-        '# Project metadata loaded from project-local plugin configuration.\n'
-        'meta module Tcl\n'
-        'meta command dsl::run {name helper body} {\n'
-        '    plugin effects.tcl ::tcl_lsp::plugins::sample::effects\n'
-        '}\n'
-        'meta command dsl::use {name} {\n'
-        '    plugin effects.tcl ::tcl_lsp::plugins::sample::effects\n'
-        '}\n'
-        'meta command dsl::loadlist {paths} {\n'
-        '    plugin effects.tcl ::tcl_lsp::plugins::sample::effects\n'
-        '}\n',
+        (
+            '# Project metadata loaded from project-local plugin configuration.\n'
+            'meta module Tcl {\n'
+            '    meta command dsl::run {name helper body} {\n'
+            '        plugin effects.tcl ::tcl_lsp::plugins::sample::effects\n'
+            '    }\n'
+            '    meta command dsl::use {name} {\n'
+            '        plugin effects.tcl ::tcl_lsp::plugins::sample::effects\n'
+            '    }\n'
+            '    meta command dsl::loadlist {paths} {\n'
+            '        plugin effects.tcl ::tcl_lsp::plugins::sample::effects\n'
+            '    }\n'
+            '}\n'
+        ),
         encoding='utf-8',
     )
     return plugin_path

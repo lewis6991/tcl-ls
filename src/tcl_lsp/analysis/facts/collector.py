@@ -85,6 +85,7 @@ from tcl_lsp.analysis.metadata_commands import (
     MetadataRef,
     MetadataSelector,
     MetadataSource,
+    metadata_declaration_diagnostics,
     metadata_environment_names,
     select_argument_indices,
 )
@@ -121,7 +122,14 @@ from tcl_lsp.parser.model import (
     Word,
 )
 from tcl_lsp.plugins.host import PluginProcedureEffect, TclPluginHost
-from tcl_lsp.project.config import EnvironmentRule, configured_environment_rules
+from tcl_lsp.project.config import (
+    EnvironmentRule,
+    configured_environment_rules,
+    is_config_file,
+    parse_config,
+)
+from tcl_lsp.project.declarations import is_declaration_file
+from tcl_lsp.project.diagnostics import DiagnosticRule, parse_diagnostic_rule
 from tcl_lsp.project.paths import source_id_to_path
 
 _CONFLICTING_EMBEDDED_LANGUAGE_CODE = 'conflicting-embedded-language'
@@ -187,8 +195,11 @@ class FactExtractor:
         if include_lexical_spans is None:
             include_lexical_spans = include_parse_result
 
-        if environment_rules is None:
-            source_path = source_id_to_path(parse_result.source_id)
+        source_path = source_id_to_path(parse_result.source_id)
+        configuration = is_config_file(source_path)
+        if is_declaration_file(source_path):
+            environment_rules = ()
+        elif environment_rules is None:
             environment_rules = (
                 configured_environment_rules(source_path) if source_path is not None else ()
             )
@@ -198,6 +209,15 @@ class FactExtractor:
             parser=self._parser,
             collect_lexical_spans=include_lexical_spans,
         )
+        diagnostics = parse_result.diagnostics + lowering_result.diagnostics
+        if configuration:
+            assert source_path is not None
+            config = parse_config(parse_result, directory=source_path.parent.resolve(strict=False))
+            diagnostics = config.diagnostics
+            if not diagnostics and config.declarations is not None:
+                diagnostics = metadata_declaration_diagnostics(
+                    config.declarations, span=parse_result.script.span
+                )
         collector = _FactCollector(
             metadata_registry=self._metadata_registry,
             environment_rules=environment_rules,
@@ -208,7 +228,7 @@ class FactExtractor:
             operator_spans=lowering_result.operator_spans,
             string_spans=lowering_result.string_spans,
             lowered_script=lowering_result.script,
-            diagnostics=parse_result.diagnostics + lowering_result.diagnostics,
+            diagnostics=diagnostics,
             include_parse_result=include_parse_result,
             include_lexical_spans=include_lexical_spans,
         )
@@ -222,6 +242,7 @@ class _FactCollector:
         '_command_imports',
         '_command_renames',
         '_comment_spans',
+        '_diagnostic_directives',
         '_diagnostics',
         '_environment_rules',
         '_environment_scopes',
@@ -277,6 +298,7 @@ class _FactCollector:
         self._include_lexical_spans = include_lexical_spans
         self._include_parse_result = include_parse_result
         self._diagnostics: list[Diagnostic] = list(diagnostics)
+        self._diagnostic_directives: list[tuple[int, DiagnosticRule]] = []
         self._active_builtin_packages: set[str] = set()
         self._comment_spans: list[Span] = list(comment_spans)
         self._string_spans: list[Span] = list(string_spans)
@@ -298,6 +320,12 @@ class _FactCollector:
         root_context = self._namespace_context(
             self._parse_result.source_id, '::', command_renames_enabled=True
         )
+        if is_config_file(source_id_to_path(self._parse_result.source_id)):
+            root_context = replace(
+                root_context,
+                explicit_environments=('TclLSConfig',),
+                command_renames_enabled=False,
+            )
         self._collect_lowered_script(self._lowered_script, root_context)
         return DocumentFacts(
             uri=self._parse_result.source_id,
@@ -321,6 +349,13 @@ class _FactCollector:
             diagnostics=tuple(self._diagnostics),
             environment_scopes=tuple(self._environment_scopes),
             environment_rules=self._environment_rules,
+            diagnostic_rules=tuple(
+                rule
+                for _, rule in sorted(
+                    self._diagnostic_directives,
+                    key=lambda item: (item[1].statement is not None, item[0]),
+                )
+            ),
         )
 
     def _collect_lowered_script(
@@ -338,11 +373,22 @@ class _FactCollector:
                 else event.command.span.start.offset
             ),
         )
+        pending_diagnostics: list[tuple[Token, DiagnosticRule]] = []
         for event in events:
             if isinstance(event, Token):
-                current_context = self._collect_environment_directive(event, current_context)
+                current_context = self._collect_directive(
+                    event, current_context, pending_diagnostics
+                )
                 end = event.span.end
             else:
+                for comment, rule in pending_diagnostics:
+                    self._diagnostic_directives.append(
+                        (
+                            comment.span.start.offset,
+                            replace(rule, statement=event.command.span),
+                        )
+                    )
+                pending_diagnostics.clear()
                 current_context = self._collect_lowered_command(event, current_context)
                 end = event.command.span.end
             # A substitution may already have changed the command's registry.
@@ -351,7 +397,11 @@ class _FactCollector:
                 current_context, Span(end, script.span.end), previous_registry=script_registry
             )
             script_registry = current_context.metadata_registry
-        # Directives have lexical scope; only variable effects leave a body.
+        for comment, _ in pending_diagnostics:
+            self._invalid_diagnostic_directive(
+                comment, 'Statement diagnostic directive has no following statement.'
+            )
+        # Environment directives have lexical scope; only variable effects leave a body.
         return replace(context, flow_state=current_context.flow_state)
 
     def _select_environment(
@@ -373,13 +423,32 @@ class _FactCollector:
             context, metadata_registry=context.metadata_registry.with_environments(environments)
         )
 
-    def _collect_environment_directive(
-        self, comment: Token, context: _ExtractionContext
+    def _collect_directive(
+        self,
+        comment: Token,
+        context: _ExtractionContext,
+        pending_diagnostics: list[tuple[Token, DiagnosticRule]],
     ) -> _ExtractionContext:
         text = comment.text[1:].strip()
         if not text.startswith('tcl-ls:'):
             return context
         words = text.split()
+        if words[:2] == ['tcl-ls:', 'diagnostic']:
+            try:
+                if len(words) < 3 or words[2] not in {'file', 'statement'}:
+                    raise RuntimeError(
+                        'Diagnostic directives must be '
+                        '`# tcl-ls: diagnostic file|statement code level`.'
+                    )
+                rule = parse_diagnostic_rule(tuple(words[3:]))
+            except RuntimeError as exc:
+                self._invalid_diagnostic_directive(comment, str(exc))
+            else:
+                if words[2] == 'statement':
+                    pending_diagnostics.append((comment, rule))
+                else:
+                    self._diagnostic_directives.append((comment.span.start.offset, rule))
+            return context
         if len(words) != 3 or words[:2] != ['tcl-ls:', 'env']:
             message = 'Environment directives must be `# tcl-ls: env name`.'
         elif words[2] not in metadata_environment_names(context.metadata_registry):
@@ -398,6 +467,17 @@ class _FactCollector:
             )
         )
         return context
+
+    def _invalid_diagnostic_directive(self, comment: Token, message: str) -> None:
+        self._diagnostics.append(
+            Diagnostic(
+                span=comment.span,
+                severity='error',
+                message=message,
+                source='tcl-ls',
+                code='invalid-diagnostic-directive',
+            )
+        )
 
     def _collect_lowered_command(
         self, command: LoweredCommand, context: _ExtractionContext
@@ -2174,6 +2254,10 @@ class _FactCollector:
             )
 
     def _collect_source(self, command: Command, context: _ExtractionContext) -> None:
+        # Declarative includes are loaded by the metadata loader, rather than
+        # adding Tcl program dependencies to the workspace.
+        if is_declaration_file(source_id_to_path(context.uri)):
+            return
         target_uri = extract_static_source_uri(command, context.uri)
         if target_uri is None:
             return
@@ -3005,7 +3089,7 @@ class _FactCollector:
         context = self._context_with_flow_state(context, context.flow_state.cleared())
         effects = VariableEffects()
         for comment in script.comments:
-            if comment.text[1:].strip().startswith('tcl-ls:'):
+            if comment.text[1:].split()[:2] == ['tcl-ls:', 'env']:
                 return VariableEffects.unknown()
         for command in script.commands:
             if isinstance(command, LoweredNamespaceEvalCommand):

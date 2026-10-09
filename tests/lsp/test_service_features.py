@@ -110,8 +110,10 @@ def test_language_service_definition_prefers_project_builtin_override_metadata(
     plugin_root = tmp_path / '.tcl-ls'
     plugin_root.mkdir()
     override_path = plugin_root / 'override.meta.tcl'
-    override_path.write_text('meta module Tcl\nmeta command clock {args}\n', encoding='utf-8')
-    (tmp_path / 'tcllsrc.tcl').write_text('plugin-path .tcl-ls\n', encoding='utf-8')
+    override_path.write_text(
+        ('meta module Tcl {\n    meta command clock {args}\n}\n'), encoding='utf-8'
+    )
+    (tmp_path / 'tcllsrc.tcl').write_text('source .tcl-ls/override.meta.tcl\n', encoding='utf-8')
 
     source_path = tmp_path / 'main.tcl'
     source_text = 'clock foo\n'

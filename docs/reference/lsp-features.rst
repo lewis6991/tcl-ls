@@ -1,62 +1,51 @@
 LSP Features
 ============
 
-The server currently exposes a compact but useful LSP surface focused on
-navigation, diagnostics, and conservative semantic analysis.
+``tcl-ls`` uses JSON-RPC over stdio. Supported methods are listed below.
 
-Core Lifecycle
---------------
+Lifecycle And Synchronization
+-----------------------------
 
-Supported protocol methods include:
-
-* ``initialize``
-* ``initialized``
-* ``shutdown``
-* ``exit``
+* ``initialize`` and ``initialized``
+* ``shutdown`` and ``exit``
 * ``textDocument/didOpen``
-* ``textDocument/didChange``
+* ``textDocument/didChange`` (full-document synchronization)
 * ``textDocument/didClose``
 
-Navigation And Intelligence
----------------------------
-
-The current server supports:
+Navigation And Editing
+----------------------
 
 * ``textDocument/declaration``
 * ``textDocument/definition``
 * ``textDocument/implementation``
 * ``textDocument/references``
 * ``textDocument/rename``
-* ``textDocument/prepareRename`` when the client advertises rename prepare
-  support
+* ``textDocument/prepareRename`` when the client advertises rename prepare support
 * ``textDocument/hover``
 * ``textDocument/documentSymbol``
 * ``workspace/symbol``
 * ``textDocument/documentHighlight``
-* ``textDocument/completion``
+* ``textDocument/completion`` (commands, packages, and variables)
 * ``textDocument/signatureHelp``
 * ``textDocument/foldingRange``
-* ``textDocument/documentLink``
+* ``textDocument/documentLink`` for source directives and uniquely resolved
+  package sources
 
-Completion is triggered by ``$``, ``:``, and ``-``. Signature help is triggered
-by a space or tab after the command name and earlier arguments.
+Completion triggers are ``$``, ``:``, and ``-``. Signature help triggers are
+space and tab.
 
-Semantic Output
----------------
-
-The server publishes diagnostics and semantic tokens for open documents:
+Diagnostics And Semantic Tokens
+-------------------------------
 
 * ``textDocument/publishDiagnostics`` on open, change, and close
 * ``textDocument/semanticTokens/full``
 * ``textDocument/semanticTokens/full/delta``
 
-Implementation Limits
----------------------
+Limits
+------
 
-The current protocol implementation still has some notable limits:
-
-* text synchronization is full-document only
-* position handling does not yet negotiate a custom ``positionEncoding``
-* automatic workspace discovery is limited; unopened files are indexed
-  conservatively through package inference rather than full file watching
-* code actions, formatting, code lens, and inlay hints are not implemented
+Code actions, formatting, code lens, and inlay hints are not implemented.
+Position conversion does not yet account for the negotiated encoding, so
+positions after non-ASCII characters can be inaccurate.
+See :doc:`../user-guide/language-server` for workspace loading behavior and
+:doc:`diagnostics` for static analysis limits.

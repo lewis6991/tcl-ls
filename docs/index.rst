@@ -1,16 +1,14 @@
 tcl-ls documentation
 ====================
 
-``tcl-ls`` is a typed Python Tcl language server with three user-facing entry
-points:
+``tcl-ls`` provides Tcl diagnostics, navigation, completion, and other editor
+features through the Language Server Protocol. ``tcl-check`` runs the same
+analysis from the terminal. Metadata describes commands and languages that
+static analysis cannot infer from Tcl source alone.
 
-* ``tcl-ls`` for stdio LSP server integration in an editor
-* ``tcl-check`` for batch diagnostics over a file or project tree
-* ``tcl-meta`` for metadata helper workflows
-
-The project is already useful for conservative static analysis, navigation,
-completion, and metadata-driven Tcl tooling. It is still early, so the docs
-also call out current limits and the workflows that are already stable.
+Start with :doc:`getting-started`, or go directly to
+:doc:`user-guide/configuration` for project settings and :doc:`meta` for custom
+command support.
 
 .. toctree::
    :maxdepth: 2
@@ -22,4 +20,3 @@ also call out current limits and the workflows that are already stable.
    reference/index
    support
    development
-

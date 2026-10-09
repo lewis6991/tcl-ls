@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 
 from tcl_lsp.analysis.builtins import (
@@ -57,11 +58,13 @@ from tcl_lsp.analysis.model import (
     VariableReference,
 )
 from tcl_lsp.cache import metadata_lru_cache
-from tcl_lsp.common import HoverInfo, Span, lsp_location
+from tcl_lsp.common import Diagnostic, HoverInfo, Span, lsp_location
 from tcl_lsp.metadata_paths import (
     DEFAULT_METADATA_REGISTRY,
     MetadataRegistry,
 )
+from tcl_lsp.project.config import configured_diagnostic_rules, is_config_file
+from tcl_lsp.project.diagnostics import apply_diagnostic_rules
 from tcl_lsp.project.paths import source_id_to_path
 
 
@@ -111,7 +114,7 @@ class Resolver:
         definitions = self._build_definitions(facts, facts.variable_bindings)
         return AnalysisResult(
             uri=uri,
-            diagnostics=tuple(facts.diagnostics),
+            diagnostics=self._diagnostics(uri, facts, facts.diagnostics),
             definitions=tuple(definitions),
             resolutions=(),
             resolved_references=(),
@@ -275,28 +278,41 @@ class Resolver:
                         )
                     )
 
-        diagnostics.extend(
-            collect_diagnostics(
-                DiagnosticContext(
-                    facts=facts,
-                    workspace_index=workspace_index,
-                    metadata_registry=self._metadata_registry,
-                    required_packages=required_packages,
-                    command_targets=command_targets,
-                    command_resolutions=tuple(command_resolutions),
-                    variable_resolutions=tuple(variable_resolutions),
+        # Config commands are validated by the same static grammar as loading.
+        # Keep resolution for navigation and help, without Tcl runtime checks.
+        if not is_config_file(source_id_to_path(uri)):
+            diagnostics.extend(
+                collect_diagnostics(
+                    DiagnosticContext(
+                        facts=facts,
+                        workspace_index=workspace_index,
+                        metadata_registry=self._metadata_registry,
+                        required_packages=required_packages,
+                        command_targets=command_targets,
+                        command_resolutions=tuple(command_resolutions),
+                        variable_resolutions=tuple(variable_resolutions),
+                    )
                 )
             )
-        )
 
         return AnalysisResult(
             uri=uri,
-            diagnostics=tuple(diagnostics),
+            diagnostics=self._diagnostics(uri, facts, diagnostics),
             definitions=tuple(definitions),
             resolutions=tuple(resolutions),
             resolved_references=tuple(resolved_references),
             document_symbols=facts.document_symbols,
             hovers=tuple(hovers),
+        )
+
+    def _diagnostics(
+        self, uri: str, facts: DocumentFacts, diagnostics: Iterable[Diagnostic]
+    ) -> tuple[Diagnostic, ...]:
+        path = source_id_to_path(uri)
+        path = None if path is None else path.resolve(strict=False)
+        configured = () if path is None else configured_diagnostic_rules(path)
+        return apply_diagnostic_rules(
+            diagnostics, (*configured, *facts.diagnostic_rules), path=path
         )
 
     def _build_definitions(

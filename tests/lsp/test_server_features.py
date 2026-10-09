@@ -100,7 +100,9 @@ def test_language_server_returns_declaration_and_implementation_locations(
     write_sample_plugin_bundle(plugin_root)
     write_declaration_plugin_bundle(plugin_root)
     project_root.mkdir(exist_ok=True)
-    (project_root / 'tcllsrc.tcl').write_text('plugin-path .tcl-ls\n', encoding='utf-8')
+    (project_root / 'tcllsrc.tcl').write_text(
+        'source .tcl-ls/sample.meta.tcl\nsource .tcl-ls/declaration.meta.tcl\n', encoding='utf-8'
+    )
 
     declaration_path = project_root / 'decl.tcl'
     declaration_path.write_text('dsl::declare greet {{name}}\n', encoding='utf-8')
@@ -205,10 +207,10 @@ def test_language_server_returns_absolute_plugin_metadata_completion_items(
     plugin_root = tmp_path / '.tcl-ls'
     plugin_root.mkdir()
     (plugin_root / 'sample.meta.tcl').write_text(
-        'meta module Tcl\nmeta command set_local_mode {args}\n',
+        ('meta module Tcl {\n    meta command set_local_mode {args}\n}\n'),
         encoding='utf-8',
     )
-    (tmp_path / 'tcllsrc.tcl').write_text('plugin-path .tcl-ls\n', encoding='utf-8')
+    (tmp_path / 'tcllsrc.tcl').write_text('source .tcl-ls/sample.meta.tcl\n', encoding='utf-8')
 
     source_path = tmp_path / 'main.tcl'
     source_text = '::set_lo\n'

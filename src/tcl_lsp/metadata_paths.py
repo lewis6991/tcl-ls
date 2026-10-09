@@ -1,15 +1,17 @@
 from __future__ import annotations
 
-import os
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from tcl_lsp.cache import metadata_lru_cache
+from tcl_lsp.project.declarations import load_declarations, metadata_root, metadata_roots
 
 _PACKAGE_META_DIR = Path(__file__).resolve().parent / 'meta'
 _REPO_META_DIR = Path(__file__).resolve().parents[2] / 'meta'
 METADATA_FILE_SUFFIX = '.meta.tcl'
+type MetadataRevision = tuple[tuple[Path, int, int], ...]
+
 _SOURCE_FILE_SUFFIXES = ('.tcl', '.tm')
 
 
@@ -23,6 +25,7 @@ def bundled_metadata_dir() -> Path:
 class MetadataRegistry:
     extra_metadata_paths: tuple[Path, ...] = ()
     environments: tuple[str, ...] = ()
+    revision: MetadataRevision = ()
 
     def with_environments(self, environments: tuple[str, ...]) -> MetadataRegistry:
         return replace(self, environments=environments)
@@ -33,7 +36,7 @@ class MetadataRegistry:
     def metadata_files(self) -> tuple[Path, ...]:
         files: dict[Path, None] = {}
         for metadata_path in self.metadata_paths():
-            for candidate in _metadata_candidates(metadata_path):
+            for candidate in _metadata_candidates(metadata_path, self.revision):
                 files.setdefault(candidate, None)
         return tuple(files)
 
@@ -42,7 +45,7 @@ class MetadataRegistry:
         seen_files: dict[Path, None] = {}
         for metadata_path in self.metadata_paths():
             layer_files: list[Path] = []
-            for candidate in _metadata_candidates(metadata_path):
+            for candidate in _metadata_candidates(metadata_path, self.revision):
                 if candidate in seen_files:
                     continue
                 seen_files[candidate] = None
@@ -58,25 +61,26 @@ DEFAULT_METADATA_REGISTRY = MetadataRegistry()
 def create_metadata_registry(
     paths: Iterable[Path | str] = (), *, environment: str | None = None
 ) -> MetadataRegistry:
+    normalized = _normalize_metadata_paths(paths)
+    files = dict.fromkeys(
+        block.path
+        for root in normalized
+        for path in metadata_roots(root)
+        for block in load_declarations(path).blocks()
+    )
+    revision: list[tuple[Path, int, int]] = []
+    for path in files:
+        stat = path.stat()
+        revision.append((path, stat.st_mtime_ns, stat.st_size))
     return MetadataRegistry(
-        extra_metadata_paths=_normalize_metadata_paths(paths),
+        extra_metadata_paths=normalized,
+        revision=tuple(revision),
         environments=(environment,) if environment and environment != 'Tcl' else (),
     )
 
 
 def _normalize_metadata_paths(paths: Iterable[Path | str]) -> tuple[Path, ...]:
-    return tuple(dict.fromkeys(_normalize_metadata_path(Path(path)) for path in paths))
-
-
-def _normalize_metadata_path(path: Path) -> Path:
-    resolved = path.expanduser().resolve(strict=False)
-    if resolved.is_dir():
-        return resolved
-    if _is_metadata_file(resolved):
-        return resolved
-    if resolved.suffix in {'.tcl', '.tm'}:
-        return resolved.parent
-    return resolved
+    return tuple(dict.fromkeys(metadata_root(Path(path)) for path in paths))
 
 
 def _is_metadata_file(path: Path) -> bool:
@@ -102,22 +106,9 @@ def source_name_for_metadata(path: Path) -> str:
     return f'{stem}.tcl'
 
 
-@metadata_lru_cache(maxsize=None)
-def _metadata_candidates(metadata_path: Path) -> tuple[Path, ...]:
-    if metadata_path.is_dir():
-        candidates: list[Path] = []
-        # `os.walk()` is much cheaper than `Path.rglob()` on plugin roots that
-        # vendor large trees like tcllib under `.tcl-ls/`.
-        for root, dirnames, filenames in os.walk(metadata_path):
-            dirnames.sort()
-            for filename in sorted(filenames):
-                if not filename.endswith(METADATA_FILE_SUFFIX):
-                    continue
-                candidates.append((Path(root) / filename).resolve(strict=False))
-        return tuple(candidates)
-    if metadata_path.is_file() and _is_metadata_file(metadata_path):
-        return (metadata_path.resolve(strict=False),)
-    return ()
+@metadata_lru_cache(maxsize=128)
+def _metadata_candidates(metadata_path: Path, _revision: MetadataRevision) -> tuple[Path, ...]:
+    return metadata_roots(metadata_path)
 
 
 def _existing_source_names_for_metadata(path: Path) -> tuple[str, ...]:

@@ -285,19 +285,19 @@ namespace eval ::tcl_meta {
         puts $ch "${indent}}"
     }
 
-    proc emit_root_command {ch subcommand_map command} {
+    proc emit_root_command {ch subcommand_map command indent} {
         set children [lookup_subcommands $subcommand_map $command]
         set signature [command_signature $command [expr {[llength $children] != 0}]]
         if {[llength $children] == 0} {
-            puts $ch "meta command [list $command] [list $signature]"
+            puts $ch "${indent}meta command [list $command] [list $signature]"
             return
         }
 
-        puts $ch "meta command [list $command] [list $signature] {"
+        puts $ch "${indent}meta command [list $command] [list $signature] {"
         foreach child $children {
-            emit_subcommand $ch $subcommand_map "$command $child" "    "
+            emit_subcommand $ch $subcommand_map "$command $child" "${indent}    "
         }
-        puts $ch "}"
+        puts $ch "${indent}}"
     }
 
     proc write_metadata {output_path new_commands subcommand_map module} {
@@ -308,12 +308,13 @@ namespace eval ::tcl_meta {
             puts $ch "# Contains commands discovered from the active tool Tcl environment."
             set declaration [list meta module $module]
             if {$module ne "Tcl"} { lappend declaration -environment }
-            puts $ch $declaration
+            puts $ch "$declaration {"
             puts $ch ""
 
             foreach command [lsort -dictionary [dict keys $new_commands]] {
-                emit_root_command $ch $subcommand_map $command
+                emit_root_command $ch $subcommand_map $command "    "
             }
+            puts $ch "}"
         } finally {
             close $ch
         }

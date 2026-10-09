@@ -17,10 +17,13 @@ def test_metadata_declarations_resolve_relative_to_the_current_namespace(
     parser: Parser, tmp_path: Path, namespace: str, call: str
 ) -> None:
     (tmp_path / 'custom.meta.tcl').write_text(
-        'meta module Tcl\n'
-        'meta command sample::declare {name params body} {\n'
-        '    procedure {name select 1; params select 2; body select 3}\n'
-        '}\n',
+        (
+            'meta module Tcl {\n'
+            '    meta command sample::declare {name params body} {\n'
+            '        procedure {name select 1; params select 2; body select 3}\n'
+            '    }\n'
+            '}\n'
+        ),
         encoding='utf-8',
     )
     source = tmp_path / 'main.tcl'
@@ -43,11 +46,14 @@ def test_namespaced_metadata_checks_bodies_and_binds_local_variables(
     parser: Parser, tmp_path: Path
 ) -> None:
     (tmp_path / 'custom.meta.tcl').write_text(
-        'meta module Tcl\n'
-        'meta command sample::tools::with_value {name body} {\n'
-        '    bind 1 set\n'
-        '    enter tcl body 2\n'
-        '}\n',
+        (
+            'meta module Tcl {\n'
+            '    meta command sample::tools::with_value {name body} {\n'
+            '        bind 1 set\n'
+            '        enter tcl body 2\n'
+            '    }\n'
+            '}\n'
+        ),
         encoding='utf-8',
     )
     source = tmp_path / 'main.tcl'
@@ -69,9 +75,12 @@ def test_current_namespace_metadata_takes_precedence_over_global_metadata(
     parser: Parser, tmp_path: Path
 ) -> None:
     (tmp_path / 'custom.meta.tcl').write_text(
-        'meta module Tcl\n'
-        'meta command copy {name value} {bind 1 set}\n'
-        'meta command sample::copy {value name} {bind 2 set}\n',
+        (
+            'meta module Tcl {\n'
+            '    meta command copy {name value} {bind 1 set}\n'
+            '    meta command sample::copy {value name} {bind 2 set}\n'
+            '}\n'
+        ),
         encoding='utf-8',
     )
     source = tmp_path / 'main.tcl'
@@ -95,10 +104,13 @@ def test_current_namespace_metadata_takes_precedence_over_global_metadata(
 
 def test_namespaced_metadata_resolves_subcommands(parser: Parser, tmp_path: Path) -> None:
     (tmp_path / 'custom.meta.tcl').write_text(
-        'meta module Tcl\n'
-        'meta command sample::api {subcommand args} {\n'
-        '    command bind {name} {bind 1 set}\n'
-        '}\n',
+        (
+            'meta module Tcl {\n'
+            '    meta command sample::api {subcommand args} {\n'
+            '        command bind {name} {bind 1 set}\n'
+            '    }\n'
+            '}\n'
+        ),
         encoding='utf-8',
     )
     source = tmp_path / 'main.tcl'
@@ -111,7 +123,8 @@ def test_namespaced_metadata_resolves_subcommands(parser: Parser, tmp_path: Path
 
 def test_metadata_does_not_search_parent_namespaces(parser: Parser, tmp_path: Path) -> None:
     (tmp_path / 'custom.meta.tcl').write_text(
-        'meta module Tcl\nmeta command sample::copy {name} {bind 1 set}\n', encoding='utf-8'
+        ('meta module Tcl {\n    meta command sample::copy {name} {bind 1 set}\n}\n'),
+        encoding='utf-8',
     )
     source = tmp_path / 'main.tcl'
     source.write_text(
@@ -128,11 +141,14 @@ def test_local_command_metadata_does_not_use_global_subcommands(
     parser: Parser, tmp_path: Path
 ) -> None:
     (tmp_path / 'custom.meta.tcl').write_text(
-        'meta module Tcl\n'
-        'meta command api {subcommand args} {\n'
-        '    command bind {name} {bind 1 set}\n'
-        '}\n'
-        'meta command sample::api {name value} {bind 1 set}\n',
+        (
+            'meta module Tcl {\n'
+            '    meta command api {subcommand args} {\n'
+            '        command bind {name} {bind 1 set}\n'
+            '    }\n'
+            '    meta command sample::api {name value} {bind 1 set}\n'
+            '}\n'
+        ),
         encoding='utf-8',
     )
     source = tmp_path / 'main.tcl'

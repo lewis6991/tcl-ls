@@ -23,8 +23,10 @@ def test_update_metadata_inserts_generated_command_blocks() -> None:
     source_text = (
         '# Tcl builtin command metadata for tcl-ls.\n'
         '# Descriptions are adapted from the Tcl 8.6 command manual.\n'
-        'meta command dict {subcommand args}\n'
-        'meta command puts {args}\n'
+        'meta module Tcl {\n'
+        '    meta command dict {subcommand args}\n'
+        '    meta command puts {args}\n'
+        '}\n'
     )
     docs_by_command = {
         'dict': (
@@ -43,14 +45,21 @@ def test_update_metadata_inserts_generated_command_blocks() -> None:
         version_label='8.6',
     )
 
-    assert 'meta command dict {subcommand args} {' in updated
-    assert '    # @generated begin subcommands for dict (Tcl 8.6)' in updated
-    assert '    command get {dictionaryValue ? key ... ?}' in updated
-    assert '    command filter {dictionaryValue filterType arg ?arg ...?} {' in updated
-    assert '        command key {dictionaryValue ?globPattern ...?}' in updated
-    assert '    # @generated end subcommands for dict' in updated
+    assert '    meta command dict {subcommand args} {' in updated
+    assert '        # @generated begin subcommands for dict (Tcl 8.6)' in updated
+    assert '        command get {dictionaryValue ? key ... ?}' in updated
+    assert '        command filter {dictionaryValue filterType arg ?arg ...?} {' in updated
+    assert '            command key {dictionaryValue ?globPattern ...?}' in updated
+    assert '        # @generated end subcommands for dict' in updated
     assert 'meta command {dict get} {dictionaryValue ? key ... ?}' not in updated
     assert generator.update_metadata(updated, docs_by_command, version_label='8.6') == updated
+    assert generator.meta_command_names(updated) == {
+        'dict',
+        'dict get',
+        'dict filter',
+        'dict filter key',
+        'puts',
+    }
 
 
 def test_extract_entries_from_html_keeps_nested_subcommand_names() -> None:

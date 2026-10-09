@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from pathlib import Path
 from types import MappingProxyType
 
 from tcl_lsp.analysis.metadata_commands import (
@@ -10,7 +9,6 @@ from tcl_lsp.analysis.metadata_commands import (
     command_tree_prefixes,
     load_metadata_commands,
     metadata_environment_names,
-    metadata_file_module_info,
     metadata_file_summary,
 )
 from tcl_lsp.cache import metadata_lru_cache
@@ -98,19 +96,27 @@ def _metadata_layers(
     base: list[_MetadataLayer] = []
     environments: dict[str, list[_MetadataLayer]] = {name: [] for name in environment_names}
     for _, paths in registry.metadata_file_layers():
-        paths_by_environment: dict[str | None, list[Path]] = {}
+        commands_by_environment: dict[str | None, list[MetadataCommand]] = {}
+        extends_by_environment: dict[str | None, dict[str, bool]] = {}
         for path in paths:
-            module = metadata_file_module_info(path).module_name
-            environment = module if module in environment_names else None
-            paths_by_environment.setdefault(environment, []).append(path)
-        for environment, layer_paths in paths_by_environment.items():
-            commands: list[MetadataCommand] = []
-            extends: dict[str, bool] = {}
-            for path in layer_paths:
-                commands.extend(load_metadata_commands(path, alias_paths=registry.metadata_files()))
-                for name, extends_tcl in metadata_file_summary(path).language_extends:
-                    extends[name] = extends.get(name, False) or extends_tcl
-            layer = _MetadataLayer(tuple(commands), tuple(extends.items()))
+            for command in load_metadata_commands(
+                path, alias_paths=registry.metadata_files(), revision=registry.revision
+            ):
+                environment = (
+                    command.module_name if command.module_name in environment_names else None
+                )
+                commands_by_environment.setdefault(environment, []).append(command)
+            for module, name, extends_tcl in metadata_file_summary(
+                path, revision=registry.revision
+            ).language_extends:
+                environment = module if module in environment_names else None
+                extends = extends_by_environment.setdefault(environment, {})
+                extends[name] = extends.get(name, False) or extends_tcl
+        for environment in dict.fromkeys((*commands_by_environment, *extends_by_environment)):
+            layer = _MetadataLayer(
+                tuple(commands_by_environment.get(environment, ())),
+                tuple(extends_by_environment.get(environment, {}).items()),
+            )
             (base if environment is None else environments[environment]).append(layer)
     return tuple(base), {name: tuple(layers) for name, layers in environments.items()}
 

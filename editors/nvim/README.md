@@ -1,42 +1,33 @@
 # tcl-ls Neovim config
 
-Neovim 0.11+ LSP config for `tcl-ls`.
+The supplied LSP config requires Neovim 0.11 or newer and a `tcl-ls`
+executable on the editor's `PATH`. See
+[Getting Started](https://lewis6991.github.io/tcl-ls/getting-started.html)
+for server installation.
 
 ## Install the config
 
-Copy the shipped config into your Neovim `lsp/` directory:
+From this repository, copy the config into your Neovim `lsp/` directory:
 
 ```sh
 mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/nvim/lsp"
 cp editors/nvim/lsp/tcl-ls.lua "${XDG_CONFIG_HOME:-$HOME/.config}/nvim/lsp/tcl-ls.lua"
 ```
 
-Enable it from `init.lua`:
+Enable it in `init.lua`:
 
 ```lua
 vim.lsp.enable('tcl-ls')
 ```
 
-## Default behavior
+The config attaches to the `tcl` filetype and prefers `tcllsrc.tcl`, then
+`pkgIndex.tcl`, for root detection. If neither marker exists, add a
+`tcllsrc.tcl` file or override root detection in your Neovim config.
 
-The shipped config:
+## Use a checkout
 
-* launches `tcl-ls` from `PATH`
-* attaches to the `tcl` filetype
-* prefers `tcllsrc.tcl`, then `pkgIndex.tcl` for root detection
-
-If your project tree has neither marker, add a `tcllsrc.tcl` file or override
-the root detection in your local Neovim config.
-
-## Run from a checkout
-
-Prepare the checkout once:
-
-```sh
-uv sync
-```
-
-Then override the command in your Neovim config:
+After running `uv sync` in the tcl-ls checkout, set its absolute path before
+enabling the config:
 
 ```lua
 vim.lsp.config('tcl-ls', {
@@ -44,8 +35,3 @@ vim.lsp.config('tcl-ls', {
 })
 vim.lsp.enable('tcl-ls')
 ```
-
-## Filetype notes
-
-Neovim already maps `.tcl`, `.tm`, `.itcl`, `.itk`, `.tk`, and `.jacl` files
-to the `tcl` filetype.

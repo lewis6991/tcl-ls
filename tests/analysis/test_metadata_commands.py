@@ -24,7 +24,7 @@ from tcl_lsp.analysis.metadata_commands import (
     select_argument_indices,
 )
 from tcl_lsp.cache import clear_cache_group
-from tcl_lsp.metadata_paths import bundled_metadata_dir, create_metadata_registry
+from tcl_lsp.metadata_paths import MetadataRevision, bundled_metadata_dir, create_metadata_registry
 
 
 def test_core_metadata_supports_option_aware_selectors() -> None:
@@ -240,12 +240,14 @@ def test_core_metadata_models_meta_as_ensemble() -> None:
         for overload in meta_command_builtin.overloads
     )
     assert meta_module_builtin.overloads[0].arity is not None
-    assert meta_module_builtin.overloads[0].arity.accepts(1) is True
+    assert meta_module_builtin.overloads[0].arity.accepts(2) is True
 
 
 def test_project_metadata_overrides_matching_bundled_builtin_commands(tmp_path: Path) -> None:
     override_path = tmp_path / 'override.meta.tcl'
-    override_path.write_text('meta module Tcl\nmeta command clock {args}\n', encoding='utf-8')
+    override_path.write_text(
+        ('meta module Tcl {\n    meta command clock {args}\n}\n'), encoding='utf-8'
+    )
     metadata_registry = create_metadata_registry((tmp_path,))
     builtin = builtin_command('clock', metadata_registry=metadata_registry)
 
@@ -260,7 +262,7 @@ def test_project_metadata_overrides_matching_bundled_builtin_commands(tmp_path: 
 def test_project_metadata_override_replaces_bundled_subcommand_tree(tmp_path: Path) -> None:
     override_path = tmp_path / 'override.meta.tcl'
     override_path.write_text(
-        'meta module Tcl\nmeta command namespace {args}\n',
+        ('meta module Tcl {\n    meta command namespace {args}\n}\n'),
         encoding='utf-8',
     )
     metadata_registry = create_metadata_registry((tmp_path,))
@@ -277,7 +279,7 @@ def test_project_metadata_recursively_discovers_nested_override_files(tmp_path: 
     nested_dir.mkdir()
     override_path = nested_dir / 'override.meta.tcl'
     override_path.write_text(
-        'meta module {Tcl}\nmeta command clock {args}\n',
+        ('meta module {Tcl} {\n    meta command clock {args}\n}\n'),
         encoding='utf-8',
     )
     metadata_registry = create_metadata_registry((tmp_path,))
@@ -290,11 +292,11 @@ def test_project_metadata_recursively_discovers_nested_override_files(tmp_path: 
 
 def test_project_metadata_same_root_rejects_conflicting_annotations(tmp_path: Path) -> None:
     (tmp_path / 'a.meta.tcl').write_text(
-        'meta module Tcl\nmeta command regexp {args} {\n    bind 1 set\n}\n',
+        ('meta module Tcl {\n    meta command regexp {args} {\n        bind 1 set\n    }\n}\n'),
         encoding='utf-8',
     )
     (tmp_path / 'b.meta.tcl').write_text(
-        'meta module Tcl\nmeta command regexp {args} {\n    bind 2 set\n}\n',
+        ('meta module Tcl {\n    meta command regexp {args} {\n        bind 2 set\n    }\n}\n'),
         encoding='utf-8',
     )
     metadata_registry = create_metadata_registry((tmp_path,))
@@ -393,12 +395,14 @@ def test_builtin_command_core_lookup_only_loads_tcl_package(
         package_name: str,
         metadata_path_layers: tuple[tuple[Path, ...], ...],
         alias_paths: tuple[Path, ...],
+        revision: MetadataRevision,
     ) -> dict[str, builtins_module.BuiltinCommand]:
         loaded_packages.append(package_name)
         return original(
             package_name=package_name,
             metadata_path_layers=metadata_path_layers,
             alias_paths=alias_paths,
+            revision=revision,
         )
 
     clear_cache_group('metadata')
@@ -423,12 +427,14 @@ def test_builtin_command_package_lookup_only_loads_requested_package_set(
         package_name: str,
         metadata_path_layers: tuple[tuple[Path, ...], ...],
         alias_paths: tuple[Path, ...],
+        revision: MetadataRevision,
     ) -> dict[str, builtins_module.BuiltinCommand]:
         loaded_packages.append(package_name)
         return original(
             package_name=package_name,
             metadata_path_layers=metadata_path_layers,
             alias_paths=alias_paths,
+            revision=revision,
         )
 
     clear_cache_group('metadata')
@@ -453,12 +459,14 @@ def test_annotated_metadata_lookup_only_loads_requested_package_set(
         package_name: str,
         metadata_path_layers: tuple[tuple[Path, ...], ...],
         alias_paths: tuple[Path, ...],
+        revision: MetadataRevision,
     ) -> dict[str, Any]:
         loaded_packages.append(package_name)
         return original(
             package_name=package_name,
             metadata_path_layers=metadata_path_layers,
             alias_paths=alias_paths,
+            revision=revision,
         )
 
     clear_cache_group('metadata')
@@ -488,12 +496,14 @@ def test_is_builtin_package_does_not_materialize_builtin_command_packages(
         package_name: str,
         metadata_path_layers: tuple[tuple[Path, ...], ...],
         alias_paths: tuple[Path, ...],
+        revision: MetadataRevision,
     ) -> dict[str, builtins_module.BuiltinCommand]:
         loaded_packages.append(package_name)
         return original(
             package_name=package_name,
             metadata_path_layers=metadata_path_layers,
             alias_paths=alias_paths,
+            revision=revision,
         )
 
     def fail_metadata_file_summary(_metadata_path: Path) -> Any:
@@ -515,11 +525,17 @@ def test_is_builtin_package_does_not_materialize_builtin_command_packages(
 
 def test_project_metadata_allows_language_only_files(tmp_path: Path) -> None:
     (tmp_path / 'lang.meta.tcl').write_text(
-        'meta module Tcl\nmeta language sample {\n    command step {name}\n}\n',
+        ('meta module Tcl {\n    meta language sample {\n        command step {name}\n    }\n}\n'),
         encoding='utf-8',
     )
     (tmp_path / 'wrap.meta.tcl').write_text(
-        'meta module Tcl\nmeta command wrapper {script} {\n    enter sample body 1\n}\n',
+        (
+            'meta module Tcl {\n'
+            '    meta command wrapper {script} {\n'
+            '        enter sample body 1\n'
+            '    }\n'
+            '}\n'
+        ),
         encoding='utf-8',
     )
 
@@ -533,7 +549,13 @@ def test_project_metadata_allows_language_only_files(tmp_path: Path) -> None:
 
 def test_project_metadata_allows_language_only_packages(tmp_path: Path) -> None:
     (tmp_path / 'pkg.meta.tcl').write_text(
-        'meta module SamplePkg\nmeta language sample {\n    command step {name}\n}\n',
+        (
+            'meta module SamplePkg {\n'
+            '    meta language sample {\n'
+            '        command step {name}\n'
+            '    }\n'
+            '}\n'
+        ),
         encoding='utf-8',
     )
 

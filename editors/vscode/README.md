@@ -1,50 +1,57 @@
 # tcl-ls-vscode
 
-VS Code extension for the `tcl-ls` language server.
+The extension provides Tcl language support for VS Code 1.90 or newer. It
+recognizes `.tcl`, `.tm`, and `.test` files and starts the server over stdio.
 
-## What it does
+## Install
 
-The extension:
+Download the `.vsix` for your platform from
+[GitHub Releases](https://github.com/lewis6991/tcl-ls/releases). Release
+extensions include the server, so no separate Python installation is needed.
 
-* associates `.tcl`, `.tm`, and `.test` files with a `tcl` language id
-* starts `tcl-ls` over stdio
-* exposes a `tcl-ls: Restart Language Server` command
-* restarts the server when `tcllsrc.tcl`, `pkgIndex.tcl`, or `*.meta.tcl`
-  files change
-
-## Build and install a VSIX
-
-Marketplace and release builds bundle a frozen `tcl-ls` server inside the
-extension. For a local build that behaves the same way on your current
-platform, use the VS Code makefile:
+Use **Extensions: Install from VSIX...** in VS Code, or run:
 
 ```sh
-uv sync
-make -C editors/vscode bundled-vsix
+code --install-extension /path/to/tcl-ls-vscode-<version>@<target>.vsix
 ```
 
-This writes a file like `dist/tcl-ls-vscode-<version>@<target>.vsix`. Install
-it with:
+## Server settings
 
-```sh
-code --install-extension /absolute/path/to/dist/tcl-ls-vscode-<version>@<target>.vsix --force
+The extension selects a server in this order:
+
+1. `tcl-ls.server.command`, if set
+2. the virtual environment under `tcl-ls.server.repoRoot`, if set
+3. the server bundled with the extension
+4. `tcl-ls` on `PATH`
+
+| Setting | Purpose |
+| --- | --- |
+| `tcl-ls.server.command` | Executable path or name. Empty by default. |
+| `tcl-ls.server.args` | Arguments for an explicit command. Defaults to `[]`. |
+| `tcl-ls.server.repoRoot` | tcl-ls checkout to use when no command is set. Empty by default. |
+| `tcl-ls.server.cwd` | Server working directory. Relative paths start at the first workspace folder. Empty uses the launcher's default. |
+| `tcl-ls.server.restartOnProjectFileChanges` | Restart when `tcllsrc.tcl`, `pkgIndex.tcl`, or `*.meta.tcl` is created, changed, or deleted. Defaults to `true`. |
+
+For an explicitly installed server:
+
+```json
+{
+  "tcl-ls.server.command": "/absolute/path/to/tcl-ls",
+  "tcl-ls.server.args": []
+}
 ```
 
-If you only want the extension package and plan to point it at a checkout or
-PATH server yourself, use:
+If `server.args` is empty, `server.command` can contain a full command line;
+quote paths containing spaces. The `repoRoot` and `cwd` settings accept
+`${workspaceFolder}` and `${workspaceFolderBasename}` placeholders. Clear a
+path setting with an empty string.
 
-```sh
-make -C editors/vscode vsix
-```
+Use **tcl-ls: Restart Language Server** to restart manually. Startup errors
+and restart details appear in the **tcl-ls** output channel.
 
-You can also use `Extensions: Install from VSIX...` in the VS Code UI.
+## Use a checkout
 
-## Configure the server
-
-Prefer explicit settings. That is more reliable than PATH-dependent launch
-behavior, especially on macOS when VS Code is launched as a GUI app.
-
-Recommended for local development from a checkout:
+Run `uv sync` in the tcl-ls repository, then set:
 
 ```json
 {
@@ -52,50 +59,18 @@ Recommended for local development from a checkout:
 }
 ```
 
-With that setting in place, the extension launches:
+Clear `tcl-ls.server.command` so this setting takes effect.
+
+## Build the extension
+
+From a prepared repository checkout, with Node.js and npm available:
 
 ```sh
-/absolute/path/to/tcl-ls/.venv/bin/tcl-ls
+make -C editors/vscode bundled-vsix
 ```
 
-The checkout should already have been prepared with:
-
-```sh
-uv sync
-```
-
-If you want to bypass `repoRoot`, you can configure the command directly:
-
-```json
-{
-  "tcl-ls.server.command": "/absolute/path/to/tcl-ls/.venv/bin/tcl-ls",
-  "tcl-ls.server.args": []
-}
-```
-
-If `tcl-ls.server.args` is empty, `tcl-ls.server.command` can also be a full
-command line:
-
-```json
-{
-  "tcl-ls.server.command": "/opt/homebrew/bin/uv run --directory=/absolute/path/to/tcl-ls tcl-ls",
-  "tcl-ls.server.args": []
-}
-```
-
-Quote any path that contains spaces.
-
-Leave `tcl-ls.server.repoRoot` and `tcl-ls.server.cwd` empty to disable them.
-`tcl-ls.server.cwd` accepts `${workspaceFolder}` and
-`${workspaceFolderBasename}` placeholders.
-
-## Fallback behavior
-
-If neither `tcl-ls.server.command` nor `tcl-ls.server.repoRoot` is set, the
-extension prefers a bundled server from the packaged extension. If there is no
-bundled server, it falls back to `tcl-ls` on `PATH`.
-
-## Development host
-
-The `F5` Extension Development Host flow still works, but the intended local
-workflow is building and installing a VSIX.
+This builds the server and writes
+`dist/tcl-ls-vscode-<version>@<target>.vsix`. Install it as described above.
+Use `make -C editors/vscode vsix` to package the extension without a server
+and select one through the settings. The `F5` Extension Development Host is
+also available for debugging.

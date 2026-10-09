@@ -11,25 +11,31 @@ from tcl_lsp.lsp.features.navigation import definition
 @pytest.fixture
 def project(tmp_path: Path) -> Path:
     (tmp_path / 'generated.meta.tcl').write_text(
-        'meta module ExampleTool -environment\n'
-        'meta command prove args\n'
-        'meta command tool_write {name} {bind 1 set}\n'
-        'meta command tool_loop {var values body} {bind list 1 foreach; enter tcl body 3}\n'
-        'meta command tool::prove args\n'
-        'meta command tcl_clock args\n'
-        'meta command encoding args\n'
-        'meta command tool_body {body} {enter tcl body 1}\n',
+        (
+            'meta module ExampleTool -environment {\n'
+            '    meta command prove args\n'
+            '    meta command tool_write {name} {bind 1 set}\n'
+            '    meta command tool_loop {var values body} {bind list 1 foreach; enter tcl body 3}\n'
+            '    meta command tool::prove args\n'
+            '    meta command tcl_clock args\n'
+            '    meta command encoding args\n'
+            '    meta command tool_body {body} {enter tcl body 1}\n'
+            '}\n'
+        ),
         encoding='utf-8',
     )
     (tmp_path / 'overrides.meta.tcl').write_text(
-        'meta module ExampleTool -environment\n'
-        'meta override clock args\n'
-        'meta alias tcl_clock clock -module Tcl\n',
+        (
+            'meta module ExampleTool -environment {\n'
+            '    meta override clock args\n'
+            '    meta alias tcl_clock clock -module Tcl\n'
+            '}\n'
+        ),
         encoding='utf-8',
     )
     (tmp_path / 'tcllsrc.tcl').write_text(
-        'plugin-path generated.meta.tcl\n'
-        'plugin-path overrides.meta.tcl\n'
+        'source generated.meta.tcl\n'
+        'source overrides.meta.tcl\n'
         'environment ExampleTool when {$::tool eq "example"}\n',
         encoding='utf-8',
     )
@@ -128,13 +134,16 @@ def test_unknown_environment_reports_a_configuration_error(project: Path) -> Non
 
 def test_nested_directives_restore_the_enclosing_environment(project: Path) -> None:
     (project / 'second.meta.tcl').write_text(
-        'meta module SecondTool -environment\n'
-        'meta override clock {at time}\n'
-        'meta command measure args\n',
+        (
+            'meta module SecondTool -environment {\n'
+            '    meta override clock {at time}\n'
+            '    meta command measure args\n'
+            '}\n'
+        ),
         encoding='utf-8',
     )
     with (project / 'tcllsrc.tcl').open('a', encoding='utf-8') as config:
-        config.write('plugin-path second.meta.tcl\n')
+        config.write('source second.meta.tcl\n')
     text = """namespace eval run {
     # tcl-ls: env ExampleTool
 
@@ -310,18 +319,24 @@ def test_environment_rules_follow_command_effects(
 
 def test_embedded_languages_use_the_selected_environment_stack(project: Path) -> None:
     (project / 'base.meta.tcl').write_text(
-        'meta module Tcl\n'
-        'meta command run {body} {enter sample body 1}\n'
-        'meta language sample {command base {}}\n',
+        (
+            'meta module Tcl {\n'
+            '    meta command run {body} {enter sample body 1}\n'
+            '    meta language sample {command base {}}\n'
+            '}\n'
+        ),
         encoding='utf-8',
     )
     with (project / 'generated.meta.tcl').open('a', encoding='utf-8') as metadata:
-        metadata.write('meta language sample {extends tcl; command native {}}\n')
+        metadata.write(
+            'meta module ExampleTool -environment {meta language sample {extends tcl; command native {}}}\n'
+        )
     (project / 'closed.meta.tcl').write_text(
-        'meta module ClosedTool -environment\nmeta language sample {}\n', encoding='utf-8'
+        ('meta module ClosedTool -environment {\n    meta language sample {}\n}\n'),
+        encoding='utf-8',
     )
     with (project / 'tcllsrc.tcl').open('a', encoding='utf-8') as config:
-        config.write('plugin-path base.meta.tcl\nplugin-path closed.meta.tcl\n')
+        config.write('source base.meta.tcl\nsource closed.meta.tcl\n')
     text = """run {base; native; puts ok}
 if {1} {
     # tcl-ls: env ExampleTool
@@ -480,19 +495,29 @@ def test_structured_output_variables_invalidate_environment_rules(
 
 def test_environment_can_explicitly_override_an_embedded_command(project: Path) -> None:
     (project / 'base.meta.tcl').write_text(
-        'meta module Tcl\nmeta command run {body} {enter sample body 1}\n'
-        'meta language sample {command action {body} {enter tcl body 1}}\n',
+        (
+            'meta module Tcl {\n'
+            '    meta command run {body} {enter sample body 1}\n'
+            '    meta language sample {command action {body} {enter tcl body 1}}\n'
+            '}\n'
+        ),
         encoding='utf-8',
     )
     with (project / 'generated.meta.tcl').open('a', encoding='utf-8') as metadata:
         # Generated inventories must not remove the body's precise metadata.
-        metadata.write('meta language sample {command action args}\n')
+        metadata.write(
+            'meta module ExampleTool -environment {meta language sample {command action args}}\n'
+        )
     (project / 'second.meta.tcl').write_text(
-        'meta module SecondTool -environment\nmeta language sample {override action args}\n',
+        (
+            'meta module SecondTool -environment {\n'
+            '    meta language sample {override action args}\n'
+            '}\n'
+        ),
         encoding='utf-8',
     )
     with (project / 'tcllsrc.tcl').open('a', encoding='utf-8') as config:
-        config.write('plugin-path base.meta.tcl\nplugin-path second.meta.tcl\n')
+        config.write('source base.meta.tcl\nsource second.meta.tcl\n')
     text = """run {action {missing}}
 # tcl-ls: env ExampleTool
 run {action {missing}}
@@ -530,5 +555,19 @@ def test_uncertain_bodies_invalidate_variable_links(project: Path, body: str) ->
     try:
         diagnostics = server.open_document((project / 'links.tcl').as_uri(), text, 1)
         assert any(d.message == 'Unresolved command `prove`.' for d in diagnostics)
+    finally:
+        server.shutdown()
+
+
+def test_diagnostic_directives_do_not_change_environment_flow(project: Path) -> None:
+    text = (
+        'set ::tool example\nwhile {$again} {\n'
+        '# tcl-ls: diagnostic statement unresolved-variable off\n'
+        'puts $unknown\n}\nprove\n'
+    )
+    server = LanguageServer()
+    try:
+        diagnostics = server.open_document((project / 'diagnostics.tcl').as_uri(), text, 1)
+        assert diagnostics == ()
     finally:
         server.shutdown()

@@ -114,22 +114,23 @@ def test_analysis_reports_unknown_subcommand_in_contextual_command_tree(
         parser,
         tmp_path,
         metadata_text=(
-            'meta module Tcl\n'
-            'meta language sample {\n'
-            '    command root variants {\n'
-            '        form {subcommand args}\n'
-            '        command child variants {\n'
-            '            form {name}\n'
-            '            form {name value}\n'
-            '        }\n'
-            '        command opt {args} {\n'
-            '            option -flag\n'
-            '            option -value value\n'
+            'meta module Tcl {\n'
+            '    meta language sample {\n'
+            '        command root variants {\n'
+            '            form {subcommand args}\n'
+            '            command child variants {\n'
+            '                form {name}\n'
+            '                form {name value}\n'
+            '            }\n'
+            '            command opt {args} {\n'
+            '                option -flag\n'
+            '                option -value value\n'
+            '            }\n'
             '        }\n'
             '    }\n'
-            '}\n'
-            'meta command wrapper {script} {\n'
-            '    enter sample body 1\n'
+            '    meta command wrapper {script} {\n'
+            '        enter sample body 1\n'
+            '    }\n'
             '}\n'
         ),
         source_text='wrapper {root gurka value}\n',
@@ -147,18 +148,19 @@ def test_analysis_reports_wrong_argument_count_for_contextual_subcommand(
         parser,
         tmp_path,
         metadata_text=(
-            'meta module Tcl\n'
-            'meta language sample {\n'
-            '    command root variants {\n'
-            '        form {subcommand args}\n'
-            '        command child variants {\n'
-            '            form {name}\n'
-            '            form {name value}\n'
+            'meta module Tcl {\n'
+            '    meta language sample {\n'
+            '        command root variants {\n'
+            '            form {subcommand args}\n'
+            '            command child variants {\n'
+            '                form {name}\n'
+            '                form {name value}\n'
+            '            }\n'
             '        }\n'
             '    }\n'
-            '}\n'
-            'meta command wrapper {script} {\n'
-            '    enter sample body 1\n'
+            '    meta command wrapper {script} {\n'
+            '        enter sample body 1\n'
+            '    }\n'
             '}\n'
         ),
         source_text='wrapper {root child}\n',
@@ -178,18 +180,19 @@ def test_analysis_reports_unknown_option_for_contextual_command(
         parser,
         tmp_path,
         metadata_text=(
-            'meta module Tcl\n'
-            'meta language sample {\n'
-            '    command root variants {\n'
-            '        form {subcommand args}\n'
-            '        command opt {args} {\n'
-            '            option -flag\n'
-            '            option -value value\n'
+            'meta module Tcl {\n'
+            '    meta language sample {\n'
+            '        command root variants {\n'
+            '            form {subcommand args}\n'
+            '            command opt {args} {\n'
+            '                option -flag\n'
+            '                option -value value\n'
+            '            }\n'
             '        }\n'
             '    }\n'
-            '}\n'
-            'meta command wrapper {script} {\n'
-            '    enter sample body 1\n'
+            '    meta command wrapper {script} {\n'
+            '        enter sample body 1\n'
+            '    }\n'
             '}\n'
         ),
         source_text='wrapper {root opt -bogus value}\n',
@@ -307,13 +310,14 @@ def test_analysis_allows_tcl_when_language_extends_it(
         parser,
         tmp_path,
         metadata_text=(
-            'meta module Tcl\n'
-            'meta language sample {\n'
-            '    extends tcl\n'
-            '    command local {name}\n'
-            '}\n'
-            'meta command wrapper {script} {\n'
-            '    enter sample body 1\n'
+            'meta module Tcl {\n'
+            '    meta language sample {\n'
+            '        extends tcl\n'
+            '        command local {name}\n'
+            '    }\n'
+            '    meta command wrapper {script} {\n'
+            '        enter sample body 1\n'
+            '    }\n'
             '}\n'
         ),
         source_text='wrapper {set foo bar}\n',
@@ -330,32 +334,41 @@ def test_analysis_allows_tcl_when_any_repeated_language_definition_extends_it(
     metadata_cases = (
         {
             'a.meta.tcl': (
-                'meta module Tcl\n'
-                'meta language sample {\n'
-                '    extends tcl\n'
-                '    command local {name}\n'
-                '}\n'
-                'meta command wrapper {script} {\n'
-                '    enter sample body 1\n'
-                '}\n'
-            ),
-            'b.meta.tcl': ('meta module Tcl\nmeta language sample {\n    command step {name}\n}\n'),
-        },
-        {
-            'a.meta.tcl': (
-                'meta module Tcl\n'
-                'meta language sample {\n'
-                '    command step {name}\n'
-                '}\n'
-                'meta command wrapper {script} {\n'
-                '    enter sample body 1\n'
+                'meta module Tcl {\n'
+                '    meta language sample {\n'
+                '        extends tcl\n'
+                '        command local {name}\n'
+                '    }\n'
+                '    meta command wrapper {script} {\n'
+                '        enter sample body 1\n'
+                '    }\n'
                 '}\n'
             ),
             'b.meta.tcl': (
-                'meta module Tcl\n'
-                'meta language sample {\n'
-                '    extends tcl\n'
-                '    command local {name}\n'
+                'meta module Tcl {\n'
+                '    meta language sample {\n'
+                '        command step {name}\n'
+                '    }\n'
+                '}\n'
+            ),
+        },
+        {
+            'a.meta.tcl': (
+                'meta module Tcl {\n'
+                '    meta language sample {\n'
+                '        command step {name}\n'
+                '    }\n'
+                '    meta command wrapper {script} {\n'
+                '        enter sample body 1\n'
+                '    }\n'
+                '}\n'
+            ),
+            'b.meta.tcl': (
+                'meta module Tcl {\n'
+                '    meta language sample {\n'
+                '        extends tcl\n'
+                '        command local {name}\n'
+                '    }\n'
                 '}\n'
             ),
         },
@@ -384,17 +397,20 @@ def test_analysis_later_metadata_root_can_close_language_again(
     early_root.mkdir()
     late_root.mkdir()
     (early_root / 'sample.meta.tcl').write_text(
-        'meta module Tcl\n'
-        'meta language sample {\n'
-        '    extends tcl\n'
-        '}\n'
-        'meta command wrapper {script} {\n'
-        '    enter sample body 1\n'
-        '}\n',
+        (
+            'meta module Tcl {\n'
+            '    meta language sample {\n'
+            '        extends tcl\n'
+            '    }\n'
+            '    meta command wrapper {script} {\n'
+            '        enter sample body 1\n'
+            '    }\n'
+            '}\n'
+        ),
         encoding='utf-8',
     )
     (late_root / 'sample.meta.tcl').write_text(
-        'meta module Tcl\nmeta language sample {\n}\n',
+        ('meta module Tcl {\n    meta language sample {\n    }\n}\n'),
         encoding='utf-8',
     )
 
@@ -418,16 +434,19 @@ def test_analysis_later_metadata_root_can_open_language_to_tcl(
     early_root.mkdir()
     late_root.mkdir()
     (early_root / 'sample.meta.tcl').write_text(
-        'meta module Tcl\n'
-        'meta language sample {\n'
-        '}\n'
-        'meta command wrapper {script} {\n'
-        '    enter sample body 1\n'
-        '}\n',
+        (
+            'meta module Tcl {\n'
+            '    meta language sample {\n'
+            '    }\n'
+            '    meta command wrapper {script} {\n'
+            '        enter sample body 1\n'
+            '    }\n'
+            '}\n'
+        ),
         encoding='utf-8',
     )
     (late_root / 'sample.meta.tcl').write_text(
-        'meta module Tcl\nmeta language sample {\n    extends tcl\n}\n',
+        ('meta module Tcl {\n    meta language sample {\n        extends tcl\n    }\n}\n'),
         encoding='utf-8',
     )
 
@@ -451,17 +470,20 @@ def test_analysis_later_metadata_root_replaces_top_level_enter_command_tree(
     early_root.mkdir()
     late_root.mkdir()
     (early_root / 'sample.meta.tcl').write_text(
-        'meta module Tcl\n'
-        'meta language sample {\n'
-        '    extends tcl\n'
-        '}\n'
-        'meta command wrapper {script} {\n'
-        '    enter sample body 1\n'
-        '}\n',
+        (
+            'meta module Tcl {\n'
+            '    meta language sample {\n'
+            '        extends tcl\n'
+            '    }\n'
+            '    meta command wrapper {script} {\n'
+            '        enter sample body 1\n'
+            '    }\n'
+            '}\n'
+        ),
         encoding='utf-8',
     )
     (late_root / 'sample.meta.tcl').write_text(
-        'meta module Tcl\nmeta command wrapper {script}\n',
+        ('meta module Tcl {\n    meta command wrapper {script}\n}\n'),
         encoding='utf-8',
     )
 
@@ -484,17 +506,26 @@ def test_analysis_later_metadata_root_replaces_contextual_command_shape(
     early_root.mkdir()
     late_root.mkdir()
     (early_root / 'sample.meta.tcl').write_text(
-        'meta module Tcl\n'
-        'meta language sample {\n'
-        '    command local {name}\n'
-        '}\n'
-        'meta command wrapper {script} {\n'
-        '    enter sample body 1\n'
-        '}\n',
+        (
+            'meta module Tcl {\n'
+            '    meta language sample {\n'
+            '        command local {name}\n'
+            '    }\n'
+            '    meta command wrapper {script} {\n'
+            '        enter sample body 1\n'
+            '    }\n'
+            '}\n'
+        ),
         encoding='utf-8',
     )
     (late_root / 'sample.meta.tcl').write_text(
-        'meta module Tcl\nmeta language sample {\n    command local {name value}\n}\n',
+        (
+            'meta module Tcl {\n'
+            '    meta language sample {\n'
+            '        command local {name value}\n'
+            '    }\n'
+            '}\n'
+        ),
         encoding='utf-8',
     )
 
@@ -517,11 +548,12 @@ def test_analysis_does_not_fall_back_to_tcl_in_empty_embedded_language(
         parser,
         tmp_path,
         metadata_text=(
-            'meta module Tcl\n'
-            'meta language sample {\n'
-            '}\n'
-            'meta command wrapper {script} {\n'
-            '    enter sample body 1\n'
+            'meta module Tcl {\n'
+            '    meta language sample {\n'
+            '    }\n'
+            '    meta command wrapper {script} {\n'
+            '        enter sample body 1\n'
+            '    }\n'
             '}\n'
         ),
         source_text='wrapper {set foo bar}\n',
@@ -539,12 +571,13 @@ def test_analysis_allows_tcl_in_empty_language_that_extends_it(
         parser,
         tmp_path,
         metadata_text=(
-            'meta module Tcl\n'
-            'meta language sample {\n'
-            '    extends tcl\n'
-            '}\n'
-            'meta command wrapper {script} {\n'
-            '    enter sample body 1\n'
+            'meta module Tcl {\n'
+            '    meta language sample {\n'
+            '        extends tcl\n'
+            '    }\n'
+            '    meta command wrapper {script} {\n'
+            '        enter sample body 1\n'
+            '    }\n'
             '}\n'
         ),
         source_text='wrapper {set foo bar}\n',
@@ -562,7 +595,11 @@ def test_analysis_does_not_fall_back_to_tcl_for_undefined_embedded_language(
         parser,
         tmp_path,
         metadata_text=(
-            'meta module Tcl\nmeta command wrapper {script} {\n    enter missing body 1\n}\n'
+            'meta module Tcl {\n'
+            '    meta command wrapper {script} {\n'
+            '        enter missing body 1\n'
+            '    }\n'
+            '}\n'
         ),
         source_text='wrapper {set foo bar}\n',
     )
@@ -579,13 +616,14 @@ def test_analysis_handles_multiple_enter_clauses(
         parser,
         tmp_path,
         metadata_text=(
-            'meta module Tcl\n'
-            'meta language sample {\n'
-            '    command known {x}\n'
-            '}\n'
-            'meta command double {left right} {\n'
-            '    enter sample body 1\n'
-            '    enter sample body 2\n'
+            'meta module Tcl {\n'
+            '    meta language sample {\n'
+            '        command known {x}\n'
+            '    }\n'
+            '    meta command double {left right} {\n'
+            '        enter sample body 1\n'
+            '        enter sample body 2\n'
+            '    }\n'
             '}\n'
         ),
         source_text='double {known ok} {unknown_cmd bad}\n',
@@ -603,12 +641,13 @@ def test_analysis_applies_static_enter_to_special_proc_body(
         parser,
         tmp_path,
         metadata_text=(
-            'meta module Tcl\n'
-            'meta language sample {\n'
-            '    command local {name}\n'
-            '}\n'
-            'meta command proc {name params body} {\n'
-            '    enter sample body 3\n'
+            'meta module Tcl {\n'
+            '    meta language sample {\n'
+            '        command local {name}\n'
+            '    }\n'
+            '    meta command proc {name params body} {\n'
+            '        enter sample body 3\n'
+            '    }\n'
             '}\n'
         ),
         source_text='proc demo {} {local x}\n',
@@ -626,12 +665,13 @@ def test_analysis_allows_valid_special_enter_for_dynamic_proc_body(
         parser,
         tmp_path,
         metadata_text=(
-            'meta module Tcl\n'
-            'meta language sample {\n'
-            '    command local {name}\n'
-            '}\n'
-            'meta command proc {name params body} {\n'
-            '    enter sample body 3\n'
+            'meta module Tcl {\n'
+            '    meta language sample {\n'
+            '        command local {name}\n'
+            '    }\n'
+            '    meta command proc {name params body} {\n'
+            '        enter sample body 3\n'
+            '    }\n'
             '}\n'
         ),
         source_text='proc demo {} [list local x]\n',
@@ -650,12 +690,13 @@ def test_analysis_applies_plugin_enter_to_special_proc_body(
         tmp_path,
         metadata_files={
             'sample.meta.tcl': (
-                'meta module Tcl\n'
-                'meta language sample {\n'
-                '    command local {name}\n'
-                '}\n'
-                'meta command proc {name params body} {\n'
-                '    plugin plugin.tcl emit\n'
+                'meta module Tcl {\n'
+                '    meta language sample {\n'
+                '        command local {name}\n'
+                '    }\n'
+                '    meta command proc {name params body} {\n'
+                '        plugin plugin.tcl emit\n'
+                '    }\n'
                 '}\n'
             ),
             'plugin.tcl': (
@@ -677,12 +718,13 @@ def test_analysis_rejects_inline_enter_ranges_on_special_commands(
         parser,
         tmp_path,
         metadata_text=(
-            'meta module Tcl\n'
-            'meta language sample {\n'
-            '    command local {name}\n'
-            '}\n'
-            'meta command for {start test next body} {\n'
-            '    enter sample body 1..4\n'
+            'meta module Tcl {\n'
+            '    meta language sample {\n'
+            '        command local {name}\n'
+            '    }\n'
+            '    meta command for {start test next body} {\n'
+            '        enter sample body 1..4\n'
+            '    }\n'
             '}\n'
         ),
         source_text='for {local start} 1 {local next} {local body}\n',
@@ -703,12 +745,13 @@ def test_analysis_rejects_non_body_enter_targets_on_special_commands(
         parser,
         tmp_path,
         metadata_text=(
-            'meta module Tcl\n'
-            'meta language sample {\n'
-            '    command local {name}\n'
-            '}\n'
-            'meta command while {test body} {\n'
-            '    enter sample body 1\n'
+            'meta module Tcl {\n'
+            '    meta language sample {\n'
+            '        command local {name}\n'
+            '    }\n'
+            '    meta command while {test body} {\n'
+            '        enter sample body 1\n'
+            '    }\n'
             '}\n'
         ),
         source_text='while {local x} {set ready 1}\n',
@@ -730,12 +773,13 @@ def test_analysis_rejects_plugin_inline_enter_ranges_on_special_commands(
         tmp_path,
         metadata_files={
             'sample.meta.tcl': (
-                'meta module Tcl\n'
-                'meta language sample {\n'
-                '    command local {name}\n'
-                '}\n'
-                'meta command for {start test next body} {\n'
-                '    plugin plugin.tcl emit\n'
+                'meta module Tcl {\n'
+                '    meta language sample {\n'
+                '        command local {name}\n'
+                '    }\n'
+                '    meta command for {start test next body} {\n'
+                '        plugin plugin.tcl emit\n'
+                '    }\n'
                 '}\n'
             ),
             'plugin.tcl': (
@@ -760,16 +804,17 @@ def test_analysis_reports_overlapping_enter_ranges_on_special_command(
         parser,
         tmp_path,
         metadata_text=(
-            'meta module Tcl\n'
-            'meta language one {\n'
-            '    command first {x}\n'
-            '}\n'
-            'meta language two {\n'
-            '    command second {x}\n'
-            '}\n'
-            'meta command proc {name params body} {\n'
-            '    enter one body 3\n'
-            '    enter two body 3\n'
+            'meta module Tcl {\n'
+            '    meta language one {\n'
+            '        command first {x}\n'
+            '    }\n'
+            '    meta language two {\n'
+            '        command second {x}\n'
+            '    }\n'
+            '    meta command proc {name params body} {\n'
+            '        enter one body 3\n'
+            '        enter two body 3\n'
+            '    }\n'
             '}\n'
         ),
         source_text='proc demo {} {first ok}\n',
@@ -787,16 +832,17 @@ def test_analysis_reports_overlapping_enter_ranges(
         parser,
         tmp_path,
         metadata_text=(
-            'meta module Tcl\n'
-            'meta language one {\n'
-            '    command first {x}\n'
-            '}\n'
-            'meta language two {\n'
-            '    command second {x}\n'
-            '}\n'
-            'meta command wrapper {a b c} {\n'
-            '    enter one body 1..2\n'
-            '    enter two body 2..3\n'
+            'meta module Tcl {\n'
+            '    meta language one {\n'
+            '        command first {x}\n'
+            '    }\n'
+            '    meta language two {\n'
+            '        command second {x}\n'
+            '    }\n'
+            '    meta command wrapper {a b c} {\n'
+            '        enter one body 1..2\n'
+            '        enter two body 2..3\n'
+            '    }\n'
             '}\n'
         ),
         source_text='wrapper {first ok} {unknown_cmd bad} {second ok}\n',
@@ -814,13 +860,14 @@ def test_analysis_reports_overlapping_enter_ranges_in_same_language(
         parser,
         tmp_path,
         metadata_text=(
-            'meta module Tcl\n'
-            'meta language sample {\n'
-            '    command first {x}\n'
-            '}\n'
-            'meta command wrapper {a b} {\n'
-            '    enter sample body 1\n'
-            '    enter sample body 1..2\n'
+            'meta module Tcl {\n'
+            '    meta language sample {\n'
+            '        command first {x}\n'
+            '    }\n'
+            '    meta command wrapper {a b} {\n'
+            '        enter sample body 1\n'
+            '        enter sample body 1..2\n'
+            '    }\n'
             '}\n'
         ),
         source_text='wrapper {first ok} second\n',
@@ -839,21 +886,22 @@ def test_analysis_reports_overlapping_plugin_and_contextual_enter_ranges(
         tmp_path,
         metadata_files={
             'sample.meta.tcl': (
-                'meta module Tcl\n'
-                'meta language outer {\n'
-                '    command builder {left right} {\n'
-                '        enter one body 1\n'
-                '        plugin plugin.tcl emit\n'
+                'meta module Tcl {\n'
+                '    meta language outer {\n'
+                '        command builder {left right} {\n'
+                '            enter one body 1\n'
+                '            plugin plugin.tcl emit\n'
+                '        }\n'
                 '    }\n'
-                '}\n'
-                'meta language one {\n'
-                '    command first {x}\n'
-                '}\n'
-                'meta language two {\n'
-                '    command second {x}\n'
-                '}\n'
-                'meta command wrapper {script} {\n'
-                '    enter outer body 1\n'
+                '    meta language one {\n'
+                '        command first {x}\n'
+                '    }\n'
+                '    meta language two {\n'
+                '        command second {x}\n'
+                '    }\n'
+                '    meta command wrapper {script} {\n'
+                '        enter outer body 1\n'
+                '    }\n'
                 '}\n'
             ),
             'plugin.tcl': (

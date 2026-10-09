@@ -1,8 +1,7 @@
 Reference
 =========
 
-Reference material for the current command-line, metadata syntax, and
-language-server surface area.
+Command-line options, diagnostic codes, metadata syntax, and LSP capabilities.
 
 .. toctree::
    :maxdepth: 1

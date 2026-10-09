@@ -1,55 +1,48 @@
 Support
 =======
 
-``tcl-ls`` is still an early project, so good bug reports and clear local
-reproduction details matter more than polished integrations.
+Troubleshooting
+---------------
 
-Before Opening An Issue
------------------------
+Editor features are missing
+   Check that the file has the Tcl filetype and the client can launch the
+   configured server. Check the editor's LSP log for startup errors. See
+   :doc:`user-guide/language-server` or the editor-specific setup guide.
 
-Collect the smallest reproduction you can:
+Commands are unresolved
+   Check that the source file is below the intended ``tcllsrc.tcl``. Include
+   metadata for custom commands and select the required tool environment;
+   see :ref:`project-metadata` and :ref:`tool-environments`.
 
-* the Tcl source snippet that shows the problem
-* the exact command or editor setup you used
-* any relevant ``tcllsrc.tcl`` contents
-* whether the failure is in ``tcl-ls``, ``tcl-check``, or ``tcl-meta``
-* what you expected to happen instead
+Packages are unresolved
+   Check that the library contains a ``pkgIndex.tcl`` and add its directory
+   with ``lib-path``. Package indexes and dependencies must be statically
+   resolvable; see :doc:`user-guide/configuration`.
 
-Useful local checks:
+Saved settings appear unchanged
+   Reopen or edit the source file to trigger analysis, or restart the language
+   server. The VS Code extension can restart automatically when project files
+   change; see :doc:`user-guide/vscode`.
+
+For diagnostic meanings and analysis limits, see :doc:`reference/diagnostics`.
+
+Reporting A Problem
+-------------------
+
+Include the following in a
+`GitHub issue <https://github.com/lewis6991/tcl-ls/issues>`_:
+
+* the smallest Tcl example that reproduces the problem
+* the expected result and the actual diagnostic or error
+* the command, or editor and LSP configuration, used to reproduce it
+* relevant ``tcllsrc.tcl``, metadata, and package index files
+* the tcl-ls version or commit, operating system, and installation method
+
+For an editor diagnostic, check whether the batch checker reports the same
+problem:
 
 .. code-block:: sh
 
-   uv run tcl-check --context-lines 2 path/to/project
-   uv run tcl-meta helper-path
-   make check
+   tcl-check --context-lines 2 path/to/example.tcl
 
-Common Troubleshooting Paths
-----------------------------
-
-If builtin or project commands show up as unresolved:
-
-* confirm the file is inside the right project root
-* add project metadata with ``plugin-path`` or ``--plugin-path``
-* make sure custom metadata uses the ``.meta.tcl`` suffix
-
-If ``package require`` cannot be resolved:
-
-* confirm the relevant library tree contains ``pkgIndex.tcl``
-* add that tree with ``lib-path`` or ``library-path``
-* remember that package discovery is conservative, not runtime-evaluated
-
-If editor features are missing entirely:
-
-* make sure the client launches ``tcl-ls`` over stdio
-* make sure the file is opened with a Tcl filetype
-* remember that the repository only ships a Neovim config and a VS Code
-  extension; other editors still need manual LSP wiring
-
-Setting Expectations
---------------------
-
-Some gaps are expected today rather than immediate bugs:
-
-* dynamic Tcl patterns such as ``eval`` and ``uplevel`` are not modeled fully
-* analysis intentionally prefers false negatives over noisy false positives
-* many higher-level Tcl ecosystems still need more bundled metadata coverage
+Include that output and any relevant editor LSP log entries.

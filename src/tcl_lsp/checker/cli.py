@@ -30,7 +30,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             target,
             reporter=reporter,
             threads=args.threads,
-            plugin_paths=args.plugin_paths,
+            metadata_paths=args.metadata_paths,
             environment=args.environment,
         )
     except KeyboardInterrupt:
@@ -83,9 +83,10 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        '--plugin-path',
+        '--meta-path',
         action='append',
-        dest='plugin_paths',
+        dest='metadata_paths',
+        metavar='PATH',
         default=[],
         help=(
             'Load project metadata from this path. Accepts a metadata directory, '

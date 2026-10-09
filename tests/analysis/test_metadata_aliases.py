@@ -28,10 +28,13 @@ def test_aliases_keep_subcommand_checks_and_variable_bindings(
     parser: Parser, tmp_path: Path
 ) -> None:
     (tmp_path / 'aliases.meta.tcl').write_text(
-        'meta module Tcl\n'
-        'meta alias tcl_trace trace\n'
-        'meta alias match regexp\n'
-        'meta alias collect lappend\n',
+        (
+            'meta module Tcl {\n'
+            '    meta alias tcl_trace trace\n'
+            '    meta alias match regexp\n'
+            '    meta alias collect lappend\n'
+            '}\n'
+        ),
         encoding='utf-8',
     )
     source = tmp_path / 'main.tcl'
@@ -68,9 +71,12 @@ def test_aliases_reuse_the_original_declaration_plugin(parser: Parser, tmp_path:
         encoding='utf-8',
     )
     (tmp_path / 'aliases.meta.tcl').write_text(
-        'meta module Tcl\n'
-        'meta command original {name attributes body} {plugin declare.tcl declare}\n'
-        'meta alias declare original\n',
+        (
+            'meta module Tcl {\n'
+            '    meta command original {name attributes body} {plugin declare.tcl declare}\n'
+            '    meta alias declare original\n'
+            '}\n'
+        ),
         encoding='utf-8',
     )
     source = tmp_path / 'main.tcl'
@@ -91,10 +97,11 @@ def test_alias_chains_follow_project_overrides(parser: Parser, tmp_path: Path) -
     early.mkdir()
     late.mkdir()
     (early / 'commands.meta.tcl').write_text(
-        'meta module Tcl\nmeta command tool {name}\nmeta alias first tool\n', encoding='utf-8'
+        ('meta module Tcl {\n    meta command tool {name}\n    meta alias first tool\n}\n'),
+        encoding='utf-8',
     )
     (late / 'commands.meta.tcl').write_text(
-        'meta module Tcl\nmeta command tool {name value}\nmeta alias second first\n',
+        ('meta module Tcl {\n    meta command tool {name value}\n    meta alias second first\n}\n'),
         encoding='utf-8',
     )
     source = tmp_path / 'main.tcl'
@@ -117,7 +124,7 @@ def test_invalid_aliases_report_configuration_errors(
     tmp_path: Path, declarations: str, message: str
 ) -> None:
     metadata = tmp_path / 'aliases.meta.tcl'
-    metadata.write_text(f'meta module Tcl\n{declarations}', encoding='utf-8')
+    metadata.write_text(f'meta module Tcl {{\n{declarations}}}\n', encoding='utf-8')
 
     with pytest.raises(RuntimeError, match=message):
         load_metadata_commands(metadata)
