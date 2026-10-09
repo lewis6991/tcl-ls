@@ -13,7 +13,7 @@ namespace eval ::tcl_meta {
     variable max_depth 6
 
     proc usage {} {
-        error "usage: tcl-meta command-list | command-info | build-file ?--no-probe? ?--new-only? ?--environment name? output-path"
+        error "usage: tcl-meta command-list | command-info | build-file ?--no-probe? ?--new-only? ?--environment name? ?--include-commands names? ?--internal-commands names? output-path"
     }
 
     proc normalize_command_name {name} {
@@ -166,9 +166,19 @@ namespace eval ::tcl_meta {
         return $mapping
     }
 
-    proc command_info {} {
+    proc command_info {{extra_commands {}}} {
+        set commands [command_list]
+        foreach name $extra_commands {
+            set command [namespace which -command [absolute_command_name $name]]
+            if {$command eq ""} {
+                error "cannot resolve command [list $name]"
+            }
+            if {[should_keep_command $command]} {
+                lappend commands [normalize_command_name $command]
+            }
+        }
         set result {}
-        foreach command [command_list] {
+        foreach command [lsort -unique -dictionary $commands] {
             dict set result $command [command_descriptor $command]
         }
         return $result
@@ -285,22 +295,25 @@ namespace eval ::tcl_meta {
         puts $ch "${indent}}"
     }
 
-    proc emit_root_command {ch subcommand_map command indent} {
+    proc emit_root_command {ch subcommand_map command indent internal} {
         set children [lookup_subcommands $subcommand_map $command]
         set signature [command_signature $command [expr {[llength $children] != 0}]]
+        set declaration [list meta command $command]
+        if {$internal} { lappend declaration -visibility internal }
+        lappend declaration $signature
         if {[llength $children] == 0} {
-            puts $ch "${indent}meta command [list $command] [list $signature]"
+            puts $ch "${indent}$declaration"
             return
         }
 
-        puts $ch "${indent}meta command [list $command] [list $signature] {"
+        puts $ch "${indent}$declaration {"
         foreach child $children {
             emit_subcommand $ch $subcommand_map "$command $child" "${indent}    "
         }
         puts $ch "${indent}}"
     }
 
-    proc write_metadata {output_path new_commands subcommand_map module} {
+    proc write_metadata {output_path new_commands subcommand_map module internal_commands} {
         file mkdir [file dirname $output_path]
         set ch [open $output_path w]
         try {
@@ -312,7 +325,8 @@ namespace eval ::tcl_meta {
             puts $ch ""
 
             foreach command [lsort -dictionary [dict keys $new_commands]] {
-                emit_root_command $ch $subcommand_map $command "    "
+                emit_root_command $ch $subcommand_map $command "    " \
+                    [dict exists $internal_commands $command]
             }
             puts $ch "}"
         } finally {
@@ -350,8 +364,12 @@ namespace eval ::tcl_meta {
         return [exec {*}$command]
     }
 
-    proc build_file {output_path probe new_only module} {
-        set current_info [command_info]
+    proc build_file {output_path probe new_only module extra_commands internal_commands} {
+        set current_info [command_info [concat $extra_commands $internal_commands]]
+        set internal_names {}
+        foreach name $internal_commands {
+            dict set internal_names [resolved_command_name [absolute_command_name $name]] 1
+        }
         set baseline_info [baseline_command_info]
         set output_commands [changed_command_set $baseline_info $current_info]
         if {$new_only} {
@@ -363,7 +381,7 @@ namespace eval ::tcl_meta {
         if {$probe} {
             set subcommand_map [subcommand_map [lsort -dictionary [dict keys $output_commands]]]
         }
-        write_metadata $output_path $output_commands $subcommand_map $module
+        write_metadata $output_path $output_commands $subcommand_map $module $internal_names
     }
 
     proc dispatch {subcommand args} {
@@ -384,6 +402,8 @@ namespace eval ::tcl_meta {
                 set probe 1
                 set new_only 0
                 set module Tcl
+                set extra_commands {}
+                set internal_commands {}
                 while {[string match --* [lindex $args 0]]} {
                     set option [lindex $args 0]
                     set args [lrange $args 1 end]
@@ -395,13 +415,23 @@ namespace eval ::tcl_meta {
                             set module [lindex $args 0]
                             set args [lrange $args 1 end]
                         }
+                        --include-commands {
+                            if {[llength $args] < 2} { usage }
+                            lappend extra_commands {*}[lindex $args 0]
+                            set args [lrange $args 1 end]
+                        }
+                        --internal-commands {
+                            if {[llength $args] < 2} { usage }
+                            lappend internal_commands {*}[lindex $args 0]
+                            set args [lrange $args 1 end]
+                        }
                         default { usage }
                     }
                 }
                 if {[llength $args] != 1} {
                     usage
                 }
-                build_file [lindex $args 0] $probe $new_only $module
+                build_file [lindex $args 0] $probe $new_only $module $extra_commands $internal_commands
             }
             default {
                 usage

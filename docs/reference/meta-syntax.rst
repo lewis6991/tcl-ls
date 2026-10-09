@@ -152,6 +152,23 @@ shape is shorthand for one ``form`` in a ``variants`` block. Explicit ``form``
 entries require ``variants``, and each variants block must contain at least
 one form for its own command. Nested commands do not satisfy that requirement.
 
+Place ``-visibility public|internal`` between the name and shape (or
+``variants``). Visibility defaults to ``public`` and applies to all forms of
+that command. Nested commands have their own visibility; aliases inherit the
+target's visibility. Repeated declarations of the same command in one block
+must agree. ``meta override`` and embedded-language commands accept the same
+option.
+
+.. code-block:: tcl
+
+   meta command prove {args}
+   meta command _set_property -visibility internal {args}
+
+Hover text labels internal commands and omits public visibility. Internal
+command calls use the standard ``deprecated`` semantic-token modifier so
+editors apply their existing deprecated style. Visibility does not restrict
+calls. Public commands keep their normal highlighting.
+
 Leading ``#`` comments immediately before a command declaration become its
 hover and completion documentation.
 

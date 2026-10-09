@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -46,7 +47,7 @@ def test_language_server_initialize_advertises_semantic_tokens() -> None:
         'string',
         'operator',
     ]
-    assert legend['tokenModifiers'] == ['declaration', 'defaultLibrary']
+    assert legend['tokenModifiers'] == ['declaration', 'defaultLibrary', 'deprecated']
     assert semantic_tokens['full'] == {'delta': True}
     assert capabilities['declarationProvider'] is True
     assert capabilities['implementationProvider'] is True
@@ -526,3 +527,122 @@ def test_language_server_returns_semantic_tokens_for_latest_workspace_text_after
         )
     finally:
         override_schedule_document_change(server, original_schedule_document_change)
+
+
+@pytest.mark.parametrize('visibility', ['public', 'internal'])
+def test_semantic_visibility_follows_resolved_commands(
+    tmp_path: Path, visibility: str, server: LanguageServer
+) -> None:
+    config = f"""meta module Tool -environment {{
+    meta command inspect -visibility {visibility} variants {{
+        form {{}}
+        form {{value}}
+    }}
+    meta alias inspect_alias inspect
+    meta command ordinary {{}}
+    meta command api {{subcommand args}} {{
+        command inspect -visibility {visibility} {{}}
+    }}
+    meta command dsl {{body}} {{enter example body 1}}
+    meta language example {{
+        command inspect -visibility {visibility} {{}}
+    }}
+}}
+"""
+    (tmp_path / 'tcllsrc.tcl').write_text(config, encoding='utf-8')
+    uri = (tmp_path / 'main.tcl').as_uri()
+    text = """# tcl-ls: env Tool
+inspect
+inspect value
+inspect_alias
+rename inspect renamed
+renamed
+ordinary
+api inspect
+dsl {inspect}
+namespace eval local {
+    proc inspect {} {}
+    inspect
+}
+"""
+    open_server_document(server, text, uri=uri)
+    assert server.documents[uri].analysis.diagnostics == ()
+    result = server.semantic_tokens(uri)
+    assert result is not None
+    token_types, token_modifiers = semantic_tokens_legend(server)
+    decoded = decode_semantic_tokens(
+        list(result.data), token_types=token_types, token_modifiers=token_modifiers
+    )
+    deprecated_positions = {
+        (token['line'], token['character'])
+        for token in decoded
+        if 'deprecated' in cast(list[str], token['modifiers'])
+    }
+    assert deprecated_positions == (
+        {(1, 0), (2, 0), (3, 0), (5, 0), (7, 4), (8, 5)} if visibility == 'internal' else set()
+    )
+    # The metadata DSL itself accepts visibility without spurious diagnostics.
+    config_uri = (tmp_path / 'tcllsrc.tcl').as_uri()
+    server.open_document(config_uri, config, 1)
+    assert server.documents[config_uri].analysis.diagnostics == ()
+
+
+def test_file_metadata_visibility_follows_the_procedure_definition(
+    tmp_path: Path, server: LanguageServer
+) -> None:
+    (tmp_path / 'library.tcl').write_text('proc inspect {} {}\n', encoding='utf-8')
+    (tmp_path / 'library.meta.tcl').write_text(
+        'meta command inspect -visibility internal {}\n', encoding='utf-8'
+    )
+    (tmp_path / 'tcllsrc.tcl').write_text('source library.meta.tcl\n', encoding='utf-8')
+    uri = (tmp_path / 'main.tcl').as_uri()
+    open_server_document(
+        server,
+        'source [file join [file dirname [info script]] library.tcl]\n'
+        'inspect\nnamespace eval local {proc inspect {} {}; inspect}\n',
+        uri=uri,
+    )
+
+    assert server.documents[uri].analysis.diagnostics == ()
+    result = server.semantic_tokens(uri)
+    assert result is not None
+    token_types, token_modifiers = semantic_tokens_legend(server)
+    decoded = decode_semantic_tokens(
+        list(result.data), token_types=token_types, token_modifiers=token_modifiers
+    )
+    assert [token for token in decoded if 'deprecated' in cast(list[str], token['modifiers'])] == [
+        semantic_token(
+            line=1, character=0, length=7, token_type='function', modifiers=['deprecated']
+        )
+    ]
+
+
+def test_visibility_obeys_environment_scope(tmp_path: Path, server: LanguageServer) -> None:
+    (tmp_path / 'tcllsrc.tcl').write_text(
+        'meta module Tcl {meta command inspect {}}\n'
+        'meta module Tool -environment {meta override inspect -visibility internal {}}\n',
+        encoding='utf-8',
+    )
+    uri = (tmp_path / 'main.tcl').as_uri()
+    open_server_document(
+        server,
+        'inspect\nif {1} {\n# tcl-ls: env Tool\ninspect\n}\ninspect\n',
+        uri=uri,
+    )
+
+    assert server.documents[uri].analysis.diagnostics == ()
+    result = server.semantic_tokens(uri)
+    assert result is not None
+    token_types, token_modifiers = semantic_tokens_legend(server)
+    decoded = decode_semantic_tokens(
+        list(result.data), token_types=token_types, token_modifiers=token_modifiers
+    )
+    assert [token for token in decoded if 'deprecated' in cast(list[str], token['modifiers'])] == [
+        semantic_token(
+            line=3,
+            character=0,
+            length=7,
+            token_type='function',
+            modifiers=['defaultLibrary', 'deprecated'],
+        )
+    ]

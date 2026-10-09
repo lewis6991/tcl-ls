@@ -723,8 +723,8 @@ def test_language_service_hover_notes_imported_package_commands(
     hover = service.hover(main_uri, 2, 1)
     assert hover is not None
     assert (
-        hover.contents
-        == 'proc ::helper::greet()\n\nGreets helper callers.\n\n---\n\nImported via: ::helper::*'
+        hover.contents == 'proc ::helper::greet()\n\n'
+        'Greets helper callers.\n\n---\n\nImported via: ::helper::*'
     )
 
 

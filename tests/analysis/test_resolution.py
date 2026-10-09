@@ -748,7 +748,7 @@ def test_analysis_treats_meta_command_as_builtin() -> None:
     assert meta_resolution.uncertainty.state == 'resolved'
     assert len(meta_resolution.target_symbol_ids) == 1
     assert meta_command_resolution.uncertainty.state == 'resolved'
-    assert len(meta_command_resolution.target_symbol_ids) == 3
+    assert len(meta_command_resolution.target_symbol_ids) == 6
 
     hover_by_offset = {hover.span.start.offset: hover.contents for hover in analysis.hovers}
     meta_command_call = next(

@@ -15,7 +15,7 @@ from tcl_lsp.analysis.metadata_commands import (
     metadata_modules,
 )
 from tcl_lsp.analysis.metadata_view import metadata_view
-from tcl_lsp.analysis.model import CommandArity, DefinitionTarget
+from tcl_lsp.analysis.model import CommandArity, CommandVisibility, DefinitionTarget
 from tcl_lsp.analysis.signature_matching import display_metadata_signature
 from tcl_lsp.cache import metadata_lru_cache
 from tcl_lsp.common import Span, lsp_location
@@ -50,6 +50,7 @@ class BuiltinCommand:
     metadata_path_name: str
     overloads: tuple[BuiltinOverload, ...]
     is_override: bool = False
+    visibility: CommandVisibility = 'public'
 
 
 def builtin_commands(
@@ -355,6 +356,7 @@ def _load_metadata_file(
 ) -> dict[str, BuiltinCommand]:
     commands: dict[str, list[BuiltinOverload]] = {}
     override_names: set[str] = set()
+    visibility_by_name: dict[str, CommandVisibility] = {}
     for metadata_command in load_metadata_commands(
         metadata_path, alias_paths=alias_paths, revision=revision
     ):
@@ -363,6 +365,7 @@ def _load_metadata_file(
             or metadata_command.module_name != package_name
         ):
             continue
+        visibility_by_name[metadata_command.name] = metadata_command.visibility
         if metadata_command.is_override:
             override_names.add(metadata_command.name)
         commands.setdefault(metadata_command.name, []).append(
@@ -399,6 +402,7 @@ def _load_metadata_file(
             metadata_path_name=metadata_path.name,
             overloads=tuple(overloads),
             is_override=name in override_names,
+            visibility=visibility_by_name[name],
         )
         for name, overloads in commands.items()
     }

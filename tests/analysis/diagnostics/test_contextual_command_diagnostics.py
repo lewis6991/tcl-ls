@@ -913,3 +913,23 @@ def test_analysis_reports_overlapping_plugin_and_contextual_enter_ranges(
 
     assert codes == ('conflicting-embedded-language',)
     assert messages == ('Overlapping enter body selections are ambiguous.',)
+
+
+def test_metadata_visibility_declarations_preserve_body_analysis(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///visibility.meta.tcl',
+        'meta command api -visibility internal variants {\n'
+        '    form {subcommand args}\n'
+        '    command inspect -visibility public {value} {ref 1}\n'
+        '}\n'
+        'meta language example {\n'
+        '    command inspect -visibility internal {value} {ref 1}\n'
+        '}\n',
+    )
+
+    assert snapshot.analysis.diagnostics == ()
+    assert any(
+        call.name == 'ref' and call.embedded_language is not None
+        for call in snapshot.facts.command_calls
+    )

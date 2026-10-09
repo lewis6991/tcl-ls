@@ -230,6 +230,9 @@ def test_core_metadata_models_meta_as_ensemble() -> None:
         'meta command {name shape}',
         'meta command {name shape body}',
         'meta command {name variants body}',
+        'meta command {name -visibility visibility shape}',
+        'meta command {name -visibility visibility shape body}',
+        'meta command {name -visibility visibility variants body}',
     )
     assert any(
         overload.arity is not None and overload.arity.accepts(2)
@@ -918,3 +921,26 @@ def test_metadata_rejects_procedure_language_without_body(tmp_path: Path) -> Non
         match='may only declare `language` when `body` is present',
     ):
         load_metadata_commands(metadata_path)
+
+
+@pytest.mark.parametrize(
+    'declaration',
+    [
+        'meta command probe -visibility private {args}',
+        'meta command probe -visibility $visibility {args}',
+        'meta command probe -visibility',
+        'meta command probe -visibility internal',
+        'meta command probe -visibility internal -visibility public {args}',
+        'meta command probe -visibility internal {args}\nmeta command probe {value}',
+        'meta command api {subcommand args} {command probe -visibility private {args}}',
+        'meta language dsl {command probe -visibility private {args}}',
+    ],
+)
+def test_metadata_rejects_invalid_or_conflicting_visibility(
+    tmp_path: Path, declaration: str
+) -> None:
+    path = tmp_path / 'visibility.meta.tcl'
+    path.write_text(declaration, encoding='utf-8')
+
+    with pytest.raises(RuntimeError, match='visibility'):
+        load_metadata_commands(path)

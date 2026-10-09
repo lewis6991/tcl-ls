@@ -38,6 +38,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     build_file_parser.add_argument(
         '--new-only', action='store_true', help='Exclude commands already present in plain Tcl.'
     )
+    build_file_parser.add_argument(
+        '--include-commands',
+        action='append',
+        default=[],
+        metavar='LIST',
+        help='Include additional existing commands supplied as a Tcl list.',
+    )
+    build_file_parser.add_argument(
+        '--internal-commands',
+        action='append',
+        default=[],
+        metavar='LIST',
+        help='Include existing commands as internal, supplied as a Tcl list.',
+    )
 
     args = parser.parse_args(argv)
 
@@ -52,6 +66,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             helper_args.append('--new-only')
         if args.environment != 'Tcl':
             helper_args.extend(['--environment', args.environment])
+        for command_list in args.include_commands:
+            helper_args.extend(['--include-commands', command_list])
+        for command_list in args.internal_commands:
+            helper_args.extend(['--internal-commands', command_list])
         return _run_tcl_script(bundled_tcl_meta_path(), [*helper_args, str(args.output)])
 
     parser.error(f'unsupported command: {args.command}')

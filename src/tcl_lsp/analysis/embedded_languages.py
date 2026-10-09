@@ -20,6 +20,7 @@ from tcl_lsp.analysis.metadata_commands import (
     select_argument_indices,
 )
 from tcl_lsp.analysis.metadata_view import metadata_view
+from tcl_lsp.analysis.model import CommandVisibility
 from tcl_lsp.analysis.signature_matching import metadata_signature_match_state
 from tcl_lsp.cache import metadata_lru_cache
 from tcl_lsp.metadata_paths import DEFAULT_METADATA_REGISTRY, MetadataRegistry
@@ -50,6 +51,10 @@ class ContextualCommand:
     language: EmbeddedLanguageName
     name: str
     overloads: tuple[MetadataCommand, ...]
+
+    @property
+    def visibility(self) -> CommandVisibility:
+        return self.overloads[0].visibility
 
 
 @dataclass(frozen=True, slots=True)

@@ -78,6 +78,109 @@ def test_language_service_hover_includes_proc_comment_blocks(
     assert hover.contents == 'proc ::greet(name)\n\nGreets a user by name.\nReturns nothing.'
 
 
+@pytest.mark.parametrize('visibility', ['public', 'internal'])
+def test_language_service_hover_shows_resolved_command_visibility(
+    service: LanguageService, tmp_path: Path, visibility: str
+) -> None:
+    (tmp_path / 'tcllsrc.tcl').write_text(
+        f"""meta module Tool -environment {{
+    # Inspect the current design.
+    meta command inspect -visibility {visibility} variants {{
+        form {{}}
+        form {{value}}
+    }}
+    meta alias inspect_alias inspect
+    meta command ordinary {{}}
+    meta command api {{subcommand args}} {{
+        command inspect -visibility {visibility} {{}}
+    }}
+    meta command dsl {{body}} {{enter example body 1}}
+    meta language example {{
+        command inspect -visibility {visibility} {{}}
+    }}
+}}
+""",
+        encoding='utf-8',
+    )
+    uri = (tmp_path / 'main.tcl').as_uri()
+    text = """# tcl-ls: env Tool
+inspect
+inspect value
+inspect_alias
+rename inspect renamed
+renamed
+rename renamed final
+final
+ordinary
+api inspect
+dsl {inspect}
+namespace eval local {
+    proc inspect {} {}
+    inspect
+}
+"""
+    assert service.open_document(uri, text, 1) == ()
+
+    for line, character in (
+        (1, 0),
+        (2, 0),
+        (3, 0),
+        (4, 7),
+        (4, 15),
+        (5, 0),
+        (6, 7),
+        (6, 15),
+        (7, 0),
+        (9, 4),
+        (10, 5),
+    ):
+        hover = service.hover(uri, line, character)
+        assert hover is not None
+        if visibility == 'internal':
+            assert '\n\nVisibility: internal' in hover.contents
+        assert hover.contents.count('Visibility:') == (1 if visibility == 'internal' else 0)
+
+    # Public defaults and local definitions do not inherit the tool's visibility.
+    for line, character in ((8, 0), (9, 0), (12, 9), (13, 4)):
+        hover = service.hover(uri, line, character)
+        assert hover is not None
+        assert 'Visibility:' not in hover.contents
+
+    hover = service.hover(uri, 7, 0)
+    assert hover is not None
+    assert 'Inspect the current design.' in hover.contents
+    assert '`inspect {value}`' in hover.contents
+
+
+def test_language_service_hover_uses_file_metadata_for_procedure_visibility(
+    service: LanguageService, tmp_path: Path
+) -> None:
+    (tmp_path / 'library.meta.tcl').write_text(
+        'meta command inspect -visibility internal {}\n', encoding='utf-8'
+    )
+    (tmp_path / 'tcllsrc.tcl').write_text('source library.meta.tcl\n', encoding='utf-8')
+    uri = (tmp_path / 'library.tcl').as_uri()
+    text = """proc inspect {} {}
+inspect
+namespace eval local {
+    proc inspect {} {}
+    inspect
+}
+"""
+    assert service.open_document(uri, text, 1) == ()
+
+    for line, character, name, visibility in (
+        (0, 5, '::inspect', 'internal'),
+        (1, 0, '::inspect', 'internal'),
+        (3, 9, '::local::inspect', 'public'),
+        (4, 4, '::local::inspect', 'public'),
+    ):
+        hover = service.hover(uri, line, character)
+        assert hover is not None
+        label = '\n\nVisibility: internal' if visibility == 'internal' else ''
+        assert hover.contents == f'proc {name}(){label}'
+
+
 def test_language_service_definition_resolves_builtin_command_metadata(
     service: LanguageService,
 ) -> None:

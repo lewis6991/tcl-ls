@@ -16,7 +16,7 @@ type SemanticTokenType = Literal[
     'string',
     'operator',
 ]
-type SemanticTokenModifier = Literal['declaration', 'defaultLibrary']
+type SemanticTokenModifier = Literal['declaration', 'defaultLibrary', 'deprecated']
 
 SEMANTIC_TOKEN_TYPES: tuple[SemanticTokenType, ...] = (
     'comment',
@@ -28,7 +28,11 @@ SEMANTIC_TOKEN_TYPES: tuple[SemanticTokenType, ...] = (
     'string',
     'operator',
 )
-SEMANTIC_TOKEN_MODIFIERS: tuple[SemanticTokenModifier, ...] = ('declaration', 'defaultLibrary')
+SEMANTIC_TOKEN_MODIFIERS: tuple[SemanticTokenModifier, ...] = (
+    'declaration',
+    'defaultLibrary',
+    'deprecated',
+)
 _TOKEN_TYPE_INDICES = {token_type: index for index, token_type in enumerate(SEMANTIC_TOKEN_TYPES)}
 _TOKEN_MODIFIER_BITS = {
     modifier: 1 << index for index, modifier in enumerate(SEMANTIC_TOKEN_MODIFIERS)
@@ -234,6 +238,8 @@ def _collect_semantic_tokens(
                 token_type = 'keyword'
             else:
                 modifier_bits |= _modifier_bits('defaultLibrary')
+        if resolution is not None and resolution.visibility == 'internal':
+            modifier_bits |= _modifier_bits('deprecated')
         _add_token(
             tokens_by_span,
             _SemanticToken(

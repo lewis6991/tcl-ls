@@ -72,6 +72,11 @@ meta module Tcl {
     #   hover/signature text may display a normalized `? ... ?` form for the same
     #   shape.
     #
+    # Visibility:
+    #   Put `-visibility public|internal` after a command name and before its
+    #   shape or `variants`. The default is public. All forms share visibility;
+    #   nested commands declare their own. Aliases inherit the target's value.
+    #
     # Clause bodies:
     #   A command body is a static Tcl command list, usually written as a braced
     #   block. Each nested command in the block is one sibling clause.
@@ -210,8 +215,15 @@ meta module Tcl {
         # Explicitly replace a command from Tcl or a lower environment.
         command override variants {
             form {<name> <shape>}
-            form {<name> <groupedShape> <body>} {enter meta-command-body body 3}
-            form {<name> =variants <body>} {enter meta-command-body body 3}
+            form {<name> <groupedShape> <body>} {enter meta-command-body body last}
+            form {<name> =variants <body>} {enter meta-command-body body last}
+            form {<name> =-visibility <visibility> <shape>}
+            form {<name> =-visibility <visibility> <groupedShape> <body>} {
+                enter meta-command-body body last
+            }
+            form {<name> =-visibility <visibility> =variants <body>} {
+                enter meta-command-body body last
+            }
         }
 
         # Declare metadata for a command or command prefix.
@@ -221,10 +233,17 @@ meta module Tcl {
         command command variants {
             form {<name> <shape>}
             form {<name> <groupedShape> <body>} {
-                enter meta-command-body body 3
+                enter meta-command-body body last
             }
             form {<name> =variants <body>} {
-                enter meta-command-body body 3
+                enter meta-command-body body last
+            }
+            form {<name> =-visibility <visibility> <shape>}
+            form {<name> =-visibility <visibility> <groupedShape> <body>} {
+                enter meta-command-body body last
+            }
+            form {<name> =-visibility <visibility> =variants <body>} {
+                enter meta-command-body body last
             }
         }
 
@@ -247,10 +266,17 @@ meta module Tcl {
         command command variants {
             form {<name> <shape>}
             form {<name> <groupedShape> <body>} {
-                enter meta-command-body body 3
+                enter meta-command-body body last
             }
             form {<name> =variants <body>} {
-                enter meta-command-body body 3
+                enter meta-command-body body last
+            }
+            form {<name> =-visibility <visibility> <shape>}
+            form {<name> =-visibility <visibility> <groupedShape> <body>} {
+                enter meta-command-body body last
+            }
+            form {<name> =-visibility <visibility> =variants <body>} {
+                enter meta-command-body body last
             }
         }
 
@@ -298,17 +324,31 @@ meta module Tcl {
         # Replace a command from a lower environment in this language.
         command override variants {
             form {<name> <shape>}
-            form {<name> <groupedShape> <body>} {enter meta-command-body body 3}
-            form {<name> =variants <body>} {enter meta-command-body body 3}
+            form {<name> <groupedShape> <body>} {enter meta-command-body body last}
+            form {<name> =variants <body>} {enter meta-command-body body last}
+            form {<name> =-visibility <visibility> <shape>}
+            form {<name> =-visibility <visibility> <groupedShape> <body>} {
+                enter meta-command-body body last
+            }
+            form {<name> =-visibility <visibility> =variants <body>} {
+                enter meta-command-body body last
+            }
         }
 
         command command variants {
             form {<name> <shape>}
             form {<name> <groupedShape> <body>} {
-                enter meta-command-body body 3
+                enter meta-command-body body last
             }
             form {<name> =variants <body>} {
-                enter meta-command-body body 3
+                enter meta-command-body body last
+            }
+            form {<name> =-visibility <visibility> <shape>}
+            form {<name> =-visibility <visibility> <groupedShape> <body>} {
+                enter meta-command-body body last
+            }
+            form {<name> =-visibility <visibility> =variants <body>} {
+                enter meta-command-body body last
             }
         }
     }

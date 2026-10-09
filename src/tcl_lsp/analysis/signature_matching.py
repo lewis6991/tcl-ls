@@ -207,6 +207,8 @@ def _match_slot_token(
         return 'exact' if arg_grouped[arg_index] else 'reject'
     if slot_name == 'language':
         return 'exact' if ' ' not in actual else 'reject'
+    if slot_name == 'visibility':
+        return 'exact' if actual in {'public', 'internal'} else 'reject'
     if slot_name == 'kind':
         return 'exact' if actual in BINDING_KINDS else 'reject'
     if slot_name in {

@@ -62,7 +62,14 @@ def test_helper_path_prints_existing_bundled_script(capsys: pytest.CaptureFixtur
 
 
 @pytest.mark.parametrize(
-    'options', [[], ['--no-probe'], ['--no-probe', '--new-only', '--environment', 'Tool']]
+    'options',
+    [
+        [],
+        ['--no-probe'],
+        ['--no-probe', '--new-only', '--environment', 'Tool'],
+        ['--include-commands', '::tool::hidden', '--include-commands', '{::tool::two words}'],
+        ['--internal-commands', '::tool::hidden', '--internal-commands', '::other'],
+    ],
 )
 def test_build_file_dispatches_to_bundled_tcl_helper(
     monkeypatch: pytest.MonkeyPatch, options: list[str]
@@ -154,6 +161,50 @@ def test_tool_inventory_excludes_replaced_tcl_commands(tmp_path: Path) -> None:
     )
 
 
+def test_tool_inventory_accepts_commands_from_another_catalogue(tmp_path: Path) -> None:
+    metadata = _build_metadata_with_tcl(
+        tmp_path,
+        'namespace eval tool {proc _hidden {item} {exit 9}}\nproc visible {args} {exit 9}\n',
+        options='--no-probe --new-only --include-commands {::tool::_hidden clock} '
+        '--include-commands {tool::_hidden}',
+    )
+
+    assert metadata == (
+        _METADATA_HEADER
+        + '    meta command tool::_hidden item\n'
+        + '    meta command visible args\n'
+        + '}\n'
+    )
+
+
+@pytest.mark.parametrize('option', ['--include-commands', '--internal-commands'])
+def test_unknown_catalogue_command_does_not_replace_metadata(tmp_path: Path, option: str) -> None:
+    tclsh_path = shutil.which('tclsh')
+    if tclsh_path is None:
+        pytest.skip('tclsh is required for bundled Tcl helper tests')
+    output_path = tmp_path / 'tool.meta.tcl'
+    output_path.write_text('previous metadata\n')
+
+    completed = subprocess.run(
+        [
+            tclsh_path,
+            str(meta.bundled_tcl_meta_path()),
+            'build-file',
+            '--no-probe',
+            option,
+            'missing_catalogue_command',
+            str(output_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 1
+    assert 'cannot resolve command missing_catalogue_command' in completed.stderr
+    assert output_path.read_text() == 'previous metadata\n'
+
+
 def test_bundled_tcl_helper_keeps_generic_signatures_for_non_proc_commands(
     tmp_path: Path,
 ) -> None:
@@ -201,3 +252,17 @@ def test_bundled_tcl_helper_uses_proc_signature_when_subcommands_are_discovered(
         + '    }\n'
         + '}\n'
     )
+
+
+def test_generator_uses_explicit_visibility_without_name_heuristics(tmp_path: Path) -> None:
+    metadata = _build_metadata_with_tcl(
+        tmp_path,
+        'proc _public {} {exit 9}\n'
+        'namespace eval tool {proc hidden {} {exit 9}}\n'
+        'proc another {} {exit 9}\n',
+        options='--no-probe --internal-commands ::tool::hidden --internal-commands another',
+    )
+
+    assert 'meta command _public {}' in metadata
+    assert 'meta command tool::hidden -visibility internal {}' in metadata
+    assert 'meta command another -visibility internal {}' in metadata

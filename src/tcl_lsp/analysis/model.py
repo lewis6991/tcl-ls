@@ -56,6 +56,7 @@ _BINDING_KIND_VALUES: tuple[BindingKind, ...] = (
 )
 BINDING_KINDS: frozenset[BindingKind] = frozenset(_BINDING_KIND_VALUES)
 type CommandImportKind = Literal['exact', 'namespace-wildcard']
+type CommandVisibility = Literal['public', 'internal']
 type ReferenceKind = Literal['command', 'variable']
 type ResolutionState = Literal['resolved', 'unresolved', 'ambiguous', 'dynamic']
 
@@ -230,6 +231,7 @@ class ResolutionResult:
     reference: ReferenceSite
     uncertainty: AnalysisUncertainty
     target_symbol_ids: tuple[str, ...]
+    visibility: CommandVisibility = 'public'
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,6 +243,7 @@ class DefinitionTarget:
     span: Span
     detail: str
     exact_values: tuple[str, ...] = ()
+    visibility: CommandVisibility | None = None
 
 
 @dataclass(frozen=True, slots=True)

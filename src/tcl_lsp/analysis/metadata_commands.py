@@ -7,7 +7,7 @@ from typing import Literal, cast
 
 from tcl_lsp.analysis.facts.parameters import ParameterFormat
 from tcl_lsp.analysis.facts.utils import normalize_command_name
-from tcl_lsp.analysis.model import BINDING_KINDS, BindingKind
+from tcl_lsp.analysis.model import BINDING_KINDS, BindingKind, CommandVisibility
 from tcl_lsp.cache import metadata_lru_cache
 from tcl_lsp.common import Diagnostic, Span
 from tcl_lsp.metadata_paths import (
@@ -139,6 +139,7 @@ class MetadataCommand:
     options: tuple[MetadataOption, ...]
     subcommands: tuple[str, ...]
     annotations: tuple[MetadataAnnotation, ...]
+    visibility: CommandVisibility = 'public'
     alias_target: str | None = None
     is_override: bool = False
     module_name: str | None = None
@@ -438,6 +439,11 @@ def _summarize_block(block: DeclarationBlock, *, config: bool) -> MetadataFileSu
                 raise RuntimeError(f'Unknown metadata declaration `meta {entry_kind}`.')
         except RuntimeError as exc:
             raise DeclarationError(metadata_path, command.span, str(exc)) from exc
+    visibility_by_key: dict[tuple[str | None, str], CommandVisibility] = {}
+    for command in commands:
+        key = (command.context_name, normalize_command_name(command.name))
+        if visibility_by_key.setdefault(key, command.visibility) != command.visibility:
+            raise RuntimeError(f'Conflicting visibility for metadata command `{command.name}`.')
     declared_names = {command.name for command in commands if command.context_name is None}
     for alias in aliases:
         if alias.name in declared_names:
@@ -536,6 +542,7 @@ def _file_scoped_annotated_metadata_commands(
                         existing.options != metadata_command.options
                         or existing.subcommands != metadata_command.subcommands
                         or existing.annotations != metadata_command.annotations
+                        or existing.visibility != metadata_command.visibility
                     ):
                         raise RuntimeError(
                             f'Conflicting file-scoped metadata annotations for '
@@ -572,6 +579,7 @@ def _file_scoped_annotated_entries_for_file(
                 metadata_command.options
                 or metadata_command.subcommands
                 or metadata_command.annotations
+                or metadata_command.visibility == 'internal'
             )
             else None
         )
@@ -593,6 +601,7 @@ def _file_scoped_annotated_entries_for_file(
             existing_command.options == annotated_command.options
             and existing_command.subcommands == annotated_command.subcommands
             and existing_command.annotations == annotated_command.annotations
+            and existing_command.visibility == annotated_command.visibility
         ):
             continue
         raise RuntimeError(
@@ -630,28 +639,27 @@ def _parse_metadata_command_entry(
     context_extends: str | None = None,
     parent_name: str | None = None,
 ) -> tuple[MetadataCommand, ...]:
-    if context_name is None:
-        if len(command.words) not in {4, 5}:
-            raise RuntimeError(
-                'Metadata command entries must be `meta command name {args}` '
-                'optionally followed by an annotation body, or '
-                '`meta command name variants { ... }`.'
-            )
-        command_name = word_static_text(command.words[2])
-        name_word = command.words[2]
-        declaration_word = command.words[3]
-        annotation_word = command.words[4] if len(command.words) == 5 else None
-    else:
-        if len(command.words) not in {3, 4}:
-            raise RuntimeError(
-                'Metadata language command entries must be '
-                '`command name {args}` optionally followed by an annotation body, '
-                'or `command name variants { ... }`.'
-            )
-        command_name = word_static_text(command.words[1])
-        name_word = command.words[1]
-        declaration_word = command.words[2]
-        annotation_word = command.words[3] if len(command.words) == 4 else None
+    name_index = 2 if context_name is None and parent_name is None else 1
+    words = list(command.words[name_index:])
+    if len(words) < 2:
+        raise RuntimeError('Metadata command entries require a name and a shape.')
+    name_word = words[0]
+    command_name = word_static_text(name_word)
+    words = words[1:]
+    visibility: CommandVisibility = 'public'
+    if _is_bare_keyword(words[0], '-visibility'):
+        value = word_static_text(words[1]) if len(words) > 1 else None
+        if value not in {'public', 'internal'}:
+            raise RuntimeError('Command visibility must be `public` or `internal`.')
+        visibility = cast(CommandVisibility, value)
+        words = words[2:]
+    if len(words) not in {1, 2}:
+        raise RuntimeError(
+            'Metadata command entries must be `command name ?-visibility public|internal? '
+            '{shape}` optionally followed by an annotation body, or a variants body.'
+        )
+    declaration_word = words[0]
+    annotation_word = words[1] if len(words) == 2 else None
 
     if command_name is None:
         raise RuntimeError('Metadata command entries must be fully static declarations.')
@@ -682,6 +690,7 @@ def _parse_metadata_command_entry(
             context_extends=context_extends,
             name_span=name_word.content_span,
             documentation=documentation,
+            visibility=visibility,
         )
 
     if annotation_word is not None and isinstance(declaration_word, BareWord):
@@ -718,6 +727,7 @@ def _parse_metadata_command_entry(
             options=options,
             subcommands=(),
             annotations=annotations,
+            visibility=visibility,
         ),
         *nested_commands,
     )
@@ -952,7 +962,7 @@ def _parse_annotation_body(
             continue
         if annotation_name == 'command':
             nested_commands.extend(
-                _parse_nested_command_entry(
+                _parse_metadata_command_entry(
                     command,
                     metadata_path=metadata_path,
                     metadata_uri=metadata_uri,
@@ -1007,94 +1017,6 @@ def _parse_option_annotation(command: Command, command_name: str) -> MetadataOpt
     raise RuntimeError(
         f'Option annotations for `{command_name}` must be `option name`, '
         '`option name value`, or `option -- stop`.'
-    )
-
-
-def _parse_nested_command_entry(
-    command: Command,
-    *,
-    metadata_path: Path,
-    metadata_uri: str,
-    parent_name: str,
-    context_name: str | None,
-    context_extends: str | None,
-) -> tuple[MetadataCommand, ...]:
-    if len(command.words) not in {3, 4}:
-        raise RuntimeError(
-            f'Nested command declarations for `{parent_name}` must be '
-            '`command name {shape}` optionally followed by an annotation body, '
-            'or `command name variants { ... }`.'
-        )
-
-    command_name = word_static_text(command.words[1])
-    if command_name is None:
-        raise RuntimeError(f'Nested command declarations for `{parent_name}` must be fully static.')
-    if ' ' in command_name:
-        raise RuntimeError(
-            f'Nested command declarations for `{parent_name}` must use single command names.'
-        )
-
-    full_name = f'{parent_name} {command_name}'
-    declaration_word = command.words[2]
-    annotation_word = command.words[3] if len(command.words) == 4 else None
-
-    if _is_bare_keyword(declaration_word, 'variants'):
-        if annotation_word is None:
-            raise RuntimeError(
-                f'Nested command variants for `{full_name}` must be followed by a body.'
-            )
-        return _load_metadata_variant_commands(
-            _parse_metadata_variant_body(
-                annotation_word,
-                metadata_uri=metadata_uri,
-                command_name=full_name,
-            ),
-            metadata_path=metadata_path,
-            metadata_uri=metadata_uri,
-            command_name=full_name,
-            context_name=context_name,
-            context_extends=context_extends,
-            name_span=command.words[1].content_span,
-            documentation=_command_documentation(command.leading_comments),
-        )
-
-    if annotation_word is not None and isinstance(declaration_word, BareWord):
-        raise RuntimeError(
-            f'Nested command `{full_name}` must use a braced shape when a clause body is present.'
-        )
-
-    signature = word_static_text(declaration_word)
-    if signature is None:
-        raise RuntimeError(f'Nested command declarations for `{parent_name}` must be fully static.')
-
-    options: tuple[MetadataOption, ...] = ()
-    annotations: tuple[MetadataAnnotation, ...] = ()
-    nested_commands: tuple[MetadataCommand, ...] = ()
-    if annotation_word is not None:
-        options, annotations, nested_commands = _parse_annotation_body(
-            metadata_path=metadata_path,
-            metadata_uri=metadata_uri,
-            command_name=full_name,
-            context_name=context_name,
-            context_extends=context_extends,
-            body_text=_metadata_body_text(annotation_word),
-        )
-
-    return (
-        MetadataCommand(
-            metadata_path=metadata_path,
-            uri=metadata_uri,
-            name=full_name,
-            context_name=context_name,
-            context_extends=context_extends,
-            signature=signature,
-            documentation=_command_documentation(command.leading_comments),
-            name_span=command.words[1].content_span,
-            options=options,
-            subcommands=(),
-            annotations=annotations,
-        ),
-        *nested_commands,
     )
 
 
@@ -1651,6 +1573,7 @@ def _parse_metadata_form_entry(
     context_extends: str | None,
     name_span: Span,
     documentation: str | None,
+    visibility: CommandVisibility,
 ) -> tuple[MetadataCommand, ...]:
     if len(command.words) not in {2, 3}:
         raise RuntimeError(
@@ -1689,6 +1612,7 @@ def _parse_metadata_form_entry(
             options=options,
             subcommands=(),
             annotations=annotations,
+            visibility=visibility,
         ),
         *nested_commands,
     )
@@ -1725,6 +1649,7 @@ def _load_metadata_variant_commands(
     context_extends: str | None,
     name_span: Span,
     documentation: str | None,
+    visibility: CommandVisibility,
 ) -> tuple[MetadataCommand, ...]:
     loaded_commands: list[MetadataCommand] = []
     saw_form = False
@@ -1742,12 +1667,13 @@ def _load_metadata_variant_commands(
                     context_extends=context_extends,
                     name_span=name_span,
                     documentation=documentation,
+                    visibility=visibility,
                 )
             )
             continue
         if nested_name == 'command':
             loaded_commands.extend(
-                _parse_nested_command_entry(
+                _parse_metadata_command_entry(
                     nested_command,
                     metadata_path=metadata_path,
                     metadata_uri=metadata_uri,

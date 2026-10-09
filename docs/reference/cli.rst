@@ -78,4 +78,15 @@ follow :doc:`../meta`.
    Write a tool module declared with ``-environment``. Default: ``Tcl``, which
    writes ordinary Tcl module metadata.
 
+``--include-commands LIST``
+   Add command names from a Tcl list to the discovered inventory. Each name
+   must resolve in the active interpreter. Use this when a tool filters
+   ``info commands`` or provides its own catalogue. May be repeated; the
+   other generation options also apply to these commands.
+
+``--internal-commands LIST``
+   Include existing commands and mark them ``-visibility internal``. Accepts
+   a Tcl list and may be repeated. All other commands default to public;
+   the helper does not infer visibility from names.
+
 The same options are accepted when the Tcl helper is sourced in a tool shell.

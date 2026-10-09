@@ -48,6 +48,7 @@ from tcl_lsp.analysis.model import (
     CommandCall,
     CommandImport,
     CommandRename,
+    CommandVisibility,
     DefinitionTarget,
     DocumentFacts,
     ProcDecl,
@@ -57,7 +58,7 @@ from tcl_lsp.analysis.model import (
     VarBinding,
     VariableReference,
 )
-from tcl_lsp.cache import metadata_lru_cache
+from tcl_lsp.analysis.signature_matching import display_metadata_signature
 from tcl_lsp.common import Diagnostic, HoverInfo, Span, lsp_location
 from tcl_lsp.metadata_paths import (
     DEFAULT_METADATA_REGISTRY,
@@ -159,6 +160,7 @@ class Resolver:
         command_resolutions: list[ResolvedCommand] = []
         resolved_command_targets: list[tuple[CommandCall, ResolvedCommandTarget]] = []
         command_hovers: list[HoverInfo] = []
+        rename_visibilities: dict[str, CommandVisibility] = {}
 
         commands: _CommandTable = {}
         rename_index = workspace_index
@@ -198,6 +200,14 @@ class Resolver:
                 hover_trace_parents,
                 commands,
             )
+            if binding.target is not None:
+                binding = replace(
+                    binding,
+                    resolution=replace(
+                        binding.resolution,
+                        visibility=_command_visibility(binding.target, registry),
+                    ),
+                )
             resolution, command_hover, command_target = (
                 binding.resolution,
                 binding.hover,
@@ -210,6 +220,7 @@ class Resolver:
                 ):
                     commands[binding.qualified_name] = None
                     if event.new_qualified_name is not None and event.symbol_id is not None:
+                        rename_visibilities[event.symbol_id] = resolution.visibility
                         detail = f'renamed command {event.new_qualified_name} from {event.old_name}'
                         if command_hover is not None:
                             detail += f'\n\n---\n\n{command_hover.contents}'
@@ -234,7 +245,14 @@ class Resolver:
                     resolved_command_targets.append((command_call, command_target))
             resolutions.append(resolution)
             if command_hover is not None:
-                command_hovers.append(command_hover)
+                command_hovers.append(
+                    replace(
+                        command_hover,
+                        contents=_hover_with_visibility(
+                            command_hover.contents, resolution.visibility
+                        ),
+                    )
+                )
             if resolution.uncertainty.state == 'resolved':
                 resolved_references.extend(
                     ResolvedReference(symbol_id=symbol_id, reference=resolution.reference)
@@ -246,7 +264,7 @@ class Resolver:
             resolved_command_targets,
         )
         all_bindings = facts.variable_bindings + metadata_bindings
-        definitions = self._build_definitions(facts, all_bindings)
+        definitions = self._build_definitions(facts, all_bindings, rename_visibilities)
         definition_by_symbol = {definition.symbol_id: definition for definition in definitions}
         binding_lookup = self._build_binding_lookup(all_bindings)
         hovers = self._build_definition_hovers(definitions)
@@ -319,9 +337,13 @@ class Resolver:
         self,
         facts: DocumentFacts,
         bindings: tuple[VarBinding, ...],
+        rename_visibilities: dict[str, CommandVisibility] | None = None,
     ) -> list[DefinitionTarget]:
         definitions: list[DefinitionTarget] = []
         for proc in facts.procedures:
+            registry = registry_at_offset(
+                self._metadata_registry, facts.environment_scopes, proc.name_span.start.offset
+            )
             definitions.append(
                 DefinitionTarget(
                     symbol_id=proc.symbol_id,
@@ -330,6 +352,7 @@ class Resolver:
                     location=lsp_location(proc.uri, proc.name_span),
                     span=proc.name_span,
                     detail=_proc_hover(proc),
+                    visibility=_command_visibility(proc, registry),
                 )
             )
 
@@ -347,6 +370,7 @@ class Resolver:
                         f'renamed command {command_rename.new_qualified_name} '
                         f'from {command_rename.old_name}'
                     ),
+                    visibility=(rename_visibilities or {}).get(command_rename.symbol_id),
                 )
             )
 
@@ -539,7 +563,10 @@ class Resolver:
                     ),
                     target_symbol_ids=(),
                 ),
-                None,
+                HoverInfo(
+                    span=command_call.name_span,
+                    contents=_metadata_hover(contextual_target),
+                ),
                 contextual_target,
             )
 
@@ -682,7 +709,7 @@ class Resolver:
                 HoverInfo(
                     span=command_call.name_span,
                     contents=_command_hover(
-                        _builtin_hover(builtin),
+                        _metadata_hover(builtin),
                         transitive_trace=_builtin_transitive_trace(
                             builtin,
                             transitive_required_packages,
@@ -733,7 +760,7 @@ class Resolver:
                     ),
                     HoverInfo(
                         span=command_call.name_span,
-                        contents=_command_hover(_builtin_hover(builtin)),
+                        contents=_command_hover(_metadata_hover(builtin)),
                     ),
                     builtin,
                     f'::{builtin.name}',
@@ -804,7 +831,7 @@ class Resolver:
                 HoverInfo(
                     span=command_call.name_span,
                     contents=_command_hover(
-                        _builtin_hover(builtin_from_import),
+                        _metadata_hover(builtin_from_import),
                         import_trace=_import_trace(
                             resolved_import,
                             hover_trace_parents,
@@ -834,7 +861,7 @@ class Resolver:
                 ),
                 HoverInfo(
                     span=command_call.name_span,
-                    contents=_command_hover(_builtin_hover(builtin)),
+                    contents=_command_hover(_metadata_hover(builtin)),
                 ),
                 builtin,
                 f'::{builtin.name}',
@@ -1063,6 +1090,8 @@ def _variable_hover_detail(detail: str, exact_values: tuple[str, ...]) -> str:
 
 
 def _definition_hover_detail(definition: DefinitionTarget) -> str:
+    if definition.visibility is not None:
+        return _hover_with_visibility(definition.detail, definition.visibility)
     if definition.kind != 'variable':
         return definition.detail
     return _variable_hover_detail(definition.detail, definition.exact_values)
@@ -1096,26 +1125,13 @@ def _metadata_var_binding(
     )
 
 
-@metadata_lru_cache(maxsize=1)
-def _annotated_metadata_commands(
-    metadata_registry: MetadataRegistry,
-) -> dict[tuple[str, str], MetadataCommand]:
-    return {
-        key: metadata_command
-        for key, metadata_command in file_scoped_annotated_metadata_commands(
-            metadata_registry=metadata_registry
-        ).items()
-        if any(isinstance(annotation, MetadataBind) for annotation in metadata_command.annotations)
-    }
-
-
 def _metadata_command_for_target(
     target: ResolvedCommandTarget,
     *,
     metadata_registry: MetadataRegistry,
 ) -> MetadataCommand | None:
     if isinstance(target, BuiltinCommand):
-        return _annotated_metadata_commands(metadata_registry).get(
+        return file_scoped_annotated_metadata_commands(metadata_registry=metadata_registry).get(
             (target.metadata_path_name, target.name)
         )
     if isinstance(target, ContextualCommand):
@@ -1124,9 +1140,20 @@ def _metadata_command_for_target(
     source_path = source_id_to_path(target.uri)
     if source_path is None:
         return None
-    return _annotated_metadata_commands(metadata_registry).get(
+    return file_scoped_annotated_metadata_commands(metadata_registry=metadata_registry).get(
         (source_path.name, _normalize_command_name(target.qualified_name))
     )
+
+
+def _command_visibility(
+    target: ResolvedCommandTarget, metadata_registry: MetadataRegistry
+) -> CommandVisibility:
+    metadata = (
+        target
+        if isinstance(target, (BuiltinCommand, ContextualCommand))
+        else _metadata_command_for_target(target, metadata_registry=metadata_registry)
+    )
+    return metadata.visibility if metadata is not None else 'public'
 
 
 def _metadata_binding_kind(
@@ -1173,25 +1200,42 @@ def _proc_hover(proc: ProcDecl) -> str:
     return f'{detail}\n\n{proc.documentation}'
 
 
-def _builtin_hover(builtin: BuiltinCommand) -> str:
-    if len(builtin.overloads) == 1:
-        overload = builtin.overloads[0]
-        heading = f'builtin command {_builtin_signature_heading(overload.signature)}'
-        if not overload.documentation:
+def _hover_with_visibility(contents: str, visibility: CommandVisibility) -> str:
+    if visibility == 'public':
+        return contents
+    heading, separator, body = contents.partition('\n\n')
+    return f'{heading}\n\nVisibility: {visibility}{separator}{body}'
+
+
+def _metadata_hover(command: BuiltinCommand | ContextualCommand) -> str:
+    if isinstance(command, BuiltinCommand):
+        kind = 'builtin command'
+        forms = tuple(
+            (overload.signature, overload.documentation) for overload in command.overloads
+        )
+    else:
+        kind = 'command'
+        forms = tuple(
+            (
+                f'{command.name} {{{display_metadata_signature(overload.signature)}}}',
+                overload.documentation,
+            )
+            for overload in command.overloads
+        )
+    if len(forms) == 1:
+        signature, documentation = forms[0]
+        heading = f'{kind} {signature.removesuffix(" {}")}'
+        if not documentation:
             return heading
-        return f'{heading}\n\n{overload.documentation}'
+        return f'{heading}\n\n{documentation}'
 
     sections: list[str] = []
-    for overload in builtin.overloads:
-        section = f'`{overload.signature}`'
-        if overload.documentation:
-            section = f'{section}\n{overload.documentation}'
+    for signature, documentation in forms:
+        section = f'`{signature}`'
+        if documentation:
+            section = f'{section}\n{documentation}'
         sections.append(section)
-    return f'builtin command {builtin.name}\n\n' + '\n\n'.join(sections)
-
-
-def _builtin_signature_heading(signature: str) -> str:
-    return signature.removesuffix(' {}')
+    return f'{kind} {command.name}\n\n' + '\n\n'.join(sections)
 
 
 def _builtin_resolution_reason(builtin: BuiltinCommand) -> str:
