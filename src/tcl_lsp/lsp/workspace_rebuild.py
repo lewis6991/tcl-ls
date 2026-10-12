@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -8,9 +8,11 @@ from tcl_lsp.analysis import DocumentFacts, FactExtractor, Resolver, WorkspaceIn
 from tcl_lsp.analysis.facts.bodies import BodyAnalysisCache
 from tcl_lsp.analysis.facts.lowering import DocumentSyntax
 from tcl_lsp.analysis.types import CallTypes
+from tcl_lsp.lsp.features.symbols import reference_command_names
 from tcl_lsp.lsp.state import (
     IndexingProgressCallback,
     ManagedDocument,
+    ReferenceQuery,
     empty_analysis,
     managed_document_details,
 )
@@ -90,10 +92,16 @@ class WorkspaceRebuilder:
         progress: IndexingProgressCallback | None = None,
         should_cancel: CancelCallback | None = None,
         metadata_registry: MetadataRegistry | None = None,
+        reuse_documents: Mapping[str, ManagedDocument] | None = None,
+        include_diagnostics: bool = True,
+        reference_query: ReferenceQuery | None = None,
     ) -> None:
         self._progress = progress
         self._should_cancel = should_cancel
         self._metadata_registry = metadata_registry
+        self._reuse_documents = reuse_documents or {}
+        self._include_diagnostics = include_diagnostics
+        self._reference_query = reference_query
 
     def rebuild(
         self,
@@ -135,6 +143,7 @@ class WorkspaceRebuilder:
                     uri=uri,
                     text=text,
                     version=version,
+                    previous=self._reuse_documents.get(uri),
                 )
                 documents[uri] = document
                 workspace_index.update(uri, document.facts)
@@ -193,6 +202,24 @@ class WorkspaceRebuilder:
             return None
         finally:
             extractor.close()
+
+    def reanalyze(self, result: RebuildResult) -> RebuildResult | None:
+        """Reuse prepared facts when only the reference position has changed."""
+        documents = dict(result.documents)
+        try:
+            self._recompute_analyses(
+                documents,
+                document_uris=tuple(documents),
+                resolver=Resolver(metadata_registry=result.metadata_registry),
+                workspace_index=result.workspace_index,
+                metadata_registry=result.metadata_registry,
+                start_percentage=75,
+                end_percentage=95,
+            )
+            self._raise_if_cancelled()
+        except _AnalysisCancelled:
+            return None
+        return replace(result, documents=documents)
 
     def incremental_rebuild(
         self,
@@ -306,6 +333,13 @@ class WorkspaceRebuilder:
         include_lexical_spans: bool = False,
         previous: ManagedDocument | None = None,
     ) -> ManagedDocument:
+        if (
+            previous is not None
+            and previous.text == text
+            and (previous.lexical_spans_included or not include_lexical_spans)
+        ):
+            return replace(previous, version=version)
+
         parse_result = parser.parse_document(path=uri, text=text)
         syntax = DocumentSyntax(
             parse_result, parser=parser, previous=previous.syntax if previous is not None else None
@@ -466,6 +500,12 @@ class WorkspaceRebuilder:
         end_percentage: int,
     ) -> None:
         selected_documents = [documents[uri] for uri in document_uris if uri in documents]
+        query = self._reference_query
+        if query is not None:
+            # Resolve the requested file against the rebuilt dependencies first.
+            # The resulting command name can then limit work in other files.
+            selected_documents.sort(key=lambda document: document.uri != query.uri)
+        command_names: frozenset[str] | None = None
         total_documents = len(selected_documents)
         for index, document in enumerate(selected_documents, start=1):
             self._raise_if_cancelled()
@@ -475,12 +515,23 @@ class WorkspaceRebuilder:
                 workspace_index=workspace_index,
                 metadata_registry=metadata_registry,
             )
-            analysis = resolver.analyze(
-                uri=document.uri,
-                facts=document.facts,
-                workspace_index=analysis_index,
-            )
-            documents[document.uri] = replace(document, analysis=analysis)
+            if command_names is None:
+                analysis = resolver.analyze(
+                    uri=document.uri,
+                    facts=document.facts,
+                    workspace_index=analysis_index,
+                    include_diagnostics=self._include_diagnostics,
+                )
+            else:
+                analysis = resolver.analyze_command_references(
+                    document.uri, document.facts, analysis_index, command_names
+                )
+            document = replace(document, analysis=analysis)
+            documents[document.uri] = document
+            if query is not None and document.uri == query.uri:
+                command_names = reference_command_names(
+                    document, line=query.line, character=query.character
+                )
             self._report_progress(
                 f'Analyzing workspace ({index}/{total_documents})',
                 _progress_percentage(

@@ -130,6 +130,8 @@ class Resolver:
         uri: str,
         facts: DocumentFacts,
         workspace_index: WorkspaceIndex,
+        *,
+        include_diagnostics: bool = True,
     ) -> AnalysisResult:
         diagnostics = list(facts.diagnostics)
         required_packages = facts.required_packages
@@ -214,7 +216,7 @@ class Resolver:
 
         # Config commands are validated by the same static grammar as loading.
         # Keep resolution for navigation and help, without Tcl runtime checks.
-        if not is_config_file(source_id_to_path(uri)):
+        if include_diagnostics and not is_config_file(source_id_to_path(uri)):
             diagnostics.extend(
                 collect_diagnostics(
                     DiagnosticContext(
@@ -231,12 +233,44 @@ class Resolver:
 
         return AnalysisResult(
             uri=uri,
-            diagnostics=self._diagnostics(uri, facts, diagnostics),
+            diagnostics=self._diagnostics(uri, facts, diagnostics) if include_diagnostics else (),
             definitions=tuple(definitions),
             resolutions=tuple(resolutions),
             resolved_references=tuple(resolved_references),
             document_symbols=facts.document_symbols,
             hovers=tuple(hovers),
+        )
+
+    def analyze_command_references(
+        self,
+        uri: str,
+        facts: DocumentFacts,
+        workspace_index: WorkspaceIndex,
+        command_names: frozenset[str],
+    ) -> AnalysisResult:
+        """Resolve possible callers without computing unrelated editor features."""
+        resolutions = tuple(
+            binding.resolution
+            for _, binding in self._command_bindings(
+                facts,
+                workspace_index,
+                include_trace=False,
+                command_names=command_names,
+            )
+        )
+        return AnalysisResult(
+            uri=uri,
+            diagnostics=(),
+            definitions=tuple(self._build_definitions(facts, ())),
+            resolutions=resolutions,
+            resolved_references=tuple(
+                ResolvedReference(symbol_id=symbol_id, reference=resolution.reference)
+                for resolution in resolutions
+                if resolution.uncertainty.state == 'resolved'
+                for symbol_id in resolution.target_symbol_ids
+            ),
+            document_symbols=facts.document_symbols,
+            hovers=(),
         )
 
     def call_types(self, facts: DocumentFacts, workspace_index: WorkspaceIndex) -> CallTypes:
@@ -275,6 +309,7 @@ class Resolver:
         workspace_index: WorkspaceIndex,
         *,
         include_trace: bool = True,
+        command_names: frozenset[str] | None = None,
     ) -> Iterator[tuple[CommandCall | CommandRename, _CommandBinding]]:
         uri = facts.uri
         direct_required_packages = frozenset(
@@ -314,6 +349,14 @@ class Resolver:
         for event in events:
             if isinstance(event, ProcDecl):
                 commands[event.qualified_name] = event
+                continue
+            # Renames always update the command table, including when their
+            # source name differs from the name being searched for.
+            if (
+                command_names is not None
+                and isinstance(event, CommandCall)
+                and (event.name is None or name_tail(event.name) not in command_names)
+            ):
                 continue
             command_call = _rename_source_call(event) if isinstance(event, CommandRename) else event
             registry = registry_at_offset(

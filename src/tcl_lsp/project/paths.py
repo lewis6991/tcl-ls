@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from os import walk
+from os.path import normcase
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -32,6 +34,16 @@ def discover_tcl_sources(
         return (path,)
     if not path.is_dir():
         return ()
+    if patterns == DEFAULT_SOURCE_PATTERNS:
+        # Walk once for the common extensions, rather than once per pattern.
+        return tuple(
+            sorted(
+                Path(directory) / name
+                for directory, directories, files in walk(path)
+                for name in (*directories, *files)
+                if normcase(name).endswith(('.tcl', '.tm', '.test'))
+            )
+        )
     return tuple(sorted({candidate for pattern in patterns for candidate in path.rglob(pattern)}))
 
 

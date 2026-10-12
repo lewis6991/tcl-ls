@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 
 from tcl_lsp.analysis.builtins import builtin_definition_targets, registry_for_packages
+from tcl_lsp.analysis.facts.utils import name_tail
 from tcl_lsp.analysis.model import CommandImport, DefinitionTarget
 from tcl_lsp.analysis.modules import registry_at_offset
 from tcl_lsp.lsp.state import ManagedDocument
@@ -42,6 +43,35 @@ def symbol_kind(documents: Iterable[ManagedDocument], symbol_id: str) -> str | N
             if definition.symbol_id == symbol_id:
                 return definition.kind
     return None
+
+
+def reference_command_names(
+    document: ManagedDocument, *, line: int, character: int
+) -> frozenset[str] | None:
+    """Limit command resolution only when the selected symbol is a command."""
+    definitions = [
+        definition
+        for definition in document.analysis.definitions
+        if definition.location.uri == document.uri
+        and definition.span.contains(line=line, character=character)
+    ]
+    if definitions:
+        if any(definition.kind != 'function' for definition in definitions):
+            return None
+        return frozenset(name_tail(definition.name) for definition in definitions)
+
+    references = [
+        resolution.reference
+        for resolution in document.analysis.resolutions
+        if resolution.reference.span.contains(line=line, character=character)
+    ]
+    if not references or any(
+        reference.kind != 'command' or reference.name is None for reference in references
+    ):
+        return None
+    return frozenset(
+        name_tail(reference.name) for reference in references if reference.name is not None
+    )
 
 
 def definitions_for_command_import(

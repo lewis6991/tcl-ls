@@ -295,6 +295,7 @@ class _FactCollector:
         '_parser',
         '_plugin_generation',
         '_plugin_host',
+        '_previous_module_selection',
         '_required_packages',
         '_syntax',
         '_type_aliases',
@@ -326,6 +327,9 @@ class _FactCollector:
         self._type_aliases = type_aliases
         self._type_resolver = TypeResolver(type_aliases)
         self._module_rules = module_rules
+        self._previous_module_selection: (
+            tuple[VariableFlowState, tuple[str, ...], tuple[str, ...]] | None
+        ) = None
         for name in (
             *metadata_registry.modules,
             *(rule.name for rule in self._module_rules),
@@ -469,7 +473,24 @@ class _FactCollector:
         *,
         previous_modules: tuple[str, ...] | None = None,
     ) -> _ExtractionContext:
-        modules = active_modules(context.explicit_modules, self._module_rules, context.flow_state)
+        # Selection is checked before and after each command. Reuse it while
+        # the immutable flow state and explicit module stack are unchanged.
+        cached = self._previous_module_selection
+        if (
+            cached is not None
+            and cached[0] is context.flow_state
+            and cached[1] == context.explicit_modules
+        ):
+            modules = cached[2]
+        else:
+            modules = active_modules(
+                context.explicit_modules, self._module_rules, context.flow_state
+            )
+            self._previous_module_selection = (
+                context.flow_state,
+                context.explicit_modules,
+                modules,
+            )
         registry = registry_for_packages(
             context.metadata_registry.with_modules(modules),
             self._required_packages,
@@ -477,6 +498,8 @@ class _FactCollector:
         previous = context.selected_modules if previous_modules is None else previous_modules
         if modules != previous:
             self._facts.module_scopes.append(ModuleSelection(span, modules))
+        if registry is context.metadata_registry and modules == context.selected_modules:
+            return context
         return replace(context, metadata_registry=registry, selected_modules=modules)
 
     def _collect_directive(

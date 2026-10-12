@@ -24,6 +24,7 @@ from tcl_lsp.lsp.features.hover import hover
 from tcl_lsp.lsp.features.navigation import declaration, definition, implementation, references
 from tcl_lsp.lsp.features.rename import prepare_rename, rename
 from tcl_lsp.lsp.features.signature_help import signature_help
+from tcl_lsp.lsp.features.symbols import reference_command_names
 from tcl_lsp.lsp.features.workspace_symbols import workspace_symbols
 from tcl_lsp.lsp.semantic_tokens import (
     SEMANTIC_TOKEN_MODIFIERS,
@@ -36,6 +37,7 @@ from tcl_lsp.lsp.state import (
     AnalysisSnapshot,
     IndexingProgressCallback,
     ManagedDocument,
+    ReferenceQuery,
     empty_analysis,
 )
 from tcl_lsp.lsp.workspace_rebuild import (
@@ -51,7 +53,14 @@ from tcl_lsp.metadata_paths import (
 from tcl_lsp.parser import Parser
 from tcl_lsp.project.config import config_files, configured_library_paths, configured_metadata_paths
 from tcl_lsp.project.declarations import load_declaration_snapshot
-from tcl_lsp.project.paths import FileRevision, revision_is_current, source_id_to_path
+from tcl_lsp.project.paths import (
+    FileRevision,
+    candidate_package_roots,
+    discover_tcl_sources,
+    read_source_file,
+    revision_is_current,
+    source_id_to_path,
+)
 
 _DIAGNOSTIC_SEVERITY_MAP = {
     'error': types.DiagnosticSeverity.Error,
@@ -86,6 +95,26 @@ class _PreparedWorkspace:
     pending_documents: tuple[tuple[str, str, int], ...]
     result: RebuildResult
     disk_revision: FileRevision
+    reference_query: ReferenceQuery | None = None
+
+    def covers_reference_query(self, query: ReferenceQuery | None) -> bool:
+        previous_query = self.reference_query
+        if previous_query is None or previous_query == query:
+            return True
+        document = self.result.documents.get(previous_query.uri)
+        if document is None:
+            return True
+        names = reference_command_names(
+            document, line=previous_query.line, character=previous_query.character
+        )
+        # Variable and unknown positions use full analysis for every file.
+        if names is None:
+            return True
+        if query is None or (document := self.result.documents.get(query.uri)) is None:
+            return False
+        return names == reference_command_names(
+            document, line=query.line, character=query.character
+        )
 
 
 def _active_metadata_paths(snapshot: DocumentBuildSnapshot) -> tuple[Path, ...]:
@@ -115,6 +144,7 @@ class LanguageServer(PyglsLanguageServer):
     _semantic_token_results_by_uri: dict[str, OrderedDict[str, _SemanticTokenResult]]
     _preparation_lock: threading.RLock
     _prepared: _PreparedWorkspace | None
+    _prepared_references: _PreparedWorkspace | None
     _configuration_revision: FileRevision
     _disk_revision: FileRevision
     _state_lock: threading.RLock
@@ -281,6 +311,76 @@ class LanguageServer(PyglsLanguageServer):
                 workspace_index=self._workspace_index,
                 metadata_registry=self._metadata_registry,
             )
+
+    def references_snapshot(
+        self, uri: str, position: types.Position | None = None
+    ) -> AnalysisSnapshot:
+        # Callers need not be dependencies of the requested document. Load the
+        # workspace on demand, without adding these files to the open documents.
+        with self._preparation_lock:
+            with self._state_lock:
+                open_documents = {
+                    open_uri: self.documents[open_uri]
+                    for open_uri in self._open_document_uris
+                    if open_uri in self.documents
+                }
+            pending: dict[str, tuple[str, int]] = {}
+            for open_uri, document in open_documents.items():
+                try:
+                    state = self._workspace_document_state(open_uri)
+                except RuntimeError:
+                    state = None
+                pending[open_uri] = (
+                    state if state is not None else (document.text, document.version)
+                )
+            for root in self._reference_roots(uri):
+                for path in discover_tcl_sources(root):
+                    source_uri = path.as_uri()
+                    if source_uri in pending:
+                        continue
+                    try:
+                        pending[source_uri] = (read_source_file(path), 0)
+                    except OSError:
+                        continue
+            pending_documents = tuple(
+                (source_uri, text, version) for source_uri, (text, version) in pending.items()
+            )
+            query = (
+                ReferenceQuery(uri, position.line, position.character)
+                if position is not None
+                else None
+            )
+            prepared = self._prepare_documents(
+                pending_documents, for_references=True, reference_query=query
+            )
+            if prepared is None:
+                return self.analysis_snapshot()
+            result = prepared.result
+            return AnalysisSnapshot(
+                result.documents, result.workspace_index, result.metadata_registry
+            )
+
+    def _reference_roots(self, uri: str) -> tuple[Path, ...]:
+        try:
+            workspace = self.workspace
+        except RuntimeError:
+            workspace = None
+        if workspace is not None:
+            root_uris = tuple(workspace.folders)
+            if not root_uris and workspace.root_uri is not None:
+                root_uris = (workspace.root_uri,)
+            roots = tuple(
+                path for root_uri in root_uris if (path := source_id_to_path(root_uri)) is not None
+            )
+            if roots:
+                return roots
+        path = source_id_to_path(uri)
+        if path is None:
+            return ()
+        configs = config_files(path)
+        if configs:
+            return (configs[-1].parent,)
+        return candidate_package_roots(path)
 
     def _current_document_version(self, uri: str) -> int | None:
         with self._state_lock:
@@ -578,6 +678,7 @@ class LanguageServer(PyglsLanguageServer):
             raise ValueError('Resolver metadata registry does not match LanguageServer.')
 
         self._prepared = None
+        self._prepared_references = None
         self._configuration_revision = ()
         self._disk_revision = ()
         self._metadata_registry = resolved_metadata_registry
@@ -652,24 +753,39 @@ class LanguageServer(PyglsLanguageServer):
         *,
         progress: IndexingProgressCallback | None = None,
         should_cancel: Callable[[], bool] | None = None,
+        for_references: bool = False,
+        reference_query: ReferenceQuery | None = None,
     ) -> _PreparedWorkspace | None:
         # One bounded result serves completion, tokens, and the next diagnostics
-        # update. Serialize preparation so simultaneous requests share the work.
+        # update. References retain a separate workspace result across edits.
+        # Serialize preparation so simultaneous requests share the work.
         with self._preparation_lock:
             if should_cancel is not None and should_cancel():
                 return None
             snapshot, registry, settings_changed = self._pending_document_build_snapshot(
                 pending_documents
             )
-            cached = self._prepared
+            cached = self._prepared_references if for_references else self._prepared
             if (
                 cached is not None
-                and cached.snapshot.workspace_index is snapshot.workspace_index
+                and (for_references or cached.snapshot.workspace_index is snapshot.workspace_index)
                 and cached.pending_documents == pending_documents
                 and cached.snapshot.configuration_revision == snapshot.configuration_revision
                 and cached.result.metadata_registry == registry
                 and revision_is_current(cached.disk_revision)
             ):
+                if for_references and not cached.covers_reference_query(reference_query):
+                    result = WorkspaceRebuilder(
+                        should_cancel=should_cancel,
+                        include_diagnostics=False,
+                        reference_query=reference_query,
+                    ).reanalyze(cached.result)
+                    if result is None:
+                        return None
+                    cached = replace(cached, result=result, reference_query=reference_query)
+                    with self._state_lock:
+                        if self._workspace_index is snapshot.workspace_index:
+                            self._prepared_references = cached
                 return cached
             dependencies_changed = not revision_is_current(self._disk_revision)
             metadata_changed = registry != self._metadata_registry
@@ -677,12 +793,30 @@ class LanguageServer(PyglsLanguageServer):
                 self._clear_cached_disk_documents()
             if progress is not None:
                 progress('Rebuilding workspace index', 10)
+            reusable_documents: dict[str, ManagedDocument] = {}
+            if for_references:
+                # Keep workspace parsing across ordinary editor updates. Only
+                # reuse facts extracted with the same metadata and settings.
+                if (
+                    cached is not None
+                    and cached.snapshot.configuration_revision == snapshot.configuration_revision
+                    and cached.result.metadata_registry == registry
+                ):
+                    reusable_documents.update(cached.result.documents)
+                if not settings_changed and not metadata_changed:
+                    reusable_documents.update(snapshot.documents)
             rebuilder = WorkspaceRebuilder(
-                progress=progress, should_cancel=should_cancel, metadata_registry=registry
+                progress=progress,
+                should_cancel=should_cancel,
+                metadata_registry=registry,
+                reuse_documents=reusable_documents,
+                include_diagnostics=not for_references,
+                reference_query=reference_query,
             )
             build = (
                 rebuilder.incremental_rebuild
-                if not settings_changed
+                if not for_references
+                and not settings_changed
                 and not dependencies_changed
                 and (not metadata_changed or not snapshot.documents)
                 else rebuilder.rebuild
@@ -700,10 +834,14 @@ class LanguageServer(PyglsLanguageServer):
                 pending_documents,
                 result,
                 result.disk_revision(snapshot.open_document_uris),
+                reference_query,
             )
             with self._state_lock:
                 if self._workspace_index is snapshot.workspace_index:
-                    self._prepared = prepared
+                    if for_references:
+                        self._prepared_references = prepared
+                    else:
+                        self._prepared = prepared
             return prepared
 
     def _load_documents(
@@ -1003,7 +1141,7 @@ def references_request(
     server: LanguageServer,
     params: types.ReferenceParams,
 ) -> list[types.Location]:
-    snapshot = server.analysis_snapshot()
+    snapshot = server.references_snapshot(params.text_document.uri, params.position)
     locations = references(
         snapshot.documents,
         metadata_registry=snapshot.metadata_registry,

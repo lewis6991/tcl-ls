@@ -47,9 +47,10 @@ class LanguageService:
         character: int,
         include_declaration: bool = True,
     ) -> tuple[types.Location, ...]:
+        snapshot = self.server.references_snapshot(uri, types.Position(line, character))
         return references(
-            self.server.documents,
-            metadata_registry=self.server.metadata_registry,
+            snapshot.documents,
+            metadata_registry=snapshot.metadata_registry,
             uri=uri,
             line=line,
             character=character,

@@ -27,8 +27,16 @@ Workspace Behavior
 
 The server analyzes open files and loads dependencies from resolvable
 ``source`` calls, metadata, and ``package require``. It discovers package
-indexes near those files and under configured library roots. It does not scan
-every Tcl source in the workspace.
+indexes near those files and under configured library roots.
+
+Find references also scans unopened ``.tcl``, ``.tm``, and ``.test`` files in
+the editor's workspace folders. If the editor supplies no workspace root,
+the server uses the nearest ``tcllsrc.tcl`` directory or package root. Open
+files use the current editor text. The first search can take longer while the
+server analyzes the workspace. Later searches reuse unchanged files, including
+after an edit. Command searches limit call resolution to the selected command.
+Reference searches skip normal diagnostic checks and refresh cached results
+when source files, dependencies, or project settings change.
 
 Project settings come from ``tcllsrc.tcl``. See :doc:`configuration` to add
 external libraries, include metadata, or change diagnostics. For unresolved

@@ -6,9 +6,12 @@ from typing import Any, cast
 import pytest
 from lsprotocol import types
 
+from tcl_lsp.analysis import resolver as analysis_resolver
 from tcl_lsp.analysis.builtins import builtin_command
+from tcl_lsp.analysis.model import CommandCall
 from tcl_lsp.lsp import LanguageServer
 from tcl_lsp.lsp import workspace_rebuild as lsp_workspace_rebuild
+from tcl_lsp.parser import Parser, ParseResult
 from tests.lsp.helpers import (
     as_dict,
     change_server_document,
@@ -21,6 +24,7 @@ from tests.lsp.helpers import (
     server_workspace_request,
     signature_help_result,
 )
+from tests.lsp_support import process_message
 from tests.project_support import (
     write_declaration_plugin_bundle,
     write_sample_library_root,
@@ -151,6 +155,349 @@ def test_language_server_returns_declaration_and_implementation_locations(
             },
         }
     ]
+
+
+@pytest.mark.parametrize('include_declaration', [False, True])
+def test_language_server_references_find_unopened_callers_of_an_implementation(
+    server: LanguageServer,
+    tmp_path: Path,
+    include_declaration: bool,
+) -> None:
+    plugin_root = tmp_path / '.tcl-ls'
+    write_sample_plugin_bundle(plugin_root)
+    write_declaration_plugin_bundle(plugin_root)
+    (tmp_path / 'tcllsrc.tcl').write_text(
+        'source .tcl-ls/sample.meta.tcl\nsource .tcl-ls/declaration.meta.tcl\n', encoding='utf-8'
+    )
+    declaration = tmp_path / 'decl.tcl'
+    declaration.write_text('dsl::declare ::app::init {}\n', encoding='utf-8')
+    implementation = tmp_path / 'impl.tcl'
+    implementation_text = (
+        'source [file join [file dirname [info script]] decl.tcl]\ndsl::define ::app::init {} {}\n'
+    )
+    implementation.write_text(implementation_text, encoding='utf-8')
+    caller = tmp_path / 'caller.tcl'
+    caller.write_text(
+        'source [file join [file dirname [info script]] decl.tcl]\nproc run {} {app::init}\n',
+        encoding='utf-8',
+    )
+    (tmp_path / 'unrelated.tcl').write_text('app::init\n', encoding='utf-8')
+    open_server_document(server, implementation_text, uri=implementation.as_uri())
+
+    response = server_workspace_request(
+        server,
+        method='textDocument/references',
+        params={
+            'textDocument': {'uri': implementation.as_uri()},
+            'position': {'line': 1, 'character': 20},
+            'context': {'includeDeclaration': include_declaration},
+        },
+    )
+
+    expected: list[dict[str, Any]] = [
+        {
+            'uri': caller.as_uri(),
+            'range': {
+                'start': {'line': 1, 'character': 13},
+                'end': {'line': 1, 'character': 22},
+            },
+        },
+    ]
+    if include_declaration:
+        expected.extend(
+            {
+                'uri': path.as_uri(),
+                'range': {
+                    'start': {'line': line, 'character': character},
+                    'end': {'line': line, 'character': character + 11},
+                },
+            }
+            for path, line, character in ((declaration, 0, 13), (implementation, 1, 12))
+        )
+    result = cast(list[dict[str, Any]], response['result'])
+    assert sorted(result, key=lambda location: location['uri']) == sorted(
+        expected, key=lambda location: location['uri']
+    )
+
+
+@pytest.mark.parametrize('root_kind', ['workspace-folder', 'root-uri', 'package-index'])
+def test_language_server_references_use_current_text_within_the_workspace(
+    server: LanguageServer, tmp_path: Path, root_kind: str
+) -> None:
+    project = tmp_path / 'project'
+    library = project / 'lib'
+    library.mkdir(parents=True)
+    if root_kind == 'package-index':
+        (project / 'pkgIndex.tcl').write_text('', encoding='utf-8')
+    else:
+        server.reset()
+        root_params: dict[str, object] = (
+            {'workspaceFolders': [{'uri': project.as_uri(), 'name': 'project'}]}
+            if root_kind == 'workspace-folder'
+            else {'rootUri': project.as_uri()}
+        )
+        process_message(
+            server,
+            {
+                'jsonrpc': '2.0',
+                'id': 0,
+                'method': 'initialize',
+                'params': {'capabilities': {}, **root_params},
+            },
+        )
+    definition = library / 'defs.tcl'
+    definition.write_text('proc old_name {} {}\n', encoding='utf-8')
+    open_server_document(server, 'proc greet {} {}\ngreet\n', uri=definition.as_uri())
+    caller = project / 'main.test'
+    source = 'source [file join [file dirname [info script]] lib defs.tcl]\n'
+    caller.write_text(source + 'greet\n', encoding='utf-8')
+    (tmp_path / 'outside.tcl').write_text(f'source {{{definition}}}\ngreet\n', encoding='utf-8')
+    documents = server.documents
+
+    def references() -> set[tuple[str, int]]:
+        response = server_workspace_request(
+            server,
+            method='textDocument/references',
+            params={
+                'textDocument': {'uri': definition.as_uri()},
+                'position': {'line': 0, 'character': 6},
+                'context': {'includeDeclaration': False},
+            },
+        )
+        result = cast(list[dict[str, Any]], response['result'])
+        return {(location['uri'], location['range']['start']['line']) for location in result}
+
+    assert references() == {(definition.as_uri(), 1), (caller.as_uri(), 1)}
+    assert server.documents is documents
+
+    caller.write_text(source + '\ngreet\n', encoding='utf-8')
+    assert references() == {(definition.as_uri(), 1), (caller.as_uri(), 2)}
+
+    open_server_document(server, caller.read_text(encoding='utf-8'), uri=caller.as_uri())
+    server.workspace.put_text_document(
+        types.TextDocumentItem(
+            uri=caller.as_uri(), language_id='tcl', version=2, text=source + 'puts changed\n'
+        )
+    )
+    assert references() == {(definition.as_uri(), 1)}
+
+
+def test_references_limit_resolution_and_refresh_when_the_selected_symbol_changes(
+    server: LanguageServer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / 'tcllsrc.tcl').write_text('', encoding='utf-8')
+    definition = tmp_path / 'defs.tcl'
+    definitions = 'proc ::app::greet {} {}\nproc ::app::wave {} {}\n'
+    definition.write_text(definitions, encoding='utf-8')
+    caller = tmp_path / 'caller.tcl'
+    callers = (
+        'source [file join [file dirname [info script]] defs.tcl]\n'
+        'namespace import ::app::*\n'
+        'gr\\eet\n'
+        '::app::greet\n'
+        'rename greet salute\n'
+        'salute\n'
+        'rename salute hello\n'
+        'hello\n'
+        'wave\n'
+        'puts unrelated\n'
+        'set count 1\n'
+        'puts $count\n'
+    )
+    caller.write_text(callers, encoding='utf-8')
+    open_server_document(server, definitions, uri=definition.as_uri())
+
+    calls: list[str | None] = []
+    resolve = analysis_resolver.Resolver._resolve_command  # pyright: ignore[reportPrivateUsage]
+
+    def record_resolution(
+        self: analysis_resolver.Resolver,
+        command: CommandCall,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        if command.uri == caller.as_uri():
+            calls.append(command.name)
+        return resolve(self, command, *args, **kwargs)
+
+    monkeypatch.setattr(analysis_resolver.Resolver, '_resolve_command', record_resolution)
+
+    def references(uri: str, line: int, character: int) -> set[tuple[str, int]]:
+        response = server_workspace_request(
+            server,
+            method='textDocument/references',
+            params={
+                'textDocument': {'uri': uri},
+                'position': {'line': line, 'character': character},
+                'context': {'includeDeclaration': True},
+            },
+        )
+        result = cast(list[dict[str, Any]], response['result'])
+        return {(location['uri'], location['range']['start']['line']) for location in result}
+
+    greeting_references = references(definition.as_uri(), 0, 14)
+    assert greeting_references == {
+        (definition.as_uri(), 0),
+        *((caller.as_uri(), line) for line in (2, 3, 4)),
+    }
+    assert set(calls) == {'greet', '::app::greet', 'salute'}
+
+    calls.clear()
+    assert references(definition.as_uri(), 0, 13) == greeting_references
+    assert calls == []
+
+    def unexpected_rebuild(*args: object, **kwargs: object) -> None:
+        pytest.fail('Moving to another symbol must reuse the prepared workspace')
+
+    calls.clear()
+    with monkeypatch.context() as rebuild_patch:
+        rebuild_patch.setattr(
+            lsp_workspace_rebuild, 'prepare_workspace_documents', unexpected_rebuild
+        )
+        assert references(definition.as_uri(), 1, 14) == {
+            (definition.as_uri(), 1),
+            (caller.as_uri(), 8),
+        }
+    assert set(calls) == {'greet', 'salute', 'wave'}
+
+    # A rename chain must retain its source bindings. A variable request must
+    # use full resolution even after a command request populated the cache.
+    open_server_document(server, callers, uri=caller.as_uri())
+    assert references(caller.as_uri(), 7, 2) == {
+        (caller.as_uri(), 6),
+        (caller.as_uri(), 7),
+    }
+    assert references(caller.as_uri(), 10, 5) == {
+        (caller.as_uri(), 10),
+        (caller.as_uri(), 11),
+    }
+
+
+def test_references_reuse_unchanged_files_after_an_edit(
+    server: LanguageServer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / 'tcllsrc.tcl').write_text('', encoding='utf-8')
+    definition = tmp_path / 'defs.tcl'
+    text = 'proc greet {} {}\n'
+    definition.write_text(text, encoding='utf-8')
+    caller = tmp_path / 'caller.tcl'
+    source = 'source [file join [file dirname [info script]] defs.tcl]\n'
+    caller.write_text(source + 'greet\nregexp {(} text\n', encoding='utf-8')
+    open_server_document(server, text, uri=definition.as_uri())
+    assert server.semantic_tokens(definition.as_uri()) is not None
+
+    parsed: list[str] = []
+    parse_document = Parser.parse_document
+
+    def record_parse(self: Parser, path: str, text: str) -> ParseResult:
+        parsed.append(path)
+        return parse_document(self, path=path, text=text)
+
+    monkeypatch.setattr(Parser, 'parse_document', record_parse)
+
+    def references(line: int = 0) -> set[tuple[str, int]]:
+        response = server_workspace_request(
+            server,
+            method='textDocument/references',
+            params={
+                'textDocument': {'uri': definition.as_uri()},
+                'position': {'line': line, 'character': 6},
+                'context': {'includeDeclaration': False},
+            },
+        )
+        result = cast(list[dict[str, Any]], response['result'])
+        return {(location['uri'], location['range']['start']['line']) for location in result}
+
+    def unexpected_diagnostics(*args: object, **kwargs: object) -> None:
+        pytest.fail('Finding references must not run diagnostic checks')
+
+    with monkeypatch.context() as diagnostics_patch:
+        diagnostics_patch.setattr(analysis_resolver, 'collect_diagnostics', unexpected_diagnostics)
+        assert references() == {(caller.as_uri(), 1)}
+    assert definition.as_uri() not in parsed
+    assert parsed.count(caller.as_uri()) == 1
+
+    parsed.clear()
+    assert references() == {(caller.as_uri(), 1)}
+    assert parsed == []
+
+    # Normal diagnostics must not evict the references cache. Reuse both the
+    # updated open document and the unchanged caller on the next request.
+    edited = '\n' + text
+    server.workspace.put_text_document(
+        types.TextDocumentItem(uri=definition.as_uri(), language_id='tcl', version=2, text=edited)
+    )
+    server.change_document(definition.as_uri(), edited, 2)
+    assert server.semantic_tokens(definition.as_uri()) is not None
+    parsed.clear()
+    assert references(1) == {(caller.as_uri(), 1)}
+    assert parsed == []
+
+    caller.write_text(source + '\ngreet\n', encoding='utf-8')
+    assert references(1) == {(caller.as_uri(), 2)}
+    assert parsed == [caller.as_uri()]
+
+    caller.unlink()
+    assert references(1) == set()
+    caller.with_suffix('.tm').write_text(source + 'greet\n', encoding='utf-8')
+    assert references(1) == {(caller.with_suffix('.tm').as_uri(), 1)}
+
+
+@pytest.mark.parametrize('changed_file', ['dependency', 'metadata'])
+def test_references_refresh_cached_bodies_when_dependencies_or_metadata_change(
+    server: LanguageServer, tmp_path: Path, changed_file: str
+) -> None:
+    metadata = tmp_path / 'commands.meta.tcl'
+    metadata_text = 'meta module Sample {meta command sample::run {body} {enter tcl body 1}}\n'
+    metadata.write_text(metadata_text, encoding='utf-8')
+    (tmp_path / 'tcllsrc.tcl').write_text('source commands.meta.tcl\n', encoding='utf-8')
+    definition = tmp_path / 'defs.tcl'
+    definition.write_text('proc greet {} {}\n', encoding='utf-8')
+    caller = tmp_path / 'caller.tcl'
+    caller.write_text(
+        'source [file join [file dirname [info script]] defs.tcl]\n'
+        'source [file join [file dirname [info script]] deps.inc]\n'
+        'sample::run {greet}\n',
+        encoding='utf-8',
+    )
+    dependency = tmp_path / 'deps.inc'
+    dependency_text = (
+        'package require Sample\nsource [file join [file dirname [info script]] caller.tcl]\n'
+    )
+    dependency.write_text(dependency_text, encoding='utf-8')
+    open_server_document(server, definition.read_text(encoding='utf-8'), uri=definition.as_uri())
+
+    def references() -> list[dict[str, Any]]:
+        response = server_workspace_request(
+            server,
+            method='textDocument/references',
+            params={
+                'textDocument': {'uri': definition.as_uri()},
+                'position': {'line': 0, 'character': 6},
+                'context': {'includeDeclaration': False},
+            },
+        )
+        return cast(list[dict[str, Any]], response['result'])
+
+    expected = references()
+    assert len(expected) == 1
+    assert expected[0]['uri'] == caller.as_uri()
+    assert expected[0]['range']['start'] == {'line': 2, 'character': 13}
+
+    for active in (False, True, False):
+        if changed_file == 'dependency':
+            dependency.write_text(
+                dependency_text
+                if active
+                else dependency_text.replace('package require Sample\n', ''),
+                encoding='utf-8',
+            )
+        else:
+            metadata.write_text(
+                metadata_text if active else metadata_text.replace('enter tcl body 1', ''),
+                encoding='utf-8',
+            )
+        assert references() == (expected if active else [])
 
 
 def test_language_server_returns_folding_ranges(server: LanguageServer) -> None:

@@ -47,6 +47,13 @@ class AnalysisSnapshot:
     metadata_registry: MetadataRegistry
 
 
+@dataclass(frozen=True, slots=True)
+class ReferenceQuery:
+    uri: str
+    line: int
+    character: int
+
+
 type IndexingProgressCallback = Callable[[str, int], None]
 
 
