@@ -4,7 +4,7 @@ import time
 from collections.abc import Sequence
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from tcl_lsp.analysis import (
@@ -13,7 +13,6 @@ from tcl_lsp.analysis import (
     Resolver,
     WorkspaceIndex,
 )
-from tcl_lsp.analysis.metadata_effects import dependency_required_packages
 from tcl_lsp.common import Diagnostic
 from tcl_lsp.metadata_paths import MetadataRegistry, create_metadata_registry
 from tcl_lsp.parser import Parser
@@ -22,7 +21,7 @@ from tcl_lsp.project.indexing import (
     PackageIndexCatalog,
     apply_package_index_catalog,
     build_package_index_catalog,
-    load_dependency_documents,
+    prepare_dependencies,
 )
 from tcl_lsp.project.paths import (
     discover_tcl_sources,
@@ -54,8 +53,7 @@ class _AnalysisUnit:
 
 
 @dataclass(frozen=True, slots=True)
-class _PreparedUnit:
-    unit: _AnalysisUnit
+class _PreparedDocuments:
     source_documents: tuple[_ProjectDocument, ...]
     background_source_paths: tuple[Path, ...]
     workspace_index: WorkspaceIndex
@@ -99,6 +97,15 @@ class _DocumentCache:
         )
         self._documents[resolved_path] = document
         return document
+
+    def extract_facts(self, document: _ProjectDocument, packages: frozenset[str]) -> DocumentFacts:
+        parse_result = self._parser.parse_document(path=document.uri, text=document.text)
+        return self._extractor.extract(
+            parse_result,
+            include_parse_result=False,
+            module_rules=document.facts.module_rules,
+            required_packages=packages,
+        )
 
 
 def check_project(
@@ -231,76 +238,47 @@ def _run_check(
     return report
 
 
-def _prepare_unit(
-    unit: _AnalysisUnit,
+def _prepare_documents(
+    source_paths: tuple[Path, ...],
     *,
     document_cache: _DocumentCache,
     package_index_catalog: PackageIndexCatalog,
-) -> _PreparedUnit:
+) -> _PreparedDocuments:
     workspace_index = WorkspaceIndex()
     apply_package_index_catalog(workspace_index, package_index_catalog)
-    documents_by_uri: dict[str, _ProjectDocument] = {}
-    source_documents: list[_ProjectDocument] = []
-    for source_path in unit.source_paths:
-        document = document_cache.get(source_path)
-        documents_by_uri[document.uri] = document
-        source_documents.append(document)
-        workspace_index.update(document.uri, document.facts)
+    source_documents = tuple(document_cache.get(path) for path in source_paths)
+    documents = {document.uri: document for document in source_documents}
+    facts_by_uri = {uri: document.facts for uri, document in documents.items()}
+    background_source_paths: list[Path] = []
 
-    def load_document(uri: str) -> _ProjectDocument | None:
+    def load_facts(uri: str) -> DocumentFacts | None:
         source_path = source_id_to_path(uri)
         if source_path is None:
             return None
         try:
-            return document_cache.get(source_path)
+            document = document_cache.get(source_path)
         except OSError:
             return None
+        documents[document.uri] = document
+        background_source_paths.append(document.path)
+        return document.facts
 
-    background_documents = load_dependency_documents(
-        documents_by_uri,
+    prepare_dependencies(
+        facts_by_uri,
         workspace_index=workspace_index,
-        describe_document=_project_document_details,
-        load_document=load_document,
+        load_facts=load_facts,
+        extract_facts=lambda facts, packages: document_cache.extract_facts(
+            documents[facts.uri], packages
+        ),
         metadata_registry=document_cache.metadata_registry,
     )
-    background_source_paths = tuple(sorted(document.path for document in background_documents))
-    return _PreparedUnit(
-        unit=unit,
-        source_documents=tuple(source_documents),
-        background_source_paths=background_source_paths,
+    return _PreparedDocuments(
+        source_documents=tuple(
+            replace(document, facts=facts_by_uri[document.uri]) for document in source_documents
+        ),
+        background_source_paths=tuple(sorted(background_source_paths)),
         workspace_index=workspace_index,
     )
-
-
-def _prepare_source_workspace(
-    document: _ProjectDocument,
-    *,
-    package_index_catalog: PackageIndexCatalog,
-    document_cache: _DocumentCache,
-) -> tuple[WorkspaceIndex, tuple[Path, ...]]:
-    workspace_index = WorkspaceIndex()
-    apply_package_index_catalog(workspace_index, package_index_catalog)
-    documents_by_uri = {document.uri: document}
-    workspace_index.update(document.uri, document.facts)
-
-    def load_document(uri: str) -> _ProjectDocument | None:
-        source_path = source_id_to_path(uri)
-        if source_path is None:
-            return None
-        try:
-            return document_cache.get(source_path)
-        except OSError:
-            return None
-
-    background_documents = load_dependency_documents(
-        documents_by_uri,
-        workspace_index=workspace_index,
-        describe_document=_project_document_details,
-        load_document=load_document,
-        metadata_registry=document_cache.metadata_registry,
-    )
-    background_source_paths = tuple(sorted(document.path for document in background_documents))
-    return workspace_index, background_source_paths
 
 
 def _discover_analysis_units(target: Path) -> tuple[_AnalysisUnit, ...]:
@@ -387,10 +365,6 @@ def _index_document(path: Path, *, parser: Parser, extractor: FactExtractor) -> 
     )
 
 
-def _project_document_details(document: _ProjectDocument) -> tuple[str, Path | None, DocumentFacts]:
-    return (document.uri, document.path, document.facts)
-
-
 def _diagnostic_key(diagnostic: Diagnostic) -> tuple[int, int, str, str]:
     start = diagnostic.span.start
     return (start.line, start.character, diagnostic.code, diagnostic.message)
@@ -418,8 +392,8 @@ def _analyze_unit(
             package_index_catalog=package_index_catalog,
         )
 
-    prepared_unit = _prepare_unit(
-        unit,
+    prepared_unit = _prepare_documents(
+        unit.source_paths,
         document_cache=document_cache,
         package_index_catalog=package_index_catalog,
     )
@@ -448,18 +422,17 @@ def _analyze_package_unit(
     background_source_paths: set[Path] = set()
 
     for source_path in unit.source_paths:
-        document = document_cache.get(source_path)
-        workspace_index, loaded_background_paths = _prepare_source_workspace(
-            document,
+        prepared = _prepare_documents(
+            (source_path,),
             package_index_catalog=package_index_catalog,
             document_cache=document_cache,
         )
-        background_source_paths.update(loaded_background_paths)
+        background_source_paths.update(prepared.background_source_paths)
         source_reports.append(
             _analyze_source_document(
-                document,
+                prepared.source_documents[0],
                 resolver=resolver,
-                workspace_index=workspace_index,
+                workspace_index=prepared.workspace_index,
             )
         )
 
@@ -475,19 +448,12 @@ def _analyze_source_document(
     resolver: Resolver,
     workspace_index: WorkspaceIndex,
 ) -> _UnitSourceReport:
-    required_packages = dependency_required_packages(
-        document.path,
-        document.facts,
-        workspace_index,
-        metadata_registry=resolver.metadata_registry,
-    )
     diagnostics = tuple(
         sorted(
             resolver.analyze(
                 uri=document.uri,
                 facts=document.facts,
                 workspace_index=workspace_index,
-                additional_required_packages=required_packages,
             ).diagnostics,
             key=_diagnostic_key,
         )

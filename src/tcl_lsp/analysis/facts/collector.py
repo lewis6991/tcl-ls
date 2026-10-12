@@ -9,8 +9,6 @@ from tcl_lsp.analysis.arity import proc_parameter_arity
 from tcl_lsp.analysis.builtins import (
     annotated_metadata_commands_for_packages,
     builtin_commands_for_packages,
-    canonical_builtin_package_name,
-    is_builtin_package,
     registry_for_packages,
 )
 from tcl_lsp.analysis.control_flow import build_control_flow_script
@@ -193,6 +191,7 @@ class FactExtractor:
         include_parse_result: bool = True,
         include_lexical_spans: bool | None = None,
         module_rules: tuple[ModuleRule, ...] | None = None,
+        required_packages: frozenset[str] = frozenset(),
     ) -> DocumentFacts:
         if include_lexical_spans is None:
             include_lexical_spans = include_parse_result
@@ -218,26 +217,35 @@ class FactExtractor:
                 diagnostics = metadata_declaration_diagnostics(
                     config.declarations, span=parse_result.script.span
                 )
-        collector = _FactCollector(
-            metadata_registry=self._metadata_registry,
-            module_rules=module_rules,
-            parser=self._parser,
-            plugin_host=self._plugin_host,
-            parse_result=parse_result,
-            comment_spans=lowering_result.comment_spans,
-            operator_spans=lowering_result.operator_spans,
-            string_spans=lowering_result.string_spans,
-            lowered_script=lowering_result.script,
-            diagnostics=diagnostics,
-            include_parse_result=include_parse_result,
-            include_lexical_spans=include_lexical_spans,
-        )
-        return collector.collect()
+        # Requirements apply to the whole file. A newly enabled body can expose
+        # another requirement, so collect until the selected modules stop growing.
+        while True:
+            collector = _FactCollector(
+                metadata_registry=self._metadata_registry,
+                required_packages=required_packages,
+                module_rules=module_rules,
+                parser=self._parser,
+                plugin_host=self._plugin_host,
+                parse_result=parse_result,
+                comment_spans=lowering_result.comment_spans,
+                operator_spans=lowering_result.operator_spans,
+                string_spans=lowering_result.string_spans,
+                lowered_script=lowering_result.script,
+                diagnostics=diagnostics,
+                include_parse_result=include_parse_result,
+                include_lexical_spans=include_lexical_spans,
+            )
+            facts = collector.collect()
+            discovered = required_packages | frozenset(p.name for p in facts.package_requires)
+            if registry_for_packages(self._metadata_registry, discovered) == registry_for_packages(
+                self._metadata_registry, required_packages
+            ):
+                return replace(facts, required_packages=discovered)
+            required_packages = discovered
 
 
 class _FactCollector:
     __slots__ = (
-        '_active_builtin_packages',
         '_command_calls',
         '_command_imports',
         '_command_renames',
@@ -260,6 +268,7 @@ class _FactCollector:
         '_parser',
         '_plugin_host',
         '_procedures',
+        '_required_packages',
         '_source_directives',
         '_string_spans',
         '_variable_bindings',
@@ -273,6 +282,7 @@ class _FactCollector:
         plugin_host: TclPluginHost,
         parse_result: ParseResult,
         *,
+        required_packages: frozenset[str],
         module_rules: tuple[ModuleRule, ...],
         comment_spans: tuple[Span, ...],
         operator_spans: tuple[Span, ...],
@@ -299,7 +309,7 @@ class _FactCollector:
         self._include_parse_result = include_parse_result
         self._diagnostics: list[Diagnostic] = list(diagnostics)
         self._diagnostic_directives: list[tuple[int, DiagnosticRule]] = []
-        self._active_builtin_packages: set[str] = set()
+        self._required_packages = required_packages
         self._comment_spans: list[Span] = list(comment_spans)
         self._string_spans: list[Span] = list(string_spans)
         self._operator_spans: list[Span] = list(operator_spans)
@@ -347,6 +357,7 @@ class _FactCollector:
             variable_references=tuple(self._variable_references),
             document_symbols=tuple(self._build_document_symbols()),
             diagnostics=tuple(self._diagnostics),
+            required_packages=self._required_packages,
             module_scopes=tuple(self._module_scopes),
             module_rules=self._module_rules,
             diagnostic_rules=tuple(
@@ -414,7 +425,7 @@ class _FactCollector:
         modules = active_modules(context.explicit_modules, self._module_rules, context.flow_state)
         registry = registry_for_packages(
             context.metadata_registry.with_modules(modules),
-            frozenset(self._active_builtin_packages),
+            self._required_packages,
         )
         previous = context.selected_modules if previous_modules is None else previous_modules
         if modules != previous:
@@ -866,7 +877,7 @@ class _FactCollector:
         )
 
     def _collect_builtin_subcommands(self, command: Command, context: _ExtractionContext) -> None:
-        required_packages = frozenset(self._active_builtin_packages)
+        required_packages = self._required_packages
         if not command.words:
             return
 
@@ -1524,8 +1535,6 @@ class _FactCollector:
         span: Span,
         context: _ExtractionContext,
     ) -> None:
-        if is_builtin_package(package_name, metadata_registry=context.metadata_registry):
-            self._active_builtin_packages.add(canonical_builtin_package_name(package_name))
         self._package_requires.append(
             PackageRequire(
                 uri=context.uri,
@@ -1988,7 +1997,7 @@ class _FactCollector:
         context: _ExtractionContext,
     ) -> tuple[MetadataCommand, int] | None:
         available_commands = annotated_metadata_commands_for_packages(
-            frozenset(self._active_builtin_packages),
+            self._required_packages,
             metadata_registry=context.metadata_registry,
         )
         if not command.words:
@@ -2194,11 +2203,6 @@ class _FactCollector:
             package_name = word_static_text(command.words[2])
             if package_name is None:
                 return
-            if is_builtin_package(
-                package_name,
-                metadata_registry=context.metadata_registry,
-            ):
-                self._active_builtin_packages.add(canonical_builtin_package_name(package_name))
             version_constraints = tuple(
                 version_text
                 for word in command.words[3:]

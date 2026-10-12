@@ -15,7 +15,6 @@ from pygls.protocol.language_server import LanguageServerProtocol
 from tcl_lsp import __version__
 from tcl_lsp.analysis import FactExtractor, Resolver, WorkspaceIndex
 from tcl_lsp.analysis.facts.lowering import collect_parse_result_lexical_spans
-from tcl_lsp.analysis.metadata_effects import dependency_required_packages
 from tcl_lsp.common import Diagnostic, lsp_range
 from tcl_lsp.lsp.document_changes import DocumentChangeWorker
 from tcl_lsp.lsp.features.completion import CompletionResults, completion_items
@@ -45,6 +44,7 @@ from tcl_lsp.lsp.workspace_rebuild import (
     RebuildResult,
     WorkspaceRebuilder,
     analysis_workspace_index,
+    prepare_workspace_documents,
 )
 from tcl_lsp.metadata_paths import (
     DEFAULT_METADATA_REGISTRY,
@@ -373,13 +373,19 @@ class LanguageServer(PyglsLanguageServer):
             operator_spans=operator_spans,
         )
 
-        updated_document = ManagedDocument(
-            uri=document.uri,
-            version=document.version,
-            text=document.text,
-            parse_result=document.parse_result,
+        updated_document = replace(
+            document,
             facts=facts,
-            analysis=document.analysis,
+            base_facts=(
+                replace(
+                    document.base_facts,
+                    comment_spans=comment_spans,
+                    string_spans=string_spans,
+                    operator_spans=operator_spans,
+                )
+                if document.base_facts is not None
+                else None
+            ),
             lexical_spans_included=True,
         )
 
@@ -456,40 +462,27 @@ class LanguageServer(PyglsLanguageServer):
 
             documents = dict(snapshot.documents)
             documents[uri] = managed_document
+            workspace_index = snapshot.workspace_index.clone()
+            workspace_index.update(uri, facts)
+            prepare_workspace_documents(
+                documents, extractor=extractor, workspace_index=workspace_index
+            )
+            managed_document = documents[uri]
+            facts = managed_document.facts
             document_workspace_index = analysis_workspace_index(
                 root_uri=uri,
                 documents=documents,
-                workspace_index=snapshot.workspace_index,
+                workspace_index=workspace_index,
                 metadata_registry=snapshot.metadata_registry,
             )
 
-            source_path = source_id_to_path(uri)
-            additional_required_packages: frozenset[str]
-            if source_path is None:
-                additional_required_packages = frozenset()
-            else:
-                additional_required_packages = dependency_required_packages(
-                    source_path,
-                    facts,
-                    document_workspace_index,
-                    metadata_registry=snapshot.metadata_registry,
-                )
             analysis = resolver.analyze(
                 uri=uri,
                 facts=facts,
                 workspace_index=document_workspace_index,
-                additional_required_packages=additional_required_packages,
             )
 
-            return ManagedDocument(
-                uri=uri,
-                version=version,
-                text=text,
-                parse_result=parse_result,
-                facts=facts,
-                analysis=analysis,
-                lexical_spans_included=False,
-            )
+            return replace(managed_document, analysis=analysis)
         finally:
             extractor.close()
 

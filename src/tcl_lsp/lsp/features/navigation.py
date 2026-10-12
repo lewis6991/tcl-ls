@@ -38,7 +38,6 @@ def definition(
     command_import_locations = command_import_definition_locations(
         documents_by_uri,
         metadata_registry=metadata_registry,
-        workspace_index=workspace_index,
         uri=uri,
         line=line,
         character=character,
@@ -79,7 +78,6 @@ def declaration(
     command_import_locations = command_import_definition_locations(
         documents_by_uri,
         metadata_registry=metadata_registry,
-        workspace_index=workspace_index,
         uri=uri,
         line=line,
         character=character,
@@ -222,7 +220,6 @@ def package_definition_locations(
 def command_import_definition_locations(
     documents_by_uri: Mapping[str, ManagedDocument],
     *,
-    workspace_index: WorkspaceIndex,
     metadata_registry: MetadataRegistry,
     uri: str,
     line: int,
@@ -239,7 +236,6 @@ def command_import_definition_locations(
             definition.location
             for definition in definitions_for_command_import(
                 documents_by_uri.values(),
-                workspace_index=workspace_index,
                 metadata_registry=metadata_registry,
                 command_import=command_import,
             )

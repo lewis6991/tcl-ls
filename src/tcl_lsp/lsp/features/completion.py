@@ -18,7 +18,6 @@ from tcl_lsp.analysis.builtins import (
     registry_for_packages,
 )
 from tcl_lsp.analysis.metadata_commands import MetadataOption, scan_command_options
-from tcl_lsp.analysis.metadata_effects import dependency_required_packages
 from tcl_lsp.analysis.model import CommandCall, ProcDecl
 from tcl_lsp.analysis.modules import registry_at_offset
 from tcl_lsp.lsp.features.cursor_context import (
@@ -27,9 +26,9 @@ from tcl_lsp.lsp.features.cursor_context import (
     is_empty_command_position,
 )
 from tcl_lsp.lsp.state import ManagedDocument, empty_analysis
+from tcl_lsp.lsp.workspace_rebuild import prepare_workspace_documents
 from tcl_lsp.metadata_paths import MetadataRegistry
 from tcl_lsp.parser import Parser
-from tcl_lsp.project.paths import source_id_to_path
 
 type CompletionKind = Literal['argument', 'command', 'package', 'variable']
 
@@ -93,19 +92,25 @@ def completion_items(
                 include_lexical_spans=False,
                 module_rules=document.facts.module_rules,
             )
+            document = replace(
+                document,
+                text=live_text,
+                parse_result=parse_result,
+                facts=facts,
+                base_facts=None,
+                analysis=empty_analysis(uri, facts.document_symbols),
+                lexical_spans_included=False,
+            )
+            live_documents = {**documents_by_uri, uri: document}
+            workspace_index = workspace_index.clone()
+            workspace_index.update(uri, facts)
+            prepare_workspace_documents(
+                live_documents, extractor=extractor, workspace_index=workspace_index
+            )
+            documents_by_uri = live_documents
+            document = live_documents[uri]
         finally:
             extractor.close()
-        document = replace(
-            document,
-            text=live_text,
-            parse_result=parse_result,
-            facts=facts,
-            analysis=empty_analysis(uri, facts.document_symbols),
-            lexical_spans_included=False,
-        )
-        documents_by_uri = {**documents_by_uri, uri: document}
-        workspace_index = workspace_index.clone()
-        workspace_index.update(uri, facts)
 
     context = cursor_context(document, line=line, character=character)
     if context is None:
@@ -147,7 +152,6 @@ def _completion_results_for_context(
         return _command_completion_items(
             documents_by_uri,
             document=document,
-            workspace_index=workspace_index,
             metadata_registry=metadata_registry,
             prefix=context.prefix,
             current_namespace=context.namespace,
@@ -156,7 +160,6 @@ def _completion_results_for_context(
         return CompletionResults(
             items=_argument_completion_items(
                 document=document,
-                workspace_index=workspace_index,
                 metadata_registry=metadata_registry,
                 command_call=context.command_call,
                 argument_index=context.argument_index or 0,
@@ -232,7 +235,6 @@ def _command_completion_items(
     documents_by_uri: Mapping[str, ManagedDocument],
     *,
     document: ManagedDocument,
-    workspace_index: WorkspaceIndex,
     metadata_registry: MetadataRegistry,
     prefix: str,
     current_namespace: str,
@@ -292,11 +294,7 @@ def _command_completion_items(
             )
         )
 
-    builtin_packages = _builtin_completion_packages(
-        document=document,
-        workspace_index=workspace_index,
-        metadata_registry=metadata_registry,
-    )
+    builtin_packages = _builtin_completion_packages(document)
     registry = registry_for_packages(metadata_registry, frozenset(builtin_packages))
     for builtin in builtin_commands(metadata_registry=registry).values():
         label = _builtin_completion_label(builtin.name, absolute_prefix=absolute_prefix)
@@ -335,7 +333,6 @@ def _command_completion_items(
 def _argument_completion_items(
     *,
     document: ManagedDocument,
-    workspace_index: WorkspaceIndex,
     metadata_registry: MetadataRegistry,
     command_call: CommandCall,
     argument_index: int,
@@ -346,13 +343,7 @@ def _argument_completion_items(
 
     builtin = builtin_command_for_packages(
         command_call.name,
-        frozenset(
-            _builtin_completion_packages(
-                document=document,
-                workspace_index=workspace_index,
-                metadata_registry=metadata_registry,
-            )
-        ),
+        frozenset(_builtin_completion_packages(document)),
         metadata_registry=metadata_registry,
     )
     if builtin is None:
@@ -531,25 +522,9 @@ def _option_completion_items(
     return tuple(items)
 
 
-def _builtin_completion_packages(
-    *,
-    document: ManagedDocument,
-    workspace_index: WorkspaceIndex,
-    metadata_registry: MetadataRegistry,
-) -> tuple[str, ...]:
+def _builtin_completion_packages(document: ManagedDocument) -> tuple[str, ...]:
     packages: dict[str, None] = {'Tcl': None}
-    source_path = source_id_to_path(document.uri)
-    if source_path is None:
-        required_packages = frozenset(
-            package_require.name for package_require in document.facts.package_requires
-        )
-    else:
-        required_packages = dependency_required_packages(
-            source_path,
-            document.facts,
-            workspace_index,
-            metadata_registry=metadata_registry,
-        )
+    required_packages = document.facts.required_packages
 
     if _is_implicit_tcltest_file(document.uri):
         required_packages = required_packages | frozenset({'tcltest'})

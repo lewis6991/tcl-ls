@@ -3,13 +3,10 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 
 from tcl_lsp.analysis.builtins import builtin_definition_targets, registry_for_packages
-from tcl_lsp.analysis.index import WorkspaceIndex
-from tcl_lsp.analysis.metadata_effects import dependency_required_packages
 from tcl_lsp.analysis.model import CommandImport, DefinitionTarget
 from tcl_lsp.analysis.modules import registry_at_offset
 from tcl_lsp.lsp.state import ManagedDocument
 from tcl_lsp.metadata_paths import MetadataRegistry
-from tcl_lsp.project.paths import source_id_to_path
 
 
 def symbol_ids_at_position(
@@ -50,7 +47,6 @@ def symbol_kind(documents: Iterable[ManagedDocument], symbol_id: str) -> str | N
 def definitions_for_command_import(
     documents: Iterable[ManagedDocument],
     *,
-    workspace_index: WorkspaceIndex,
     metadata_registry: MetadataRegistry,
     command_import: CommandImport,
 ) -> tuple[DefinitionTarget, ...]:
@@ -73,18 +69,9 @@ def definitions_for_command_import(
                 document.facts.module_scopes,
                 command_import.span.start.offset,
             )
-            source_path = source_id_to_path(document.uri)
-            required = (
-                dependency_required_packages(
-                    source_path,
-                    document.facts,
-                    workspace_index,
-                    metadata_registry=metadata_registry,
-                )
-                if source_path is not None
-                else frozenset(require.name for require in document.facts.package_requires)
+            metadata_registry = registry_for_packages(
+                metadata_registry, document.facts.required_packages
             )
-            metadata_registry = registry_for_packages(metadata_registry, required)
         for definition in document.analysis.definitions:
             qualified_name = _qualified_command_name(definition.name)
             if command_import.kind == 'exact':

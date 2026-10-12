@@ -2,16 +2,20 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from pathlib import Path
 
-from tcl_lsp.analysis.builtins import is_builtin_package
+from tcl_lsp.analysis.builtins import is_builtin_package, registry_for_packages
 from tcl_lsp.analysis.facts.utils import extract_ifneeded_source_uri
 from tcl_lsp.analysis.index import WorkspaceIndex
-from tcl_lsp.analysis.metadata_effects import metadata_dependency_overlay
+from tcl_lsp.analysis.metadata_effects import (
+    dependency_required_packages,
+    metadata_dependency_overlay,
+)
 from tcl_lsp.analysis.model import DocumentFacts, PackageIndexEntry
 from tcl_lsp.metadata_paths import DEFAULT_METADATA_REGISTRY, MetadataRegistry
 from tcl_lsp.parser import Parser, word_static_text
-from tcl_lsp.project.paths import candidate_package_roots, read_source_file
+from tcl_lsp.project.paths import candidate_package_roots, read_source_file, source_id_to_path
 
 type PackageIndexCatalog = tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...]
 type DocumentDescription = tuple[str, Path | None, DocumentFacts]
@@ -147,51 +151,74 @@ def dependency_source_uris_for_facts(
     return tuple(uris)
 
 
-def load_dependency_documents[DocumentT](
-    documents_by_uri: dict[str, DocumentT],
+def prepare_dependencies(
+    facts_by_uri: dict[str, DocumentFacts],
     *,
     workspace_index: WorkspaceIndex,
-    describe_document: Callable[[DocumentT], DocumentDescription],
-    load_document: Callable[[str], DocumentT | None],
+    load_facts: Callable[[str], DocumentFacts | None],
+    extract_facts: Callable[[DocumentFacts, frozenset[str]], DocumentFacts],
     metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
-    on_document_loaded: Callable[[DocumentT], None] | None = None,
-) -> tuple[DocumentT, ...]:
+    check_cancelled: Callable[[], None] | None = None,
+) -> None:
+    """Expand file-local facts with dependencies and their metadata.
+
+    Inputs must exclude external package activation from earlier builds. This
+    prevents removed requirements from surviving through a dependency cycle.
+    Output facts carry the complete package set used by subsequent analysis.
+    """
     failed_uris: set[str] = set()
-    loaded_documents: list[DocumentT] = []
+    for uri, facts in facts_by_uri.items():
+        workspace_index.update(uri, facts)
 
     while True:
-        loaded_document = False
-        for document in tuple(documents_by_uri.values()):
-            _, source_path, facts = describe_document(document)
+        changed = False
+        for facts in tuple(facts_by_uri.values()):
+            if check_cancelled is not None:
+                check_cancelled()
             for source_uri in dependency_source_uris_for_facts(
-                source_path,
+                source_id_to_path(facts.uri),
                 facts,
                 workspace_index,
                 metadata_registry=metadata_registry,
             ):
-                if source_uri in documents_by_uri or source_uri in failed_uris:
+                if source_uri in facts_by_uri or source_uri in failed_uris:
                     continue
-
-                dependency_document = load_document(source_uri)
-                if dependency_document is None:
+                dependency_facts = load_facts(source_uri)
+                if dependency_facts is None:
                     failed_uris.add(source_uri)
                     continue
-
-                dependency_uri, _, dependency_facts = describe_document(dependency_document)
-                if dependency_uri in documents_by_uri:
+                if dependency_facts.uri in facts_by_uri:
                     continue
+                facts_by_uri[dependency_facts.uri] = dependency_facts
+                workspace_index.update(dependency_facts.uri, dependency_facts)
+                changed = True
+        if changed:
+            continue
 
-                documents_by_uri[dependency_uri] = dependency_document
-                workspace_index.update(dependency_uri, dependency_facts)
-                if on_document_loaded is not None:
-                    on_document_loaded(dependency_document)
-                loaded_documents.append(dependency_document)
-                loaded_document = True
-                break
-            if loaded_document:
-                break
-        if not loaded_document:
-            return tuple(loaded_documents)
+        updated_facts: dict[str, DocumentFacts] = {}
+        for uri, facts in facts_by_uri.items():
+            if check_cancelled is not None:
+                check_cancelled()
+            source_path = source_id_to_path(uri)
+            required_packages = facts.required_packages
+            if source_path is not None:
+                required_packages |= dependency_required_packages(
+                    source_path, facts, workspace_index, metadata_registry=metadata_registry
+                )
+            if required_packages == facts.required_packages:
+                continue
+            if registry_for_packages(metadata_registry, required_packages) == registry_for_packages(
+                metadata_registry, facts.required_packages
+            ):
+                facts = replace(facts, required_packages=required_packages)
+            else:
+                facts = extract_facts(facts, required_packages)
+            updated_facts[uri] = facts
+        if not updated_facts:
+            return
+        facts_by_uri.update(updated_facts)
+        for uri, facts in updated_facts.items():
+            workspace_index.update(uri, facts)
 
 
 def reachable_document_uris[DocumentT](
@@ -269,7 +296,7 @@ __all__ = [
     'dependency_source_uris_for_facts',
     'discover_lazy_package_indexes',
     'discover_package_index_paths',
-    'load_dependency_documents',
     'load_package_index',
+    'prepare_dependencies',
     'reachable_document_uris',
 ]

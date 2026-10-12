@@ -128,14 +128,12 @@ class Resolver:
         uri: str,
         facts: DocumentFacts,
         workspace_index: WorkspaceIndex,
-        *,
-        additional_required_packages: frozenset[str] = frozenset(),
     ) -> AnalysisResult:
         diagnostics = list(facts.diagnostics)
         direct_required_packages = frozenset(
             requirement.name for requirement in facts.package_requires
         )
-        required_packages = direct_required_packages | additional_required_packages
+        required_packages = facts.required_packages
         transitive_required_packages = required_packages - direct_required_packages
         hover_trace_parents = (
             _build_hover_trace_parents(
@@ -145,11 +143,7 @@ class Resolver:
             )
             if (
                 source_id_to_path(uri) is not None
-                and (
-                    additional_required_packages
-                    or facts.package_requires
-                    or facts.source_directives
-                )
+                and (required_packages or facts.package_requires or facts.source_directives)
             )
             else {}
         )

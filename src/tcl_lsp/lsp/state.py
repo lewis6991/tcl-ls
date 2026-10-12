@@ -23,6 +23,8 @@ class ManagedDocument:
     facts: DocumentFacts
     analysis: AnalysisResult
     lexical_spans_included: bool
+    # Extraction without external dependencies is the seed for each rebuild.
+    base_facts: DocumentFacts | None = None
 
 
 @dataclass(frozen=True, slots=True)

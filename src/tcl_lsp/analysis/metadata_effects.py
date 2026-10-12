@@ -78,9 +78,11 @@ def dependency_required_packages(
             workspace_index,
             metadata_registry=metadata_registry,
         )
-        package_names = {
-            package_require.name for package_require in current_facts.package_requires
-        } | set(overlay.required_packages)
+        package_names = (
+            {package_require.name for package_require in current_facts.package_requires}
+            | overlay.required_packages
+            | current_facts.required_packages
+        )
         required_packages.update(package_names)
 
         for source_uri in overlay.source_uris:

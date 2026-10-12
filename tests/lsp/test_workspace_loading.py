@@ -471,8 +471,6 @@ def test_language_service_open_document_only_fully_analyzes_open_documents(
         uri: str,
         facts: object,
         workspace_index: object,
-        *,
-        additional_required_packages: frozenset[str] = frozenset(),
     ) -> object:
         analyzed_uris.append(uri)
         return original_analyze(
@@ -480,7 +478,6 @@ def test_language_service_open_document_only_fully_analyzes_open_documents(
             uri,
             cast(Any, facts),
             cast(Any, workspace_index),
-            additional_required_packages=additional_required_packages,
         )
 
     monkeypatch.setattr(Resolver, 'analyze', counting_analyze)

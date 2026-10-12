@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-from tcl_lsp.analysis import FactExtractor, Resolver, WorkspaceIndex
-from tcl_lsp.analysis.metadata_effects import dependency_required_packages
+from tcl_lsp.analysis import DocumentFacts, FactExtractor, Resolver, WorkspaceIndex
 from tcl_lsp.lsp.state import (
     IndexingProgressCallback,
     ManagedDocument,
@@ -16,8 +15,8 @@ from tcl_lsp.metadata_paths import MetadataRegistry, create_metadata_registry
 from tcl_lsp.parser import Parser
 from tcl_lsp.project.indexing import (
     discover_lazy_package_indexes,
-    load_dependency_documents,
     load_package_index,
+    prepare_dependencies,
     reachable_document_uris,
 )
 from tcl_lsp.project.paths import candidate_package_roots, read_source_file, source_id_to_path
@@ -127,14 +126,20 @@ class WorkspaceRebuilder:
                 workspace_index=workspace_index,
                 scanned_package_roots=scanned_package_roots,
                 library_paths_by_uri=snapshot.library_paths_by_uri,
-                metadata_registry=target_metadata_registry,
                 start_percentage=50,
                 end_percentage=75,
                 load_cached_document=load_cached_document,
                 cache_document=cache_document,
             )
-            self._recompute_workspace_analyses(
+            self._prune_background_documents(
                 documents,
+                open_document_uris=tuple(snapshots),
+                workspace_index=workspace_index,
+                metadata_registry=target_metadata_registry,
+            )
+            self._recompute_analyses(
+                documents,
+                document_uris=tuple(documents),
                 resolver=resolver,
                 workspace_index=workspace_index,
                 metadata_registry=target_metadata_registry,
@@ -217,16 +222,21 @@ class WorkspaceRebuilder:
                 workspace_index=workspace_index,
                 scanned_package_roots=scanned_package_roots,
                 library_paths_by_uri=snapshot.library_paths_by_uri,
-                metadata_registry=target_metadata_registry,
                 start_percentage=50,
                 end_percentage=75,
                 background_resolver=resolver,
                 load_cached_document=load_cached_document,
                 cache_document=cache_document,
             )
-            self._recompute_open_document_analyses(
+            self._prune_background_documents(
                 documents,
                 open_document_uris=snapshot.open_document_uris,
+                workspace_index=workspace_index,
+                metadata_registry=target_metadata_registry,
+            )
+            self._recompute_analyses(
+                documents,
+                document_uris=snapshot.open_document_uris,
                 resolver=resolver,
                 workspace_index=workspace_index,
                 metadata_registry=target_metadata_registry,
@@ -310,7 +320,6 @@ class WorkspaceRebuilder:
         workspace_index: WorkspaceIndex,
         scanned_package_roots: set[Path],
         library_paths_by_uri: dict[str, tuple[Path, ...]],
-        metadata_registry: MetadataRegistry,
         start_percentage: int,
         end_percentage: int,
         background_resolver: Resolver | None = None,
@@ -355,13 +364,13 @@ class WorkspaceRebuilder:
                 library_paths_by_uri=library_paths_by_uri,
             )
 
-        loaded_documents = load_dependency_documents(
+        loaded_documents = prepare_workspace_documents(
             documents,
+            extractor=extractor,
             workspace_index=workspace_index,
-            describe_document=managed_document_details,
             load_document=load_document,
-            metadata_registry=metadata_registry,
             on_document_loaded=on_document_loaded,
+            check_cancelled=self._raise_if_cancelled,
         )
 
         loaded_background_documents = 0
@@ -398,53 +407,33 @@ class WorkspaceRebuilder:
             documents.pop(uri, None)
             workspace_index.remove(uri)
 
-    def _recompute_open_document_analyses(
+    def _recompute_analyses(
         self,
         documents: dict[str, ManagedDocument],
         *,
-        open_document_uris: tuple[str, ...],
+        document_uris: tuple[str, ...],
         resolver: Resolver,
         workspace_index: WorkspaceIndex,
         metadata_registry: MetadataRegistry,
         start_percentage: int,
         end_percentage: int,
     ) -> None:
-        open_documents = [documents[uri] for uri in open_document_uris if uri in documents]
-        total_documents = len(open_documents)
-        for index, document in enumerate(open_documents, start=1):
+        selected_documents = [documents[uri] for uri in document_uris if uri in documents]
+        total_documents = len(selected_documents)
+        for index, document in enumerate(selected_documents, start=1):
             self._raise_if_cancelled()
-            analysis_workspace_index = self._analysis_workspace_index(
+            analysis_index = analysis_workspace_index(
                 root_uri=document.uri,
                 documents=documents,
                 workspace_index=workspace_index,
                 metadata_registry=metadata_registry,
             )
-            source_path = source_id_to_path(document.uri)
-            additional_required_packages: frozenset[str]
-            if source_path is None:
-                additional_required_packages = frozenset()
-            else:
-                additional_required_packages = dependency_required_packages(
-                    source_path,
-                    document.facts,
-                    analysis_workspace_index,
-                    metadata_registry=metadata_registry,
-                )
             analysis = resolver.analyze(
                 uri=document.uri,
                 facts=document.facts,
-                workspace_index=analysis_workspace_index,
-                additional_required_packages=additional_required_packages,
+                workspace_index=analysis_index,
             )
-            documents[document.uri] = ManagedDocument(
-                uri=document.uri,
-                version=document.version,
-                text=document.text,
-                parse_result=document.parse_result,
-                facts=document.facts,
-                analysis=analysis,
-                lexical_spans_included=document.lexical_spans_included,
-            )
+            documents[document.uri] = replace(document, analysis=analysis)
             self._report_progress(
                 f'Analyzing workspace ({index}/{total_documents})',
                 _progress_percentage(
@@ -454,77 +443,6 @@ class WorkspaceRebuilder:
                     end=end_percentage,
                 ),
             )
-
-    def _recompute_workspace_analyses(
-        self,
-        documents: dict[str, ManagedDocument],
-        *,
-        resolver: Resolver,
-        workspace_index: WorkspaceIndex,
-        metadata_registry: MetadataRegistry,
-        start_percentage: int,
-        end_percentage: int,
-    ) -> None:
-        document_items = list(documents.items())
-        total_documents = len(document_items)
-        for index, (uri, document) in enumerate(document_items, start=1):
-            self._raise_if_cancelled()
-            analysis_workspace_index = self._analysis_workspace_index(
-                root_uri=uri,
-                documents=documents,
-                workspace_index=workspace_index,
-                metadata_registry=metadata_registry,
-            )
-            source_path = source_id_to_path(uri)
-            additional_required_packages: frozenset[str]
-            if source_path is None:
-                additional_required_packages = frozenset()
-            else:
-                additional_required_packages = dependency_required_packages(
-                    source_path,
-                    document.facts,
-                    analysis_workspace_index,
-                    metadata_registry=metadata_registry,
-                )
-            analysis = resolver.analyze(
-                uri=uri,
-                facts=document.facts,
-                workspace_index=analysis_workspace_index,
-                additional_required_packages=additional_required_packages,
-            )
-            documents[uri] = ManagedDocument(
-                uri=document.uri,
-                version=document.version,
-                text=document.text,
-                parse_result=document.parse_result,
-                facts=document.facts,
-                analysis=analysis,
-                lexical_spans_included=document.lexical_spans_included,
-            )
-            self._report_progress(
-                f'Analyzing workspace ({index}/{total_documents})',
-                _progress_percentage(
-                    index=index,
-                    total=total_documents,
-                    start=start_percentage,
-                    end=end_percentage,
-                ),
-            )
-
-    def _analysis_workspace_index(
-        self,
-        *,
-        root_uri: str,
-        documents: dict[str, ManagedDocument],
-        workspace_index: WorkspaceIndex,
-        metadata_registry: MetadataRegistry,
-    ) -> WorkspaceIndex:
-        return analysis_workspace_index(
-            root_uri=root_uri,
-            documents=documents,
-            workspace_index=workspace_index,
-            metadata_registry=metadata_registry,
-        )
 
     def _active_metadata_paths(self, snapshot: DocumentBuildSnapshot) -> tuple[Path, ...]:
         active_paths: dict[Path, None] = {}
@@ -548,6 +466,60 @@ def _progress_percentage(*, index: int, total: int, start: int, end: int) -> int
         return end
     completed = (index * (end - start)) // total
     return min(end, start + completed)
+
+
+def prepare_workspace_documents(
+    documents: dict[str, ManagedDocument],
+    *,
+    extractor: FactExtractor,
+    workspace_index: WorkspaceIndex,
+    load_document: Callable[[str], ManagedDocument | None] | None = None,
+    on_document_loaded: Callable[[ManagedDocument], None] | None = None,
+    check_cancelled: Callable[[], None] | None = None,
+) -> tuple[ManagedDocument, ...]:
+    base_facts = {uri: document.base_facts or document.facts for uri, document in documents.items()}
+    facts_by_uri = dict(base_facts)
+    loaded_uris: list[str] = []
+
+    def load_facts(uri: str) -> DocumentFacts | None:
+        document = load_document(uri) if load_document is not None else None
+        if document is None:
+            return None
+        documents[document.uri] = document
+        base_facts[document.uri] = document.base_facts or document.facts
+        loaded_uris.append(document.uri)
+        if on_document_loaded is not None:
+            on_document_loaded(document)
+        return base_facts[document.uri]
+
+    def extract_facts(facts: DocumentFacts, packages: frozenset[str]) -> DocumentFacts:
+        document = documents[facts.uri]
+        return extractor.extract(
+            document.parse_result,
+            include_lexical_spans=document.lexical_spans_included,
+            module_rules=facts.module_rules,
+            required_packages=packages,
+        )
+
+    prepare_dependencies(
+        facts_by_uri,
+        workspace_index=workspace_index,
+        load_facts=load_facts,
+        extract_facts=extract_facts,
+        metadata_registry=extractor.metadata_registry,
+        check_cancelled=check_cancelled,
+    )
+    resolver = Resolver(metadata_registry=extractor.metadata_registry)
+    for uri, facts in facts_by_uri.items():
+        document = documents[uri]
+        if facts is not document.facts:
+            documents[uri] = replace(
+                document,
+                facts=facts,
+                base_facts=base_facts[uri],
+                analysis=resolver.facts_only_analysis(uri, facts),
+            )
+    return tuple(documents[uri] for uri in loaded_uris)
 
 
 def analysis_workspace_index(

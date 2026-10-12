@@ -42,6 +42,176 @@ def project(tmp_path: Path) -> Path:
     return tmp_path
 
 
+@pytest.fixture
+def package_project(tmp_path: Path) -> Path:
+    root = tmp_path / 'project'
+    root.mkdir()
+    (root / 'tcllsrc.tcl').write_text(
+        'meta module Sample {\n'
+        '    meta command sample::define {name body} {\n'
+        '        procedure {name select 1; params literal {}; body select 2}\n'
+        '    }\n'
+        '    meta command sample::run {body} {enter sample body 1}\n'
+        '    meta language sample {extends tcl; command action {}}\n'
+        '}\n'
+        'meta module Extra {\n'
+        '    meta command extra::run {body} {enter tcl body 1}\n'
+        '}\n'
+    )
+    (root / 'deps.inc').write_text('package require Sample\n')
+    return root
+
+
+@pytest.mark.parametrize('requirement', ['before', 'after', 'source', 'package', 'inactive'])
+def test_package_dependencies_enable_procedures_and_bodies(
+    package_project: Path, requirement: str
+) -> None:
+    root = package_project
+    body = 'sample::run {action; missing_inside}\nsample::define greet {return ok}\ngreet\n'
+    dependency = {
+        'before': 'package require Sample\n',
+        'after': 'package require Sample\n',
+        'source': 'source [file join [file dirname [info script]] deps.inc]\n',
+        'package': 'package require loader\n',
+        'inactive': 'set data {package require Sample}\n',
+    }[requirement]
+    (root / 'pkgIndex.tcl').write_text(
+        'package ifneeded loader 1.0 [list source [file join $dir deps.inc]]\n'
+    )
+    text = body + dependency if requirement == 'after' else dependency + body
+    source = root / 'main.tcl'
+    source.write_text(text)
+    expected = (
+        [
+            'Unresolved command `sample::run`.',
+            'Unresolved command `sample::define`.',
+            'Unresolved command `greet`.',
+        ]
+        if requirement == 'inactive'
+        else ['Unresolved command `missing_inside`.']
+    )
+    server = LanguageServer()
+    try:
+        assert [d.message for d in server.open_document(source.as_uri(), text, 1)] == expected
+        if requirement != 'inactive':
+            snapshot = server.analysis_snapshot()
+            locations = definition(
+                snapshot.documents,
+                workspace_index=snapshot.workspace_index,
+                metadata_registry=snapshot.metadata_registry,
+                uri=source.as_uri(),
+                line=text.splitlines().index('greet'),
+                character=2,
+            )
+            assert len(locations) == 1
+            assert locations[0].uri == source.as_uri()
+            assert locations[0].range.start.line == text.splitlines().index(
+                'sample::define greet {return ok}'
+            )
+    finally:
+        server.shutdown()
+    assert [
+        item.diagnostic.message
+        for item in check_project(source, threads=1).diagnostics
+        if item.path == source
+    ] == expected
+
+
+@pytest.mark.parametrize('threads', [1, 2])
+def test_metadata_bodies_can_reveal_more_dependencies(package_project: Path, threads: int) -> None:
+    root = package_project
+    (root / 'extra.inc').write_text('package require Extra\n')
+    source = root / 'main.tcl'
+    text = (
+        'extra::run {sample::define greet {return ok}; missing_inside}\n'
+        'sample::run {source [file join [file dirname [info script]] extra.inc]}\n'
+        'source [file join [file dirname [info script]] deps.inc]\n'
+        'greet\n'
+    )
+    source.write_text(text)
+    server = LanguageServer()
+    try:
+        assert [d.message for d in server.open_document(source.as_uri(), text, 1)] == [
+            'Unresolved command `missing_inside`.'
+        ]
+    finally:
+        server.shutdown()
+    assert [d.diagnostic.message for d in check_project(source, threads=threads).diagnostics] == [
+        'Unresolved command `missing_inside`.'
+    ]
+
+
+def test_dependency_edits_remove_body_facts_even_with_a_cycle(package_project: Path) -> None:
+    root = package_project
+    dependency = root / 'deps.inc'
+    body_dependency = root / 'body.inc'
+    body_dependency.write_text('proc body_helper {} {return ok}\n')
+    # Once enabled, this body supplies its own requirement. It must not keep the
+    # module active after the external requirement is removed.
+    text = (
+        'source [file join [file dirname [info script]] deps.inc]\n'
+        'sample::run {\n'
+        '    package require Sample\n'
+        '    source [file join [file dirname [info script]] body.inc]\n'
+        '    sample::define greet {return ok}\n'
+        '}\n'
+        'greet\n'
+    )
+    source = root / 'main.tcl'
+    source.write_text(text)
+    dependency_text = (
+        'package require Sample\nsource [file join [file dirname [info script]] main.tcl]\n'
+    )
+    dependency.write_text(dependency_text)
+    server = LanguageServer()
+    try:
+        assert server.open_document(source.as_uri(), text, 1) == ()
+        server.open_document(dependency.as_uri(), dependency_text, 1)
+        for version, active in [(2, False), (3, True), (4, False)]:
+            changed = (
+                dependency_text
+                if active
+                else dependency_text.replace('package require Sample\n', '')
+            )
+            server.change_document(dependency.as_uri(), changed, version)
+            assert (body_dependency.as_uri() in server.documents) is active
+            document = server.documents[source.as_uri()]
+            assert [p.qualified_name for p in document.facts.procedures] == (
+                ['::greet'] if active else []
+            )
+            assert [d.message for d in document.analysis.diagnostics] == (
+                []
+                if active
+                else ['Unresolved command `sample::run`.', 'Unresolved command `greet`.']
+            )
+    finally:
+        server.shutdown()
+
+
+@pytest.mark.parametrize('active', [True, False])
+def test_live_completion_uses_dependency_body_metadata(package_project: Path, active: bool) -> None:
+    source = package_project / 'main.tcl'
+    dependency = 'source [file join [file dirname [info script]] deps.inc]\n'
+    server = LanguageServer()
+    try:
+        server.open_document(source.as_uri(), dependency, 1)
+        snapshot = server.analysis_snapshot()
+        body = 'sample::run {sample::define greet {return ok}; gre}'
+        text = (dependency if active else '\n') + body + '\n'
+        result = completion_items(
+            snapshot.documents,
+            workspace_index=snapshot.workspace_index,
+            metadata_registry=snapshot.metadata_registry,
+            uri=source.as_uri(),
+            live_text=text,
+            line=1,
+            character=len(body) - 1,
+        )
+        assert ('greet' in {item.label for item in result.items}) is active
+    finally:
+        server.shutdown()
+
+
 @pytest.mark.parametrize('tool_first', [True, False])
 def test_open_files_keep_their_own_module(project: Path, tool_first: bool) -> None:
     plain = (project / 'plain.tcl').as_uri()

@@ -273,6 +273,8 @@ class DocumentFacts:
     variable_references: tuple[VariableReference, ...]
     document_symbols: tuple[types.DocumentSymbol, ...]
     diagnostics: tuple[Diagnostic, ...]
+    # Active packages, including the closure added by dependency preparation.
+    required_packages: frozenset[str] = frozenset()
     module_scopes: tuple[ModuleSelection, ...] = ()
     module_rules: tuple[ModuleRule, ...] = ()
     diagnostic_rules: tuple[DiagnosticRule, ...] = ()
