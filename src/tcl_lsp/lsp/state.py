@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from lsprotocol import types
 
 from tcl_lsp.analysis import AnalysisResult, WorkspaceIndex
+from tcl_lsp.analysis.facts.bodies import BodyAnalysisCache
 from tcl_lsp.analysis.facts.lowering import DocumentSyntax
 from tcl_lsp.analysis.model import DocumentFacts
 from tcl_lsp.common import Span
@@ -26,6 +27,7 @@ class ManagedDocument:
     lexical_spans_included: bool
     # Extraction without external dependencies is the seed for each rebuild.
     base_facts: DocumentFacts | None = None
+    body_cache: BodyAnalysisCache = field(default_factory=BodyAnalysisCache)
 
     @property
     def parse_result(self) -> ParseResult:

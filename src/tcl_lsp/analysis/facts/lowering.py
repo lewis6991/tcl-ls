@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from threading import RLock
 
+from tcl_lsp.analysis.facts.locations import SourceRelocation
 from tcl_lsp.analysis.facts.parsing import (
     ConditionVariableSubstitution,
     ListItem,
@@ -14,6 +15,7 @@ from tcl_lsp.analysis.facts.utils import (
     command_documentation,
     normalize_command_name,
 )
+from tcl_lsp.cache import VersionCache
 from tcl_lsp.common import Diagnostic, Position, Span
 from tcl_lsp.parser import Parser, word_static_text
 from tcl_lsp.parser.model import (
@@ -198,8 +200,9 @@ def collect_parse_result_lexical_spans(
     parse_result: ParseResult,
     *,
     parser: Parser,
+    cache: VersionCache[tuple[str, bool], _LexicalBody] | None = None,
 ) -> tuple[tuple[Span, ...], tuple[Span, ...], tuple[Span, ...]]:
-    collector = _LexicalCollector(parser, parse_result.source_id)
+    collector = _LexicalCollector(parser, parse_result.source_id, cache=cache)
     collector.collect_parse_result(parse_result)
     return (
         tuple(collector.comment_spans),
@@ -220,9 +223,16 @@ def _script_lexical_spans(
 
 
 class _LexicalCollector:
-    def __init__(self, parser: Parser, source_id: str) -> None:
+    def __init__(
+        self,
+        parser: Parser,
+        source_id: str,
+        *,
+        cache: VersionCache[tuple[str, bool], _LexicalBody] | None = None,
+    ) -> None:
         self._parser = parser
         self._source_id = source_id
+        self._cache = cache
         self._visited: set[tuple[str, Position, bool]] = set()
         self.comment_spans: list[Span] = []
         self.string_spans: list[Span] = []
@@ -251,6 +261,31 @@ class _LexicalCollector:
         if key in self._visited:
             return
         self._visited.add(key)
+        if self._cache is not None:
+            body_key = (text, collect_comments)
+            body = self._cache.get(body_key)
+            if body is None:
+                # Collect independently of the caller's visited bodies, so a
+                # cached result contains every span in this text block.
+                collector = _LexicalCollector(self._parser, self._source_id, cache=self._cache)
+                parsed = self._parser.parse_embedded_script(self._source_id, text, start)
+                if collect_comments:
+                    collector.collect_parse_result(parsed)
+                else:
+                    collector.collect_script(parsed.script, collect_comments=False)
+                body = _LexicalBody(
+                    start,
+                    tuple(collector.comment_spans),
+                    tuple(collector.string_spans),
+                    tuple(collector.operator_spans),
+                )
+            else:
+                body = body.at(start)
+            self._cache.put(body_key, body)
+            self.comment_spans.extend(body.comments)
+            self.string_spans.extend(body.strings)
+            self.operator_spans.extend(body.operators)
+            return
         parsed = self._parser.parse_embedded_script(self._source_id, text, start)
         if collect_comments:
             self.collect_parse_result(parsed)
@@ -454,12 +489,40 @@ class _BodyParser(Parser):
             return parsed
 
 
+@dataclass(frozen=True, slots=True)
+class _LexicalBody:
+    origin: Position
+    comments: tuple[Span, ...]
+    strings: tuple[Span, ...]
+    operators: tuple[Span, ...]
+
+    def at(self, origin: Position) -> _LexicalBody:
+        if origin == self.origin:
+            return self
+        relocation = SourceRelocation(self.origin, origin)
+        return _LexicalBody(
+            origin,
+            tuple(relocation.span(span) for span in self.comments),
+            tuple(relocation.span(span) for span in self.strings),
+            tuple(relocation.span(span) for span in self.operators),
+        )
+
+
 class DocumentSyntax:
     """Syntax owned by a document version, independent of metadata and flow state."""
 
-    def __init__(self, parse_result: ParseResult, *, parser: Parser) -> None:
+    def __init__(
+        self,
+        parse_result: ParseResult,
+        *,
+        parser: Parser,
+        previous: DocumentSyntax | None = None,
+    ) -> None:
         self.parse_result = parse_result
         self.parser = _BodyParser(parser, parse_result.source_id)
+        self._lexical_bodies: VersionCache[tuple[str, bool], _LexicalBody] = (
+            VersionCache() if previous is None else previous._lexical_bodies.fork()
+        )
         # Keep the script beside the result so an identity key cannot be reused.
         self._lowered: dict[tuple[int, bool], tuple[Script, LoweringResult]] = {}
         self._lexical_spans: tuple[tuple[Span, ...], tuple[Span, ...], tuple[Span, ...]] | None = (
@@ -470,8 +533,15 @@ class DocumentSyntax:
     def lexical_spans(self) -> tuple[tuple[Span, ...], tuple[Span, ...], tuple[Span, ...]]:
         with self._lock:
             if self._lexical_spans is None:
-                self._lexical_spans = collect_parse_result_lexical_spans(
-                    self.parse_result, parser=self.parser
+                comments, strings, operators = collect_parse_result_lexical_spans(
+                    self.parse_result, parser=self.parser, cache=self._lexical_bodies
+                )
+                # Independently cached blocks can overlap (for example a switch
+                # branch list and its bodies). Each span needs one token only.
+                self._lexical_spans = (
+                    tuple(dict.fromkeys(comments)),
+                    tuple(dict.fromkeys(strings)),
+                    tuple(dict.fromkeys(operators)),
                 )
             return self._lexical_spans
 

@@ -833,6 +833,7 @@ class LanguageServer(PyglsLanguageServer):
             version=0,
             text=cached_document.text,
             syntax=cached_document.syntax,
+            body_cache=cached_document.body_cache,
             facts=facts,
             analysis=analysis,
             lexical_spans_included=cached_document.lexical_spans_included,

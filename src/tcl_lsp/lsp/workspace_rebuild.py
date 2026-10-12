@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from tcl_lsp.analysis import DocumentFacts, FactExtractor, Resolver, WorkspaceIndex
+from tcl_lsp.analysis.facts.bodies import BodyAnalysisCache
 from tcl_lsp.analysis.facts.lowering import DocumentSyntax
 from tcl_lsp.lsp.state import (
     IndexingProgressCallback,
@@ -224,6 +225,7 @@ class WorkspaceRebuilder:
                     uri=uri,
                     text=text,
                     version=version,
+                    previous=documents.get(uri),
                 )
                 documents[uri] = document
                 workspace_index.update(uri, document.facts)
@@ -301,12 +303,17 @@ class WorkspaceRebuilder:
         version: int,
         background_resolver: Resolver | None = None,
         include_lexical_spans: bool = False,
+        previous: ManagedDocument | None = None,
     ) -> ManagedDocument:
         parse_result = parser.parse_document(path=uri, text=text)
-        syntax = DocumentSyntax(parse_result, parser=parser)
+        syntax = DocumentSyntax(
+            parse_result, parser=parser, previous=previous.syntax if previous is not None else None
+        )
+        body_cache = previous.body_cache.fork() if previous is not None else BodyAnalysisCache()
         facts = extractor.extract(
             parse_result,
             syntax=syntax,
+            body_cache=body_cache,
             include_lexical_spans=include_lexical_spans,
         )
         return ManagedDocument(
@@ -314,6 +321,7 @@ class WorkspaceRebuilder:
             version=version,
             text=text,
             syntax=syntax,
+            body_cache=body_cache,
             facts=facts,
             analysis=(
                 empty_analysis(uri, facts.document_symbols)
@@ -539,6 +547,7 @@ def prepare_workspace_documents(
         return extractor.extract(
             document.parse_result,
             syntax=document.syntax,
+            body_cache=document.body_cache,
             include_lexical_spans=document.lexical_spans_included,
             module_rules=facts.module_rules,
             required_packages=packages,

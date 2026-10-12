@@ -21,6 +21,7 @@ from tcl_lsp.analysis.embedded_languages import (
     match_embedded_language_entries,
     resolve_embedded_language_entries,
 )
+from tcl_lsp.analysis.facts.bodies import BodyAnalysisCache, BodyInputs, CachedBody, FactBuffer
 from tcl_lsp.analysis.facts.lowering import (
     DocumentSyntax,
     LoweredCatchCommand,
@@ -188,6 +189,7 @@ class FactExtractor:
         parse_result: ParseResult,
         *,
         syntax: DocumentSyntax | None = None,
+        body_cache: BodyAnalysisCache | None = None,
         include_parse_result: bool = True,
         include_lexical_spans: bool | None = None,
         module_rules: tuple[ModuleRule, ...] | None = None,
@@ -204,6 +206,7 @@ class FactExtractor:
             module_rules = configured_module_rules(source_path) if source_path is not None else ()
 
         syntax = syntax or DocumentSyntax(parse_result, parser=self._parser)
+        body_cache = body_cache or BodyAnalysisCache()
         assert syntax.parse_result is parse_result
         lowering_result = syntax.lower_parse_result(
             parse_result,
@@ -226,6 +229,7 @@ class FactExtractor:
                 required_packages=required_packages,
                 module_rules=module_rules,
                 syntax=syntax,
+                body_cache=body_cache,
                 plugin_host=self._plugin_host,
                 parse_result=parse_result,
                 comment_spans=lowering_result.comment_spans,
@@ -247,34 +251,21 @@ class FactExtractor:
 
 class _FactCollector:
     __slots__ = (
-        '_command_calls',
-        '_command_imports',
-        '_command_renames',
-        '_comment_spans',
-        '_diagnostic_directives',
-        '_diagnostics',
+        '_body_cache',
+        '_facts',
+        '_imports',
         '_include_lexical_spans',
         '_include_parse_result',
         '_linked_variables_by_scope',
         '_lowered_script',
         '_metadata_registry',
         '_module_rules',
-        '_module_scopes',
-        '_namespaces',
-        '_operator_spans',
-        '_package_index_entries',
-        '_package_provides',
-        '_package_requires',
         '_parse_result',
         '_parser',
+        '_plugin_generation',
         '_plugin_host',
-        '_procedures',
         '_required_packages',
-        '_source_directives',
-        '_string_spans',
         '_syntax',
-        '_variable_bindings',
-        '_variable_references',
     )
 
     def __init__(
@@ -284,6 +275,7 @@ class _FactCollector:
         plugin_host: TclPluginHost,
         parse_result: ParseResult,
         *,
+        body_cache: BodyAnalysisCache,
         required_packages: frozenset[str],
         module_rules: tuple[ModuleRule, ...],
         comment_spans: tuple[Span, ...],
@@ -302,7 +294,10 @@ class _FactCollector:
         ):
             if name not in metadata_module_names(metadata_registry.catalog):
                 raise RuntimeError(f'Unknown metadata module `{name}`.')
-        self._module_scopes: list[ModuleSelection] = []
+        self._facts = FactBuffer()
+        self._body_cache = body_cache
+        self._imports: list[CommandImport] = []
+        self._plugin_generation = 0
         self._syntax = syntax
         self._parser = syntax.parser
         self._plugin_host = plugin_host
@@ -310,23 +305,11 @@ class _FactCollector:
         self._lowered_script = lowered_script
         self._include_lexical_spans = include_lexical_spans
         self._include_parse_result = include_parse_result
-        self._diagnostics: list[Diagnostic] = list(diagnostics)
-        self._diagnostic_directives: list[tuple[int, DiagnosticRule]] = []
+        self._facts.diagnostics.extend(diagnostics)
         self._required_packages = required_packages
-        self._comment_spans: list[Span] = list(comment_spans)
-        self._string_spans: list[Span] = list(string_spans)
-        self._operator_spans: list[Span] = list(operator_spans)
-        self._namespaces: list[NamespaceScope] = []
-        self._procedures: list[ProcDecl] = []
-        self._source_directives: list[SourceDirective] = []
-        self._command_imports: list[CommandImport] = []
-        self._command_renames: list[CommandRename] = []
-        self._package_requires: list[PackageRequire] = []
-        self._package_provides: list[PackageProvide] = []
-        self._package_index_entries: list[PackageIndexEntry] = []
-        self._variable_bindings: list[VarBinding] = []
-        self._command_calls: list[CommandCall] = []
-        self._variable_references: list[VariableReference] = []
+        self._facts.comment_spans.extend(comment_spans)
+        self._facts.string_spans.extend(string_spans)
+        self._facts.operator_spans.extend(operator_spans)
         self._linked_variables_by_scope: dict[str, dict[str, _VariableTarget]] = {}
 
     def collect(self) -> DocumentFacts:
@@ -344,29 +327,29 @@ class _FactCollector:
             uri=self._parse_result.source_id,
             parse_result=self._parse_result if self._include_parse_result else None,
             control_flow=build_control_flow_script(self._lowered_script),
-            comment_spans=tuple(self._comment_spans),
-            string_spans=tuple(self._string_spans),
-            operator_spans=tuple(self._operator_spans),
-            namespaces=tuple(self._namespaces),
-            procedures=tuple(self._procedures),
-            source_directives=tuple(self._source_directives),
-            command_imports=tuple(self._command_imports),
-            command_renames=tuple(self._command_renames),
-            package_requires=tuple(self._package_requires),
-            package_provides=tuple(self._package_provides),
-            package_index_entries=tuple(self._package_index_entries),
-            variable_bindings=tuple(self._variable_bindings),
-            command_calls=tuple(self._command_calls),
-            variable_references=tuple(self._variable_references),
+            comment_spans=tuple(self._facts.comment_spans),
+            string_spans=tuple(self._facts.string_spans),
+            operator_spans=tuple(self._facts.operator_spans),
+            namespaces=tuple(self._facts.namespaces),
+            procedures=tuple(self._facts.procedures),
+            source_directives=tuple(self._facts.source_directives),
+            command_imports=tuple(self._facts.command_imports),
+            command_renames=tuple(self._facts.command_renames),
+            package_requires=tuple(self._facts.package_requires),
+            package_provides=tuple(self._facts.package_provides),
+            package_index_entries=tuple(self._facts.package_index_entries),
+            variable_bindings=tuple(self._facts.variable_bindings),
+            command_calls=tuple(self._facts.command_calls),
+            variable_references=tuple(self._facts.variable_references),
             document_symbols=tuple(self._build_document_symbols()),
-            diagnostics=tuple(self._diagnostics),
+            diagnostics=tuple(self._facts.diagnostics),
             required_packages=self._required_packages,
-            module_scopes=tuple(self._module_scopes),
+            module_scopes=tuple(self._facts.module_scopes),
             module_rules=self._module_rules,
             diagnostic_rules=tuple(
                 rule
                 for _, rule in sorted(
-                    self._diagnostic_directives,
+                    self._facts.diagnostic_directives,
                     key=lambda item: (item[1].statement is not None, item[0]),
                 )
             ),
@@ -396,7 +379,7 @@ class _FactCollector:
                 end = event.span.end
             else:
                 for comment, rule in pending_diagnostics:
-                    self._diagnostic_directives.append(
+                    self._facts.diagnostic_directives.append(
                         (
                             comment.span.start.offset,
                             replace(rule, statement=event.command.span),
@@ -432,7 +415,7 @@ class _FactCollector:
         )
         previous = context.selected_modules if previous_modules is None else previous_modules
         if modules != previous:
-            self._module_scopes.append(ModuleSelection(span, modules))
+            self._facts.module_scopes.append(ModuleSelection(span, modules))
         return replace(context, metadata_registry=registry, selected_modules=modules)
 
     def _collect_directive(
@@ -459,7 +442,7 @@ class _FactCollector:
                 if words[2] == 'statement':
                     pending_diagnostics.append((comment, rule))
                 else:
-                    self._diagnostic_directives.append((comment.span.start.offset, rule))
+                    self._facts.diagnostic_directives.append((comment.span.start.offset, rule))
             return context
         if len(words) != 3 or words[:2] != ['tcl-ls:', 'module']:
             message = 'Module directives must be `# tcl-ls: module name`.'
@@ -467,7 +450,7 @@ class _FactCollector:
             message = f'Unknown metadata module `{words[2]}`.'
         else:
             return replace(context, explicit_modules=(*context.explicit_modules, words[2]))
-        self._diagnostics.append(
+        self._facts.diagnostics.append(
             Diagnostic(
                 span=comment.span,
                 severity='error',
@@ -479,7 +462,7 @@ class _FactCollector:
         return context
 
     def _invalid_diagnostic_directive(self, comment: Token, message: str) -> None:
-        self._diagnostics.append(
+        self._facts.diagnostics.append(
             Diagnostic(
                 span=comment.span,
                 severity='error',
@@ -805,7 +788,7 @@ class _FactCollector:
         arg_grouped: tuple[bool, ...],
         context: _ExtractionContext,
     ) -> None:
-        self._command_calls.append(
+        self._facts.command_calls.append(
             CommandCall(
                 uri=context.uri,
                 name=command_name,
@@ -855,7 +838,7 @@ class _FactCollector:
             return
 
         new_qualified_name = qualify_name(new_name, context.namespace) if new_name else None
-        self._command_renames.append(
+        self._facts.command_renames.append(
             CommandRename(
                 symbol_id=(
                     None
@@ -1117,6 +1100,7 @@ class _FactCollector:
         plugin: MetadataPlugin,
     ) -> tuple[EmbeddedLanguageEntry, ...]:
         word_texts, static_flags = self._plugin_word_texts(command.words)
+        self._plugin_generation += 1
         effects = self._plugin_host.call_plugin(
             plugin,
             words=word_texts,
@@ -1231,7 +1215,7 @@ class _FactCollector:
             documentation=command_documentation(command),
             body_span=body_span(body_word) if body_word is not None else None,
         )
-        self._procedures.append(proc_decl)
+        self._facts.procedures.append(proc_decl)
 
         if body_word is None:
             return
@@ -1241,7 +1225,7 @@ class _FactCollector:
             embedded_language=procedure.body_context,
         )
         self._record_parameter_bindings(proc_decl.parameters, body_context)
-        self._collect_script_body_word(body_word, body_context)
+        self._collect_procedure_body(body_word, body_context)
 
     def _collect_plugin_procedure(
         self,
@@ -1341,7 +1325,7 @@ class _FactCollector:
             documentation=command_documentation(command),
             body_span=body_span(body_word) if body_word is not None else None,
         )
-        self._procedures.append(proc_decl)
+        self._facts.procedures.append(proc_decl)
 
         if body_word is None:
             return
@@ -1351,7 +1335,7 @@ class _FactCollector:
             embedded_language=procedure.body_context,
         )
         self._record_parameter_bindings(proc_decl.parameters, body_context)
-        self._collect_script_body_word(body_word, body_context)
+        self._collect_procedure_body(body_word, body_context)
 
     def _collect_plugin_selected_effect(
         self,
@@ -1436,7 +1420,7 @@ class _FactCollector:
                 target_path = Path(path_text).expanduser()
                 if not target_path.is_absolute():
                     target_path = base_directory / target_path
-                self._source_directives.append(
+                self._facts.source_directives.append(
                     SourceDirective(
                         uri=context.uri,
                         target_uri=target_path.resolve(strict=False).as_uri(),
@@ -1538,7 +1522,7 @@ class _FactCollector:
         span: Span,
         context: _ExtractionContext,
     ) -> None:
-        self._package_requires.append(
+        self._facts.package_requires.append(
             PackageRequire(
                 uri=context.uri,
                 name=package_name,
@@ -1605,7 +1589,7 @@ class _FactCollector:
         return resolve_embedded_language_entries((*entries, *additional_entries))
 
     def _report_conflicting_embedded_language(self, span: Span) -> None:
-        self._diagnostics.append(
+        self._facts.diagnostics.append(
             Diagnostic(
                 span=span,
                 severity='error',
@@ -1616,7 +1600,7 @@ class _FactCollector:
         )
 
     def _report_unsupported_special_enter(self, span: Span) -> None:
-        self._diagnostics.append(
+        self._facts.diagnostics.append(
             Diagnostic(
                 span=span,
                 severity='error',
@@ -1741,10 +1725,10 @@ class _FactCollector:
             Script(span=embedded_command.span, commands=(embedded_command,)),
             collect_lexical_spans=self._include_lexical_spans,
         )
-        self._comment_spans.extend(lowering_result.comment_spans)
-        self._string_spans.extend(lowering_result.string_spans)
-        self._operator_spans.extend(lowering_result.operator_spans)
-        self._diagnostics.extend(lowering_result.diagnostics)
+        self._facts.comment_spans.extend(lowering_result.comment_spans)
+        self._facts.string_spans.extend(lowering_result.string_spans)
+        self._facts.operator_spans.extend(lowering_result.operator_spans)
+        self._facts.diagnostics.extend(lowering_result.diagnostics)
         return self._collect_lowered_script(lowering_result.script, context)
 
     def _collect_embedded_procedure(
@@ -1823,7 +1807,7 @@ class _FactCollector:
             documentation=command_documentation(command),
             body_span=body_span(body_word) if body_word is not None else None,
         )
-        self._procedures.append(proc_decl)
+        self._facts.procedures.append(proc_decl)
 
         if body_word is None:
             return
@@ -1834,7 +1818,7 @@ class _FactCollector:
             embedded_owner_name=owner_name,
         )
         self._record_parameter_bindings(proc_decl.parameters, body_context)
-        self._collect_script_body_word(body_word, body_context)
+        self._collect_procedure_body(body_word, body_context)
 
     def _collect_selected_metadata_annotations(
         self,
@@ -2045,7 +2029,7 @@ class _FactCollector:
 
         candidates: dict[str, None] = {}
         for candidate_namespace in self._namespace_candidates(namespace):
-            for command_import in self._command_imports:
+            for command_import in self._imports:
                 if command_import.namespace != candidate_namespace:
                     continue
                 target_name = self._import_target_name(command_import, raw_name)
@@ -2139,6 +2123,71 @@ class _FactCollector:
             return raw_text
         return word_static_text(word)
 
+    def _collect_procedure_body(
+        self,
+        word: Word,
+        context: _ExtractionContext,
+        *,
+        script: LoweredScript | None = None,
+    ) -> None:
+        body = self._embedded_script_text(word)
+        if body is None:
+            return
+        text, origin = body
+        assert context.procedure_symbol_id is not None
+        flow = context.flow_state
+        key = BodyInputs(
+            text=text,
+            uri=context.uri,
+            namespace=context.namespace,
+            embedded_language=context.embedded_language,
+            embedded_owner_name=context.embedded_owner_name,
+            command_renames_enabled=context.command_renames_enabled,
+            metadata_registry=context.metadata_registry,
+            explicit_modules=context.explicit_modules,
+            selected_modules=context.selected_modules,
+            module_rules=self._module_rules,
+            required_packages=self._required_packages,
+            include_lexical_spans=self._include_lexical_spans,
+            already_lowered=script is not None,
+            exact_values=tuple(sorted(flow.exact_values_by_name.items())),
+            flow_namespace=flow.namespace,
+            flow_procedure=flow.procedure,
+            flow_links=flow.links,
+            flow_unknown_links=flow.unknown_links,
+            imports=tuple(
+                (item.namespace, item.kind, item.imported_name, item.target_name)
+                for item in self._imports
+            ),
+        )
+        cache = self._body_cache
+        cached = cache.get(key)
+        if cached is not None:
+            cached = cached.at(origin, context.procedure_symbol_id)
+            cache.put(key, cached)
+            self._facts.extend(cached.facts)
+            self._imports.extend(cached.facts.command_imports)
+            return
+
+        parent_facts = self._facts
+        parent_links = self._linked_variables_by_scope
+        self._facts = FactBuffer()
+        self._linked_variables_by_scope = {}
+        plugin_generation = self._plugin_generation
+        try:
+            if script is None:
+                self._collect_script_body_word(word, context)
+            else:
+                self._collect_lowered_script(script, context)
+            facts = self._facts.freeze()
+        finally:
+            self._facts = parent_facts
+            self._linked_variables_by_scope = parent_links
+        self._facts.extend(facts)
+        # Plugins may depend on external state or the absolute scope ID.
+        if plugin_generation == self._plugin_generation:
+            cache.put(key, CachedBody(origin, context.procedure_symbol_id, facts))
+
     def _collect_script_body_word(
         self, word: Word, context: _ExtractionContext
     ) -> _ExtractionContext:
@@ -2151,12 +2200,12 @@ class _FactCollector:
         lowering_result = self._syntax.lower_parse_result(
             parse_result, collect_lexical_spans=self._include_lexical_spans
         )
-        self._diagnostics.extend(parse_result.diagnostics)
+        self._facts.diagnostics.extend(parse_result.diagnostics)
 
-        self._comment_spans.extend(lowering_result.comment_spans)
-        self._string_spans.extend(lowering_result.string_spans)
-        self._operator_spans.extend(lowering_result.operator_spans)
-        self._diagnostics.extend(lowering_result.diagnostics)
+        self._facts.comment_spans.extend(lowering_result.comment_spans)
+        self._facts.string_spans.extend(lowering_result.string_spans)
+        self._facts.operator_spans.extend(lowering_result.operator_spans)
+        self._facts.diagnostics.extend(lowering_result.diagnostics)
         return self._collect_lowered_script(lowering_result.script, context)
 
     def _embedded_script_text(self, word: Word) -> tuple[str, Position] | None:
@@ -2187,7 +2236,7 @@ class _FactCollector:
                 for word in command.words[3:]
                 if (version_text := word_static_text(word)) is not None
             )
-            self._package_requires.append(
+            self._facts.package_requires.append(
                 PackageRequire(
                     uri=context.uri,
                     name=package_name,
@@ -2202,7 +2251,7 @@ class _FactCollector:
             if package_name is None:
                 return
             version = word_static_text(command.words[3]) if len(command.words) >= 4 else None
-            self._package_provides.append(
+            self._facts.package_provides.append(
                 PackageProvide(
                     uri=context.uri,
                     name=package_name,
@@ -2222,7 +2271,7 @@ class _FactCollector:
                 if len(command.words) >= 5
                 else None
             )
-            self._package_index_entries.append(
+            self._facts.package_index_entries.append(
                 PackageIndexEntry(
                     uri=context.uri,
                     name=package_name,
@@ -2241,7 +2290,7 @@ class _FactCollector:
         if target_uri is None:
             return
 
-        self._source_directives.append(
+        self._facts.source_directives.append(
             SourceDirective(
                 uri=context.uri,
                 target_uri=target_uri,
@@ -2294,7 +2343,7 @@ class _FactCollector:
             documentation=command.documentation,
             body_span=command.body_span,
         )
-        self._procedures.append(proc_decl)
+        self._facts.procedures.append(proc_decl)
 
         body_context = self._procedure_context(proc_decl, context)
         self._record_parameter_bindings(proc_decl.parameters, body_context)
@@ -2330,7 +2379,7 @@ class _FactCollector:
             span=command.namespace_span,
             selection_span=command.namespace_span,
         )
-        self._namespaces.append(namespace_scope)
+        self._facts.namespaces.append(namespace_scope)
 
         if context.procedure_symbol_id is not None:
             return self._context_with_flow_state(context, context.flow_state.invalidated())
@@ -2348,6 +2397,10 @@ class _FactCollector:
         )
         return self._context_with_flow_state(context, context.flow_state.invalidated())
 
+    def _record_command_import(self, command_import: CommandImport) -> None:
+        self._imports.append(command_import)
+        self._facts.command_imports.append(command_import)
+
     def _collect_namespace_import(self, command: Command, context: _ExtractionContext) -> None:
         for pattern_word in command.words[2:]:
             pattern = word_static_text(pattern_word)
@@ -2357,7 +2410,7 @@ class _FactCollector:
             exact_import = self._exact_command_import(pattern, context.namespace)
             if exact_import is not None:
                 imported_name, target_name = exact_import
-                self._command_imports.append(
+                self._record_command_import(
                     CommandImport(
                         uri=context.uri,
                         namespace=context.namespace,
@@ -2373,7 +2426,7 @@ class _FactCollector:
             if target_namespace is None:
                 continue
 
-            self._command_imports.append(
+            self._record_command_import(
                 CommandImport(
                     uri=context.uri,
                     namespace=context.namespace,
@@ -2872,6 +2925,12 @@ class _FactCollector:
                     selected_word=selected_word,
                 )
 
+        if isinstance(command, LoweredProcCommand):
+            assert body.word_index is not None
+            self._collect_procedure_body(
+                command.command.words[body.word_index], body_context, script=body.script
+            )
+            return context
         result = self._collect_lowered_script(body.script, body_context)
         return replace(context, flow_state=result.flow_state)
 
@@ -3261,7 +3320,7 @@ class _FactCollector:
         uri: str,
         exact_values: tuple[str, ...] = (),
     ) -> None:
-        self._variable_references.append(
+        self._facts.variable_references.append(
             VariableReference(
                 uri=uri,
                 name=name,
@@ -3286,7 +3345,7 @@ class _FactCollector:
         kind: BindingKind,
         exact_values: tuple[str, ...] = (),
     ) -> None:
-        self._variable_bindings.append(
+        self._facts.variable_bindings.append(
             VarBinding(
                 symbol_id=symbol_id,
                 uri=uri,
@@ -3589,7 +3648,7 @@ class _FactCollector:
 
     def _build_document_symbols(self) -> list[types.DocumentSymbol]:
         symbols: list[types.DocumentSymbol] = []
-        for namespace in sorted(self._namespaces, key=lambda item: item.span.start.offset):
+        for namespace in sorted(self._facts.namespaces, key=lambda item: item.span.start.offset):
             symbols.append(
                 types.DocumentSymbol(
                     name=namespace.qualified_name,
@@ -3599,7 +3658,7 @@ class _FactCollector:
                     children=None,
                 )
             )
-        for proc in sorted(self._procedures, key=lambda item: item.name_span.start.offset):
+        for proc in sorted(self._facts.procedures, key=lambda item: item.name_span.start.offset):
             symbols.append(
                 types.DocumentSymbol(
                     name=proc.qualified_name,

@@ -49,15 +49,22 @@ update, as an editor may do while typing.
 Add ``--profile run.prof`` to record a CPU profile, then inspect it with
 ``uv run python -m pstats run.prof``. Use unprofiled runs for timing comparisons.
 
-Analysis reuse has three lifetimes:
+Analysis reuse follows these boundaries:
 
 * A metadata catalog shares compiled package data across active module views.
   Declaration snapshots track each included file and refresh after saved edits.
 * A document version owns its parsed bodies, lowered syntax, and lexical spans.
-  Fact extraction and highlighting share syntax; semantic facts still depend on
-  the active metadata and packages. The checker retains syntax and facts for
+  Highlighting also reuses lexical spans for unchanged text blocks across
+  versions. Semantic facts depend on the active metadata and packages.
+  The checker retains syntax and facts for
   each package context for one check, so shared dependencies are analyzed once
   per context.
+* Procedure bodies produce immutable fact batches. The LSP reuses a batch when
+  its text, metadata, packages, imports, and entry context match. Moving a body
+  updates its spans and scope IDs; declarations and parameters are collected
+  again. Each version retains its used batches and the previous version's
+  batches, without retaining a chain of documents. Bodies that call Tcl plugins
+  are collected again because plugins can inspect absolute scope IDs and state.
 * One pending workspace result serves completion, highlighting, and diagnostics.
   Reuse requires matching text, versions, configuration, metadata, and dependency
   state. Cancelled or superseded builds cannot replace published analysis.

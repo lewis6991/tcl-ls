@@ -1,15 +1,43 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 from functools import lru_cache
 from threading import RLock
-from typing import ParamSpec, TypeVar, cast
+from typing import ParamSpec, Self, TypeVar, cast
 
 P = ParamSpec('P')
 R = TypeVar('R')
 
 _CACHE_CLEARERS: dict[str, list[Callable[[], None]]] = {}
 _CACHE_LOCK = RLock()
+
+
+class VersionCache[K: Hashable, V]:
+    """Read the previous version; retain only results used by this version.
+
+    Callers put both computed and reused results. Forks copy those entries,
+    without retaining a chain of caches or changing the published version.
+    Values must be immutable.
+    """
+
+    def __init__(self) -> None:
+        self._previous: dict[K, V] = {}
+        self._current: dict[K, V] = {}
+        self._lock = RLock()
+
+    def fork(self) -> Self:
+        result = type(self)()
+        with self._lock:
+            result._previous = self._current.copy()
+        return result
+
+    def get(self, key: K) -> V | None:
+        with self._lock:
+            return self._current.get(key, self._previous.get(key))
+
+    def put(self, key: K, value: V) -> None:
+        with self._lock:
+            self._current[key] = value
 
 
 def register_cache_clearer(group: str, clear: Callable[[], None]) -> None:
