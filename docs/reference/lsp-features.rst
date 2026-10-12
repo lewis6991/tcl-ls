@@ -34,12 +34,18 @@ Navigation And Editing
 Completion triggers are ``$``, ``:``, and ``-``. Signature help triggers are
 space and tab.
 
+Use :doc:`annotations` to add parameter types, return types, and descriptions
+to procedure hover, completion, and signature help.
+
 Diagnostics And Semantic Tokens
 -------------------------------
 
 * ``textDocument/publishDiagnostics`` on open, change, and close
 * ``textDocument/semanticTokens/full``
 * ``textDocument/semanticTokens/full/delta``
+
+Semantic tokens distinguish annotation tags, type names, parameter names,
+record fields, literal values, and descriptions in :doc:`annotations`.
 
 Limits
 ------

@@ -10,6 +10,7 @@ from tcl_lsp.analysis.flow.variables import (
     state_with_unset_command,
     switch_branch_flow_state,
     unset_target_words,
+    word_type_info,
 )
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
     'state_with_unset_command',
     'switch_branch_flow_state',
     'unset_target_words',
+    'word_type_info',
 ]

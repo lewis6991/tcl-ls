@@ -753,3 +753,27 @@ def test_tcl_check_main_reports_workspace_progress_on_tty(
     assert 'Summary\n' in output
     assert '[provisional]' not in output
     assert 'Preparing workspace' in stderr.getvalue()
+
+
+@pytest.mark.parametrize('source_provider', [False, True])
+def test_check_project_uses_return_annotations_for_dynamic_bindings(
+    tmp_path: Path,
+    source_provider: bool,
+) -> None:
+    provider = tmp_path / 'provider.tcl'
+    provider.write_text('# @return "selected"\nproc variable_name {} {return selected}\n')
+    caller = tmp_path / 'main.tcl'
+    caller.write_text(
+        (
+            'source [file join [file dirname [info script]] provider.tcl]\n'
+            if source_provider
+            else ''
+        )
+        + 'proc use {} {set name [variable_name]; set $name 1; puts $selected}\n'
+    )
+    target = caller if source_provider else tmp_path
+    assert check_project(target, threads=1).diagnostics == ()
+    provider.write_text('proc variable_name {} {return selected}\n')
+    assert [item.diagnostic.code for item in check_project(target, threads=1).diagnostics] == [
+        'unresolved-variable'
+    ]

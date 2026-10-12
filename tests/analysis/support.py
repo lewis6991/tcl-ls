@@ -28,6 +28,10 @@ def analyze_document(parser: Parser, uri: str, text: str) -> AnalysisSnapshot:
     parse_result = parser.parse_document(uri, text)
     facts = extractor.extract(parse_result)
     workspace.update(facts.uri, facts)
+    call_types = resolver.call_types(facts, workspace)
+    if call_types:
+        facts = extractor.extract(parse_result, call_types=call_types)
+        workspace.update(facts.uri, facts)
     analysis = resolver.analyze(facts.uri, facts, workspace)
     return AnalysisSnapshot(facts=facts, analysis=analysis)
 
@@ -51,6 +55,10 @@ def analyze_path(
     )
     facts = extractor.extract(parse_result)
     workspace.update(facts.uri, facts)
+    call_types = resolver.call_types(facts, workspace)
+    if call_types:
+        facts = extractor.extract(parse_result, call_types=call_types)
+        workspace.update(facts.uri, facts)
     analysis = resolver.analyze(facts.uri, facts, workspace)
     return facts, analysis
 
@@ -72,5 +80,10 @@ def analyze_workspace(
         facts_by_uri[uri] = facts
 
     target_facts = facts_by_uri[target_uri]
+    call_types = resolver.call_types(target_facts, workspace)
+    if call_types:
+        assert target_facts.parse_result is not None
+        target_facts = extractor.extract(target_facts.parse_result, call_types=call_types)
+        workspace.update(target_uri, target_facts)
     analysis = resolver.analyze(target_uri, target_facts, workspace)
     return AnalysisSnapshot(facts=target_facts, analysis=analysis)

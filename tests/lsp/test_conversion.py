@@ -93,6 +93,9 @@ def test_language_server_initialize_serializes_protocol_models() -> None:
         'variable',
         'string',
         'operator',
+        'type',
+        'property',
+        'number',
     ]
     assert legend['tokenModifiers'] == ['declaration', 'defaultLibrary', 'deprecated']
     assert semantic_tokens['full'] == {'delta': True}

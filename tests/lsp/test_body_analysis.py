@@ -20,10 +20,6 @@ def assert_fresh_analysis(server: LanguageServer, uri: str, text: str) -> None:
     fresh = new_server()
     try:
         fresh.open_document(uri, text, 1)
-        actual = server.documents[uri]
-        expected = fresh.documents[uri]
-        assert actual.facts == expected.facts
-        assert actual.analysis == expected.analysis
         for active in (server, fresh):
             active.workspace.put_text_document(
                 types.TextDocumentItem(
@@ -37,6 +33,10 @@ def assert_fresh_analysis(server: LanguageServer, uri: str, text: str) -> None:
         fresh_tokens = fresh.semantic_tokens(uri)
         assert tokens is not None and fresh_tokens is not None
         assert tokens.data == fresh_tokens.data
+        actual = server.documents[uri]
+        expected = fresh.documents[uri]
+        assert actual.facts == expected.facts
+        assert actual.analysis == expected.analysis
     finally:
         fresh.shutdown()
 
@@ -67,6 +67,38 @@ last 1
             assert_fresh_analysis(server, uri, edited)
             first = next(c for c in server.documents[uri].facts.command_calls if c.name == 'puts')
             assert first is unchanged
+    finally:
+        server.shutdown()
+
+
+def test_annotation_edits_refresh_cached_parameter_and_variable_types(tmp_path: Path) -> None:
+    uri = (tmp_path / 'main.tcl').as_uri()
+    text = """# @alias State "enabled"|"disabled"
+# @param state State
+proc use {state} {
+    set copy $state
+    if {$copy eq "enabled"} {puts $copy} else {puts $copy}
+    # @type State
+    set configured [read stdin]
+    puts $configured
+}
+"""
+    server = new_server()
+    try:
+        server.open_document(uri, text, 1)
+        variants = (
+            '\n' + text,
+            text.replace('"disabled"', '"candidate"'),
+            text.replace('@param state State', '@param state integer'),
+            text.replace('@type State', '@type string[]'),
+        )
+        for version, edited in enumerate(variants, start=2):
+            server.change_document(uri, edited, version)
+            assert_fresh_analysis(server, uri, edited)
+        refs = server.documents[uri].facts.variable_references
+        assert refs[-1].type_info is not None
+        assert refs[-1].type_info.expression.text == 'string[]'
+        assert refs[-1].exact_values == ()
     finally:
         server.shutdown()
 
@@ -204,5 +236,65 @@ def test_highlighting_reuses_moved_blocks_with_nested_and_repeated_text(tmp_path
             edited = prefix + text
             server.change_document(uri, edited, version)
             assert_fresh_analysis(server, uri, edited)
+    finally:
+        server.shutdown()
+
+
+def test_return_type_edits_refresh_cached_caller_bodies(tmp_path: Path) -> None:
+    uri = (tmp_path / 'main.tcl').as_uri()
+    text = """# @return [integer, string]
+proc read_state {} {return {1 text}}
+proc use {} {
+    set pair [read_state]
+    lassign $pair count state
+    puts $count
+    puts $state
+}
+"""
+    server = new_server()
+    try:
+        server.open_document(uri, text, 1)
+        edits = (
+            '# move all bodies\n' + text,
+            text.replace('[integer, string]', '[string, integer]'),
+            text.replace('# @return [integer, string]\n', ''),
+            text,
+        )
+        for version, edited in enumerate(edits, start=2):
+            server.change_document(uri, edited, version)
+            assert_fresh_analysis(server, uri, edited)
+            count = next(
+                ref
+                for ref in server.documents[uri].facts.variable_references
+                if ref.name == 'count'
+            )
+            expected = 'string' if version == 3 else None if version == 4 else 'integer'
+            assert (count.type_info.expression.text if count.type_info else None) == expected
+    finally:
+        server.shutdown()
+
+
+def test_sourced_return_alias_edits_refresh_callers(tmp_path: Path) -> None:
+    provider = tmp_path / 'provider.tcl'
+    definitions = '# @alias State "enabled"|"disabled"\n# @return State\nproc read_state {} {return enabled}\n'
+    provider.write_text(definitions)
+    uri = (tmp_path / 'main.tcl').as_uri()
+    text = 'source [file join [file dirname [info script]] provider.tcl]\nproc use {} {set state [read_state]; puts $state}\n'
+    server = new_server()
+    try:
+        server.open_document(uri, text, 1)
+        server.open_document(provider.as_uri(), definitions, 1)
+        edits = (
+            definitions.replace('"enabled"|"disabled"', 'integer'),
+            definitions.replace('# @return State\n', ''),
+            definitions,
+        )
+        for version, edited in enumerate(edits, start=2):
+            provider.write_text(edited)
+            server.change_document(provider.as_uri(), edited, version)
+            assert_fresh_analysis(server, uri, text)
+            reference = server.documents[uri].facts.variable_references[0]
+            assert (reference.type_info is None) == (version == 3)
+            assert reference.exact_values == (('enabled', 'disabled') if version == 4 else ())
     finally:
         server.shutdown()

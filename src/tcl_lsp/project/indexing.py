@@ -13,6 +13,8 @@ from tcl_lsp.analysis.metadata_effects import (
     metadata_dependency_overlay,
 )
 from tcl_lsp.analysis.model import DocumentFacts, PackageIndexEntry
+from tcl_lsp.analysis.resolver import Resolver
+from tcl_lsp.analysis.types import CallTypes
 from tcl_lsp.metadata_paths import DEFAULT_METADATA_REGISTRY, MetadataRegistry
 from tcl_lsp.parser import Parser, word_static_text
 from tcl_lsp.project.paths import candidate_package_roots, read_source_file, source_id_to_path
@@ -156,15 +158,18 @@ def prepare_dependencies(
     *,
     workspace_index: WorkspaceIndex,
     load_facts: Callable[[str], DocumentFacts | None],
-    extract_facts: Callable[[DocumentFacts, frozenset[str]], DocumentFacts],
+    extract_facts: Callable[[DocumentFacts, frozenset[str], CallTypes], DocumentFacts],
     metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
     check_cancelled: Callable[[], None] | None = None,
+    dependency_scoped_calls: bool = False,
 ) -> None:
     """Expand file-local facts with dependencies and their metadata.
 
     Inputs must exclude external package activation from earlier builds. This
     prevents removed requirements from surviving through a dependency cycle.
     Output facts carry the complete package set used by subsequent analysis.
+    Call types use the full workspace, or each document's dependencies when
+    dependency_scoped_calls is set (as in the language server).
     """
     failed_uris: set[str] = set()
     for uri, facts in facts_by_uri.items():
@@ -212,13 +217,40 @@ def prepare_dependencies(
             ):
                 facts = replace(facts, required_packages=required_packages)
             else:
-                facts = extract_facts(facts, required_packages)
+                facts = extract_facts(facts, required_packages, ())
             updated_facts[uri] = facts
         if not updated_facts:
-            return
+            break
         facts_by_uri.update(updated_facts)
         for uri, facts in updated_facts.items():
             workspace_index.update(uri, facts)
+
+    # Declarations and dependencies are now stable. Resolve calls in the same
+    # reachable workspace used by analysis, then rebuild flow with those inputs.
+    resolver = Resolver(metadata_registry=metadata_registry)
+    typed_facts: dict[str, DocumentFacts] = {}
+    for uri, facts in facts_by_uri.items():
+        if check_cancelled is not None:
+            check_cancelled()
+        analysis_index = workspace_index
+        if dependency_scoped_calls:
+            analysis_index = workspace_index.clone(include_documents=False)
+            for reachable_uri in reachable_document_uris(
+                uri,
+                documents_by_uri=facts_by_uri,
+                workspace_index=workspace_index,
+                describe_document=lambda item: (item.uri, source_id_to_path(item.uri), item),
+                metadata_registry=metadata_registry,
+            ):
+                reachable_facts = facts_by_uri.get(reachable_uri)
+                if reachable_facts is not None:
+                    analysis_index.update(reachable_uri, reachable_facts)
+        call_types = resolver.call_types(facts, analysis_index)
+        if call_types != facts.call_types:
+            typed_facts[uri] = extract_facts(facts, facts.required_packages, call_types)
+    facts_by_uri.update(typed_facts)
+    for uri, facts in typed_facts.items():
+        workspace_index.update(uri, facts)
 
 
 def reachable_document_uris[DocumentT](

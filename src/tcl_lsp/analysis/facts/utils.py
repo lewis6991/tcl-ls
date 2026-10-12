@@ -28,7 +28,7 @@ def command_documentation(command: Command) -> str | None:
 def _comment_text(text: str) -> str:
     if not text.startswith('#'):
         return text
-    text = text[1:]
+    text = text[2:] if text.startswith('##') else text[1:]
     return text[1:] if text.startswith(' ') else text
 
 

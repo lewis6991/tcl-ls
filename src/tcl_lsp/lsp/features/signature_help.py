@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from lsprotocol import types
 
+from tcl_lsp.analysis.annotations import parameter_label, procedure_documentation, return_label
 from tcl_lsp.analysis.builtins import BuiltinOverload, builtin_commands_by_package
 from tcl_lsp.analysis.model import (
     CommandArity,
@@ -145,17 +146,26 @@ def _procedure_signature_candidate(procedure: ProcDecl) -> _SignatureCandidate:
     parameters: list[types.ParameterInformation] = []
     for index, parameter in enumerate(procedure.parameters):
         start = len(''.join(label_parts))
-        label_parts.append(parameter.name)
+        label_parts.append(parameter_label(parameter))
         end = len(''.join(label_parts))
-        parameters.append(types.ParameterInformation(label=(start, end)))
+        parameters.append(
+            types.ParameterInformation(
+                label=(start, end),
+                documentation=parameter.documentation,
+            )
+        )
         if index != len(procedure.parameters) - 1:
             label_parts.append(', ')
     label_parts.append(')')
+    label_parts.append(return_label(procedure))
     label = ''.join(label_parts)
+    documentation = procedure_documentation(procedure)
     return _SignatureCandidate(
         info=types.SignatureInformation(
             label=label,
-            documentation=procedure.documentation,
+            documentation=types.MarkupContent(kind=types.MarkupKind.Markdown, value=documentation)
+            if documentation
+            else None,
             parameters=parameters,
         ),
         arity=CommandArity(

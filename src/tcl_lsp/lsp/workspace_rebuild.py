@@ -7,6 +7,7 @@ from pathlib import Path
 from tcl_lsp.analysis import DocumentFacts, FactExtractor, Resolver, WorkspaceIndex
 from tcl_lsp.analysis.facts.bodies import BodyAnalysisCache
 from tcl_lsp.analysis.facts.lowering import DocumentSyntax
+from tcl_lsp.analysis.types import CallTypes
 from tcl_lsp.lsp.state import (
     IndexingProgressCallback,
     ManagedDocument,
@@ -538,20 +539,32 @@ def prepare_workspace_documents(
             on_document_loaded(document)
         return base_facts[document.uri]
 
-    def extract_facts(facts: DocumentFacts, packages: frozenset[str]) -> DocumentFacts:
+    def extract_facts(
+        facts: DocumentFacts, packages: frozenset[str], call_types: CallTypes
+    ) -> DocumentFacts:
         document = documents[facts.uri]
         # Rebuilds with new metadata replace the documents. Within this snapshot,
-        # the document's prepared facts can be reused once its packages match.
-        if packages == document.facts.required_packages:
+        # prepared facts can be reused once packages and resolved call types match.
+        if packages == document.facts.required_packages and call_types == document.facts.call_types:
             return document.facts
-        return extractor.extract(
+        prepared = extractor.extract(
             document.parse_result,
             syntax=document.syntax,
             body_cache=document.body_cache,
-            include_lexical_spans=document.lexical_spans_included,
+            include_lexical_spans=False,
             module_rules=facts.module_rules,
             required_packages=packages,
+            call_types=call_types,
         )
+        if document.lexical_spans_included:
+            comments, strings, operators = document.syntax.lexical_spans()
+            prepared = replace(
+                prepared,
+                comment_spans=comments,
+                string_spans=strings,
+                operator_spans=operators,
+            )
+        return prepared
 
     prepare_dependencies(
         facts_by_uri,
@@ -560,6 +573,7 @@ def prepare_workspace_documents(
         extract_facts=extract_facts,
         metadata_registry=extractor.metadata_registry,
         check_cancelled=check_cancelled,
+        dependency_scoped_calls=True,
     )
     resolver = Resolver(metadata_registry=extractor.metadata_registry)
     for uri, facts in facts_by_uri.items():

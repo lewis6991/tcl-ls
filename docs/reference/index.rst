@@ -9,4 +9,5 @@ Command-line options, diagnostic codes, metadata syntax, and LSP capabilities.
    cli
    diagnostics
    meta-syntax
+   annotations
    lsp-features
