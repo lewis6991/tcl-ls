@@ -14,6 +14,7 @@ from tcl_lsp.analysis import (
     WorkspaceIndex,
 )
 from tcl_lsp.analysis.facts.lowering import DocumentSyntax
+from tcl_lsp.analysis.types import CallTypes
 from tcl_lsp.common import Diagnostic
 from tcl_lsp.metadata_paths import MetadataRegistry, create_metadata_registry
 from tcl_lsp.parser import Parser
@@ -83,7 +84,7 @@ class _DocumentCache:
         self._parser = parser
         self._extractor = extractor
         self._documents: dict[Path, _ProjectDocument] = {}
-        self._prepared_facts: dict[tuple[Path, frozenset[str]], DocumentFacts] = {}
+        self._prepared_facts: dict[tuple[Path, frozenset[str], CallTypes], DocumentFacts] = {}
 
     @property
     def metadata_registry(self) -> MetadataRegistry:
@@ -103,8 +104,10 @@ class _DocumentCache:
         self._documents[resolved_path] = document
         return document
 
-    def extract_facts(self, document: _ProjectDocument, packages: frozenset[str]) -> DocumentFacts:
-        key = document.path, packages
+    def extract_facts(
+        self, document: _ProjectDocument, packages: frozenset[str], call_types: CallTypes
+    ) -> DocumentFacts:
+        key = document.path, packages, call_types
         facts = self._prepared_facts.get(key)
         if facts is None:
             facts = self._extractor.extract(
@@ -113,6 +116,7 @@ class _DocumentCache:
                 include_parse_result=False,
                 module_rules=document.facts.module_rules,
                 required_packages=packages,
+                call_types=call_types,
             )
             self._prepared_facts[key] = facts
         return facts
@@ -277,8 +281,8 @@ def _prepare_documents(
         facts_by_uri,
         workspace_index=workspace_index,
         load_facts=load_facts,
-        extract_facts=lambda facts, packages: document_cache.extract_facts(
-            documents[facts.uri], packages
+        extract_facts=lambda facts, packages, call_types: document_cache.extract_facts(
+            documents[facts.uri], packages, call_types
         ),
         metadata_registry=document_cache.metadata_registry,
     )

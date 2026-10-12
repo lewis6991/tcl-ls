@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 from lsprotocol import types
 
+from tcl_lsp.analysis.annotations import CommentAnnotation, ProcedureAnnotations, TypeAlias
+from tcl_lsp.analysis.types import CallTypes, TypeInfo
 from tcl_lsp.common import Diagnostic, HoverInfo, Span, SymbolKind
 from tcl_lsp.parser.model import ParseResult
 
@@ -75,6 +77,8 @@ class ParameterDecl:
     symbol_id: str
     name: str
     span: Span
+    type_info: TypeInfo | None = None
+    documentation: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +107,9 @@ class ProcDecl:
     arity: CommandArity | None
     documentation: str | None
     body_span: Span | None
+    annotations: ProcedureAnnotations = field(default_factory=ProcedureAnnotations)
+    type_aliases: tuple[TypeAlias, ...] = ()
+    return_type: TypeInfo | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +180,7 @@ class VarBinding:
     kind: BindingKind
     span: Span
     exact_values: tuple[str, ...] = ()
+    type_info: TypeInfo | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,6 +213,7 @@ class VariableReference:
     procedure_symbol_id: str | None
     span: Span
     exact_values: tuple[str, ...] = ()
+    type_info: TypeInfo | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,6 +253,7 @@ class DefinitionTarget:
     detail: str
     exact_values: tuple[str, ...] = ()
     visibility: CommandVisibility | None = None
+    type_info: TypeInfo | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -273,6 +283,9 @@ class DocumentFacts:
     variable_references: tuple[VariableReference, ...]
     document_symbols: tuple[types.DocumentSymbol, ...]
     diagnostics: tuple[Diagnostic, ...]
+    type_aliases: tuple[TypeAlias, ...] = ()
+    comment_annotations: tuple[CommentAnnotation, ...] = ()
+    call_types: CallTypes = ()
     # Active packages, including the closure added by dependency preparation.
     required_packages: frozenset[str] = frozenset()
     module_scopes: tuple[ModuleSelection, ...] = ()

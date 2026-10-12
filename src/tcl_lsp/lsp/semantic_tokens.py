@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from tcl_lsp.analysis.annotations import Annotation
 from tcl_lsp.analysis.model import AnalysisResult, DocumentFacts, ResolutionResult, VarBinding
 from tcl_lsp.common import Span
 
@@ -15,6 +16,9 @@ type SemanticTokenType = Literal[
     'variable',
     'string',
     'operator',
+    'type',
+    'property',
+    'number',
 ]
 type SemanticTokenModifier = Literal['declaration', 'defaultLibrary', 'deprecated']
 
@@ -27,6 +31,9 @@ SEMANTIC_TOKEN_TYPES: tuple[SemanticTokenType, ...] = (
     'variable',
     'string',
     'operator',
+    'type',
+    'property',
+    'number',
 )
 SEMANTIC_TOKEN_MODIFIERS: tuple[SemanticTokenModifier, ...] = (
     'declaration',
@@ -46,6 +53,9 @@ _TOKEN_PRIORITY = {
     'parameter': 5,
     'string': 6,
     'operator': 7,
+    'type': 8,
+    'property': 9,
+    'number': 10,
 }
 _KEYWORD_COMMANDS = frozenset(
     {
@@ -185,8 +195,10 @@ def _collect_semantic_tokens(
     }
     declaration_spans = _declaration_spans(facts.variable_bindings)
 
+    annotations = {item.span: item.annotation for item in facts.comment_annotations}
     for comment_span in facts.comment_spans:
-        _add_token(tokens_by_span, _SemanticToken(span=comment_span, token_type='comment'))
+        for token in _comment_tokens(text, comment_span, annotations.get(comment_span)):
+            _add_token(tokens_by_span, token)
 
     for string_span in facts.string_spans:
         _add_token(tokens_by_span, _SemanticToken(span=string_span, token_type='string'))
@@ -313,6 +325,36 @@ def _collect_semantic_tokens(
             ),
         )
     )
+
+
+def _comment_tokens(
+    text: str, span: Span, annotation: Annotation | None
+) -> tuple[_SemanticToken, ...]:
+    fragment = text[span.start.offset : span.end.offset]
+    if annotation is None:
+        return (_SemanticToken(span, 'comment'),)
+
+    # Split the comment so clients need not support overlapping tokens.
+    result: list[_SemanticToken] = []
+    position = span.start
+    offset = 0
+    for token in annotation.tokens:
+        start, end = token.start + 1, token.end + 1
+        token_start = position.advance(fragment[offset:start])
+        if start > offset:
+            result.append(_SemanticToken(Span(position, token_start), 'comment'))
+        token_end = token_start.advance(fragment[start:end])
+        result.append(
+            _SemanticToken(
+                Span(token_start, token_end),
+                token.kind,
+                _modifier_bits('declaration') if token.declaration else 0,
+            )
+        )
+        position, offset = token_end, end
+    if offset < len(fragment):
+        result.append(_SemanticToken(Span(position, span.end), 'comment'))
+    return tuple(result)
 
 
 def _declaration_spans(bindings: tuple[VarBinding, ...]) -> set[tuple[int, int]]:

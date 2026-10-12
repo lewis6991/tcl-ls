@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
+from tcl_lsp.analysis.annotations import CommentAnnotation, TypeAlias
 from tcl_lsp.analysis.facts.locations import SourceRelocation
 from tcl_lsp.analysis.facts.utils import (
     command_rename_symbol_id,
@@ -17,13 +18,13 @@ from tcl_lsp.analysis.model import (
     PackageIndexEntry,
     PackageProvide,
     PackageRequire,
-    ParameterDecl,
     ProcDecl,
     SourceDirective,
     VarBinding,
     VariableReference,
 )
 from tcl_lsp.analysis.modules import ModuleSelection
+from tcl_lsp.analysis.types import AliasDefinitions, CallTypes, TypeInfo
 from tcl_lsp.cache import VersionCache
 from tcl_lsp.common import Diagnostic, Position, Span
 from tcl_lsp.metadata_paths import MetadataRegistry
@@ -49,6 +50,9 @@ class BodyInputs:
     include_lexical_spans: bool
     already_lowered: bool
     exact_values: tuple[tuple[str, tuple[str, ...]], ...]
+    types: tuple[tuple[str, TypeInfo], ...]
+    type_aliases: AliasDefinitions
+    call_types: CallTypes
     flow_namespace: str
     flow_procedure: bool
     flow_links: tuple[tuple[str, str | None], ...]
@@ -77,6 +81,8 @@ class BodyFacts:
     string_spans: tuple[Span, ...]
     variable_bindings: tuple[VarBinding, ...]
     variable_references: tuple[VariableReference, ...]
+    type_aliases: tuple[TypeAlias, ...]
+    comment_annotations: tuple[CommentAnnotation, ...]
 
 
 @dataclass(slots=True)
@@ -98,6 +104,8 @@ class FactBuffer:
     string_spans: list[Span] = field(default_factory=list)
     variable_bindings: list[VarBinding] = field(default_factory=list)
     variable_references: list[VariableReference] = field(default_factory=list)
+    type_aliases: list[TypeAlias] = field(default_factory=list)
+    comment_annotations: list[CommentAnnotation] = field(default_factory=list)
 
     def freeze(self) -> BodyFacts:
         return BodyFacts(
@@ -118,6 +126,8 @@ class FactBuffer:
             string_spans=tuple(self.string_spans),
             variable_bindings=tuple(self.variable_bindings),
             variable_references=tuple(self.variable_references),
+            type_aliases=tuple(self.type_aliases),
+            comment_annotations=tuple(self.comment_annotations),
         )
 
     def extend(self, facts: BodyFacts) -> None:
@@ -138,6 +148,8 @@ class FactBuffer:
         self.string_spans.extend(facts.string_spans)
         self.variable_bindings.extend(facts.variable_bindings)
         self.variable_references.extend(facts.variable_references)
+        self.type_aliases.extend(facts.type_aliases)
+        self.comment_annotations.extend(facts.comment_annotations)
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,6 +206,12 @@ class _Relocation(SourceRelocation):
                 proc.uri, proc.qualified_name, self.position(proc.name_span.start).offset
             )
         return BodyFacts(
+            comment_annotations=tuple(
+                replace(item, span=self.span(item.span)) for item in facts.comment_annotations
+            ),
+            type_aliases=tuple(
+                replace(alias, span=self.span(alias.span)) for alias in facts.type_aliases
+            ),
             command_calls=tuple(
                 replace(
                     call,
@@ -268,10 +286,12 @@ class _Relocation(SourceRelocation):
                     name_span=self.span(proc.name_span),
                     body_span=self.span(proc.body_span) if proc.body_span is not None else None,
                     parameters=tuple(
-                        ParameterDecl(
-                            variable_symbol_id(proc.uri, self.scope(proc.symbol_id), param.name),
-                            param.name,
-                            self.span(param.span),
+                        replace(
+                            param,
+                            symbol_id=variable_symbol_id(
+                                proc.uri, self.scope(proc.symbol_id), param.name
+                            ),
+                            span=self.span(param.span),
                         )
                         for param in proc.parameters
                     ),

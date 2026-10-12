@@ -5,6 +5,13 @@ from pathlib import Path
 
 from lsprotocol import types
 
+from tcl_lsp.analysis.annotations import (
+    CommentAnnotation,
+    TypeAlias,
+    parse_annotation,
+    parse_procedure_annotations,
+    referenced_aliases,
+)
 from tcl_lsp.analysis.arity import proc_parameter_arity
 from tcl_lsp.analysis.builtins import (
     annotated_metadata_commands_for_packages,
@@ -70,6 +77,7 @@ from tcl_lsp.analysis.flow import (
     state_with_unset_command,
     switch_branch_flow_state,
     unset_target_words,
+    word_type_info,
 )
 from tcl_lsp.analysis.flow.exprs import eval_expr_text
 from tcl_lsp.analysis.metadata_commands import (
@@ -104,6 +112,14 @@ from tcl_lsp.analysis.model import (
     VariableReference,
 )
 from tcl_lsp.analysis.modules import ModuleSelection, active_modules
+from tcl_lsp.analysis.types import (
+    AliasDefinitions,
+    CallTypes,
+    TypeInfo,
+    TypeResolver,
+    literal_values,
+    tuple_element_type,
+)
 from tcl_lsp.common import Diagnostic, Position, Span, lsp_range
 from tcl_lsp.metadata_paths import DEFAULT_METADATA_REGISTRY, MetadataRegistry
 from tcl_lsp.parser import Parser, word_static_text
@@ -194,6 +210,7 @@ class FactExtractor:
         include_lexical_spans: bool | None = None,
         module_rules: tuple[ModuleRule, ...] | None = None,
         required_packages: frozenset[str] = frozenset(),
+        call_types: CallTypes = (),
     ) -> DocumentFacts:
         if include_lexical_spans is None:
             include_lexical_spans = include_parse_result
@@ -221,10 +238,13 @@ class FactExtractor:
                 diagnostics = metadata_declaration_diagnostics(
                     config.declarations, span=parse_result.script.span
                 )
-        # Requirements apply to the whole file. A newly enabled body can expose
-        # another requirement, so collect until the selected modules stop growing.
+        # Requirements and type aliases apply to the whole file. A newly enabled
+        # body can expose either, so collect again when those inputs change.
+        type_aliases: AliasDefinitions = ()
         while True:
             collector = _FactCollector(
+                type_aliases=type_aliases,
+                call_types=call_types,
                 metadata_registry=self._metadata_registry,
                 required_packages=required_packages,
                 module_rules=module_rules,
@@ -242,16 +262,27 @@ class FactExtractor:
             )
             facts = collector.collect()
             discovered = required_packages | frozenset(p.name for p in facts.package_requires)
-            if registry_for_packages(self._metadata_registry, discovered) == registry_for_packages(
-                self._metadata_registry, required_packages
+            aliases_by_name = {
+                (alias.namespace, alias.name): alias.type for alias in facts.type_aliases
+            }
+            discovered_aliases = tuple(
+                (namespace, name, expression)
+                for (namespace, name), expression in sorted(aliases_by_name.items())
+            )
+            if (
+                registry_for_packages(self._metadata_registry, discovered)
+                == registry_for_packages(self._metadata_registry, required_packages)
+                and discovered_aliases == type_aliases
             ):
                 return replace(facts, required_packages=discovered)
             required_packages = discovered
+            type_aliases = discovered_aliases
 
 
 class _FactCollector:
     __slots__ = (
         '_body_cache',
+        '_call_types',
         '_facts',
         '_imports',
         '_include_lexical_spans',
@@ -266,6 +297,8 @@ class _FactCollector:
         '_plugin_host',
         '_required_packages',
         '_syntax',
+        '_type_aliases',
+        '_type_resolver',
     )
 
     def __init__(
@@ -275,6 +308,8 @@ class _FactCollector:
         plugin_host: TclPluginHost,
         parse_result: ParseResult,
         *,
+        type_aliases: AliasDefinitions,
+        call_types: CallTypes,
         body_cache: BodyAnalysisCache,
         required_packages: frozenset[str],
         module_rules: tuple[ModuleRule, ...],
@@ -287,6 +322,9 @@ class _FactCollector:
         include_parse_result: bool,
     ) -> None:
         self._metadata_registry = metadata_registry
+        self._call_types = {(call.start, call.end): call for call in call_types}
+        self._type_aliases = type_aliases
+        self._type_resolver = TypeResolver(type_aliases)
         self._module_rules = module_rules
         for name in (
             *metadata_registry.modules,
@@ -323,6 +361,10 @@ class _FactCollector:
                 command_renames_enabled=False,
             )
         self._collect_lowered_script(self._lowered_script, root_context)
+        aliases = tuple(self._facts.type_aliases)
+        procedures: list[ProcDecl] = []
+        for proc in self._facts.procedures:
+            procedures.append(replace(proc, type_aliases=referenced_aliases(proc, aliases)))
         return DocumentFacts(
             uri=self._parse_result.source_id,
             parse_result=self._parse_result if self._include_parse_result else None,
@@ -331,7 +373,10 @@ class _FactCollector:
             string_spans=tuple(self._facts.string_spans),
             operator_spans=tuple(self._facts.operator_spans),
             namespaces=tuple(self._facts.namespaces),
-            procedures=tuple(self._facts.procedures),
+            procedures=tuple(procedures),
+            type_aliases=aliases,
+            call_types=tuple(self._call_types.values()),
+            comment_annotations=tuple(self._facts.comment_annotations),
             source_directives=tuple(self._facts.source_directives),
             command_imports=tuple(self._facts.command_imports),
             command_renames=tuple(self._facts.command_renames),
@@ -373,6 +418,22 @@ class _FactCollector:
         pending_diagnostics: list[tuple[Token, DiagnosticRule]] = []
         for event in events:
             if isinstance(event, Token):
+                annotation = parse_annotation(event.text[1:])
+                if annotation:
+                    self._facts.comment_annotations.append(
+                        CommentAnnotation(event.span, current_context.namespace, annotation)
+                    )
+                if annotation and annotation.tag == 'alias' and annotation.name and annotation.type:
+                    alias_name = qualify_name(annotation.name, current_context.namespace)
+                    self._facts.type_aliases.append(
+                        TypeAlias(
+                            namespace=namespace_for_name(alias_name),
+                            name=name_tail(alias_name),
+                            type=annotation.type,
+                            description=annotation.description,
+                            span=event.span,
+                        )
+                    )
                 current_context = self._collect_directive(
                     event, current_context, pending_diagnostics
                 )
@@ -516,6 +577,8 @@ class _FactCollector:
             self._collect_builtin_handler_command(syntax_command, normalized_command_name, context)
         else:
             context = result
+        if self._unpacks_tuple(syntax_command):
+            return self._collect_tuple_assignment(syntax_command, context)
         return self._updated_context_after_command(
             command,
             normalized_command_name=normalized_command_name,
@@ -1215,6 +1278,7 @@ class _FactCollector:
             documentation=command_documentation(command),
             body_span=body_span(body_word) if body_word is not None else None,
         )
+        proc_decl = self._annotate_procedure(proc_decl)
         self._facts.procedures.append(proc_decl)
 
         if body_word is None:
@@ -1325,6 +1389,7 @@ class _FactCollector:
             documentation=command_documentation(command),
             body_span=body_span(body_word) if body_word is not None else None,
         )
+        proc_decl = self._annotate_procedure(proc_decl)
         self._facts.procedures.append(proc_decl)
 
         if body_word is None:
@@ -1807,6 +1872,7 @@ class _FactCollector:
             documentation=command_documentation(command),
             body_span=body_span(body_word) if body_word is not None else None,
         )
+        proc_decl = self._annotate_procedure(proc_decl)
         self._facts.procedures.append(proc_decl)
 
         if body_word is None:
@@ -1845,6 +1911,8 @@ class _FactCollector:
 
             handled = True
             if isinstance(annotation, MetadataBind):
+                if self._unpacks_tuple(command):
+                    continue
                 binding_kind = self._metadata_binding_kind(metadata_command, annotation)
                 for selected_word in selected_words:
                     if annotation.selector.list_mode:
@@ -2151,6 +2219,13 @@ class _FactCollector:
             include_lexical_spans=self._include_lexical_spans,
             already_lowered=script is not None,
             exact_values=tuple(sorted(flow.exact_values_by_name.items())),
+            types=tuple(sorted(flow.types_by_name.items())),
+            type_aliases=self._type_aliases,
+            call_types=tuple(
+                replace(call, start=call.start - origin.offset, end=call.end - origin.offset)
+                for call in self._call_types.values()
+                if origin.offset <= call.start and call.end <= origin.offset + len(text)
+            ),
             flow_namespace=flow.namespace,
             flow_procedure=flow.procedure,
             flow_links=flow.links,
@@ -2343,6 +2418,7 @@ class _FactCollector:
             documentation=command.documentation,
             body_span=command.body_span,
         )
+        proc_decl = self._annotate_procedure(proc_decl)
         self._facts.procedures.append(proc_decl)
 
         body_context = self._procedure_context(proc_decl, context)
@@ -2441,11 +2517,14 @@ class _FactCollector:
         if len(command.words) < 2:
             return
         variable_word = command.words[1]
+        assigned_type = self._assignment_type(command, context)
         assigned_values = (
             exact_word_values(command.words[2], context.flow_state)
             if len(command.words) >= 3
             else ()
         )
+        if not assigned_values and assigned_type:
+            assigned_values = literal_values(assigned_type.resolved)
         variable_name = self._simple_variable_name(variable_word)
         if variable_name is None:
             dynamic_names = dynamic_variable_target_names(variable_word, context.flow_state)
@@ -2460,6 +2539,7 @@ class _FactCollector:
                         context=context,
                         kind='set',
                         exact_values=assigned_values,
+                        type_info=assigned_type,
                     )
                     if context.procedure_symbol_id is None:
                         self._record_variable_reference(
@@ -2484,6 +2564,7 @@ class _FactCollector:
                 context=context,
                 kind='set',
                 exact_values=assigned_values,
+                type_info=assigned_type,
             )
             if context.procedure_symbol_id is None:
                 self._record_variable_reference(
@@ -2981,9 +3062,57 @@ class _FactCollector:
             else parent.explicit_modules,
         )
 
+    def _unpacks_tuple(self, command: Command) -> bool:
+        call = self._call_types.get((command.span.start.offset, command.span.end.offset))
+        return call is not None and call.unpacks_tuple
+
+    def _collect_tuple_assignment(
+        self, command: Command, context: _ExtractionContext
+    ) -> _ExtractionContext:
+        if len(command.words) < 2 or any(word.expanded for word in command.words):
+            return self._context_with_flow_state(context, context.flow_state.cleared())
+        info = word_type_info(command.words[1], context.flow_state, self._call_types)
+        flow = context.flow_state
+        for index, word in enumerate(command.words[2:]):
+            names = dynamic_variable_target_names(word, context.flow_state)
+            if not names:
+                flow = flow.cleared()
+                continue
+            if len(names) != 1:
+                flow = flow.without_names(names)
+                continue
+            name = names[0]
+            element = tuple_element_type(info, index) if info else None
+            values = literal_values(element.resolved) if element else ()
+            self._record_variable_binding(
+                name=name,
+                span=word.span,
+                context=context,
+                kind='lassign',
+                type_info=element,
+                exact_values=values,
+            )
+            flow = flow.with_type(name, element).with_exact_values(name, values)
+        return self._context_with_flow_state(context, flow)
+
+    def _assignment_type(self, command: Command, context: _ExtractionContext) -> TypeInfo | None:
+        if len(command.words) != 3:
+            return None
+        for comment in command.leading_comments:
+            annotation = parse_annotation(comment.text[1:])
+            if annotation and annotation.tag == 'type' and annotation.type:
+                return self._type_resolver.resolve(annotation.type, context.namespace)
+        return word_type_info(command.words[2], context.flow_state, self._call_types)
+
     def _procedure_context(
         self, proc_decl: ProcDecl, context: _ExtractionContext
     ) -> _ExtractionContext:
+        flow = VariableFlowState.empty(namespace=proc_decl.namespace)
+        for parameter in proc_decl.parameters:
+            if parameter.type_info:
+                flow = flow.with_type(parameter.name, parameter.type_info).with_exact_values(
+                    parameter.name, literal_values(parameter.type_info.resolved)
+                )
         return replace(
             context,
             uri=proc_decl.uri,
@@ -2993,7 +3122,31 @@ class _FactCollector:
             embedded_language=None,
             embedded_owner_name=None,
             command_renames_enabled=False,
-            flow_state=VariableFlowState.empty(namespace=proc_decl.namespace),
+            flow_state=flow,
+        )
+
+    def _annotate_procedure(self, proc: ProcDecl) -> ProcDecl:
+        annotations = parse_procedure_annotations(proc.documentation)
+        parameters: list[ParameterDecl] = []
+        for parameter in proc.parameters:
+            annotation = annotations.parameter(parameter.name)
+            parameters.append(
+                replace(
+                    parameter,
+                    type_info=self._type_resolver.resolve(annotation.type, proc.namespace)
+                    if annotation and annotation.type
+                    else None,
+                    documentation=annotation.description if annotation else None,
+                )
+            )
+        returns = annotations.returns
+        return replace(
+            proc,
+            annotations=annotations,
+            parameters=tuple(parameters),
+            return_type=self._type_resolver.resolve(returns.type, proc.namespace)
+            if returns and returns.type
+            else None,
         )
 
     def _updated_context_after_command(
@@ -3013,9 +3166,18 @@ class _FactCollector:
                 self._flow_state_after_links(command.command, normalized_command_name, context),
             )
         if normalized_command_name == 'set':
+            flow = state_with_set_command(context.flow_state, command.command)
+            annotation = self._assignment_type(command.command, context)
+            if annotation and len(command.command.words) == 3:
+                names = dynamic_variable_target_names(command.command.words[1], context.flow_state)
+                if len(names) == 1:
+                    name = names[0]
+                    flow = flow.with_type(name, annotation)
+                    if not flow.exact_values(name):
+                        flow = flow.with_exact_values(name, literal_values(annotation.resolved))
             return self._context_with_flow_state(
                 context,
-                state_with_set_command(context.flow_state, command.command),
+                flow,
             )
         if normalized_command_name == 'unset':
             return self._context_with_flow_state(
@@ -3068,7 +3230,11 @@ class _FactCollector:
         targets: list[Word] = []
         if name in {'eval', 'source', 'uplevel', 'vwait', 'update', 'upvar', 'global', 'variable'}:
             return VariableEffects.unknown()
-        if name == 'set' and len(words) >= 3:
+        if self._unpacks_tuple(syntax):
+            if any(word.expanded for word in words):
+                return VariableEffects(None)
+            targets.extend(words[2:])
+        elif name == 'set' and len(words) >= 3:
             targets.append(words[1])
         elif name == 'unset':
             targets.extend(unset_target_words(syntax))
@@ -3166,7 +3332,11 @@ class _FactCollector:
     def _context_after_body_effects(
         self, body: LoweredScriptBody | None, context: _ExtractionContext
     ) -> _ExtractionContext:
-        if not context.flow_state.procedure and not context.flow_state.exact_values_by_name:
+        if (
+            not context.flow_state.procedure
+            and not context.flow_state.exact_values_by_name
+            and not context.flow_state.types_by_name
+        ):
             return context
         effects = (
             VariableEffects.unknown()
@@ -3217,6 +3387,7 @@ class _FactCollector:
     ) -> None:
         name = normalize_variable_name(name)
         exact_values = context.flow_state.exact_values(name)
+        type_info = context.flow_state.type_info(name)
         if self._linked_variable(context.scope_id, name) is not None:
             self._record_custom_variable_reference(
                 name=name,
@@ -3226,6 +3397,7 @@ class _FactCollector:
                 procedure_symbol_id=context.procedure_symbol_id,
                 uri=context.uri,
                 exact_values=exact_values,
+                type_info=type_info,
             )
             return
 
@@ -3243,6 +3415,7 @@ class _FactCollector:
                 procedure_symbol_id=None,
                 uri=context.uri,
                 exact_values=exact_values,
+                type_info=type_info,
             )
             return
 
@@ -3254,6 +3427,7 @@ class _FactCollector:
             procedure_symbol_id=context.procedure_symbol_id,
             uri=context.uri,
             exact_values=exact_values,
+            type_info=type_info,
         )
 
     def _record_variable_binding(
@@ -3263,10 +3437,13 @@ class _FactCollector:
         context: _ExtractionContext,
         kind: BindingKind,
         exact_values: tuple[str, ...] | None = None,
+        type_info: TypeInfo | None = None,
     ) -> None:
         name = normalize_variable_name(name)
         if exact_values is None:
             exact_values = context.flow_state.exact_values(name)
+        if kind == 'parameter':
+            type_info = context.flow_state.type_info(name)
         linked_target = self._linked_variable(context.scope_id, name)
         if linked_target is not None:
             self._record_custom_variable_binding(
@@ -3279,6 +3456,7 @@ class _FactCollector:
                 uri=context.uri,
                 kind=kind,
                 exact_values=exact_values,
+                type_info=type_info,
             )
             return
 
@@ -3294,6 +3472,7 @@ class _FactCollector:
                 uri=context.uri,
                 kind=kind,
                 exact_values=exact_values,
+                type_info=type_info,
             )
             return
 
@@ -3307,6 +3486,7 @@ class _FactCollector:
             uri=context.uri,
             kind=kind,
             exact_values=exact_values,
+            type_info=type_info,
         )
 
     def _record_custom_variable_reference(
@@ -3319,6 +3499,7 @@ class _FactCollector:
         procedure_symbol_id: str | None,
         uri: str,
         exact_values: tuple[str, ...] = (),
+        type_info: TypeInfo | None = None,
     ) -> None:
         self._facts.variable_references.append(
             VariableReference(
@@ -3329,6 +3510,7 @@ class _FactCollector:
                 procedure_symbol_id=procedure_symbol_id,
                 span=span,
                 exact_values=exact_values,
+                type_info=type_info,
             )
         )
 
@@ -3344,6 +3526,7 @@ class _FactCollector:
         uri: str,
         kind: BindingKind,
         exact_values: tuple[str, ...] = (),
+        type_info: TypeInfo | None = None,
     ) -> None:
         self._facts.variable_bindings.append(
             VarBinding(
@@ -3356,6 +3539,7 @@ class _FactCollector:
                 kind=kind,
                 span=span,
                 exact_values=exact_values,
+                type_info=type_info,
             )
         )
 
@@ -3367,6 +3551,7 @@ class _FactCollector:
         uri: str,
         kind: BindingKind,
         exact_values: tuple[str, ...] = (),
+        type_info: TypeInfo | None = None,
     ) -> None:
         self._record_custom_variable_binding(
             name=target.name,
@@ -3378,6 +3563,7 @@ class _FactCollector:
             uri=uri,
             kind=kind,
             exact_values=exact_values,
+            type_info=type_info,
         )
 
     def _simple_variable_name(self, word: Word) -> str | None:

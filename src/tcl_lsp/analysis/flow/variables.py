@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 
 from tcl_lsp.analysis.facts.parsing import is_simple_name, split_tcl_list
 from tcl_lsp.analysis.facts.utils import qualify_name
 from tcl_lsp.analysis.flow.exprs import eval_expr_text, expr_branch_flow_states
+from tcl_lsp.analysis.types import CallType, TypeInfo
 from tcl_lsp.common import Diagnostic, Position
 from tcl_lsp.parser import Parser, word_static_text
 from tcl_lsp.parser.model import (
@@ -35,13 +37,18 @@ class VariableFlowState:
     procedure: bool = True
     links: tuple[tuple[str, str | None], ...] = ()
     unknown_links: bool = False
+    types_by_name: dict[str, TypeInfo] = field(default_factory=dict)
 
     @classmethod
     def empty(cls, *, namespace: str = '::', procedure: bool = True) -> VariableFlowState:
         return cls({}, namespace=namespace, procedure=procedure)
 
     def cleared(self) -> VariableFlowState:
-        return replace(self, exact_values_by_name={}) if self.exact_values_by_name else self
+        return (
+            replace(self, exact_values_by_name={}, types_by_name={})
+            if self.exact_values_by_name or self.types_by_name
+            else self
+        )
 
     def invalidated(self) -> VariableFlowState:
         """Unknown code can change both values and procedure-local links."""
@@ -79,6 +86,11 @@ class VariableFlowState:
             },
             links=tuple(joined_links.items()),
             unknown_links=any(state.unknown_links for state in states),
+            types_by_name={
+                name: info
+                for name, info in first.types_by_name.items()
+                if all(state.types_by_name.get(name) == info for state in states)
+            },
         )
 
     def _variable_key(self, name: str) -> str | None:
@@ -101,6 +113,21 @@ class VariableFlowState:
     def exact_values(self, name: str) -> tuple[str, ...]:
         key = self._variable_key(name)
         return () if key is None else self.exact_values_by_name.get(key, ())
+
+    def type_info(self, name: str) -> TypeInfo | None:
+        key = self._variable_key(name)
+        return None if key is None else self.types_by_name.get(key)
+
+    def with_type(self, name: str, info: TypeInfo | None) -> VariableFlowState:
+        key = self._variable_key(name)
+        if key is None:
+            return self.cleared()
+        types = dict(self.types_by_name)
+        if info is None:
+            types.pop(key, None)
+        else:
+            types[key] = info
+        return replace(self, types_by_name=types)
 
     def with_exact_values(self, name: str, values: tuple[str, ...]) -> VariableFlowState:
         key = self._variable_key(name)
@@ -125,6 +152,9 @@ class VariableFlowState:
                 name: values
                 for name, values in self.exact_values_by_name.items()
                 if name not in keys
+            },
+            types_by_name={
+                name: info for name, info in self.types_by_name.items() if name not in keys
             },
         )
 
@@ -286,7 +316,9 @@ def state_with_set_command(
     if target_name is not None:
         if len(command.words) < 3:
             return state
-        return state.with_exact_values(target_name, exact_word_values(command.words[2], state))
+        return state.with_exact_values(
+            target_name, exact_word_values(command.words[2], state)
+        ).with_type(target_name, word_type_info(command.words[2], state))
 
     dynamic_names = dynamic_variable_target_names(command.words[1], state)
     if len(command.words) < 3:
@@ -297,7 +329,26 @@ def state_with_set_command(
     if len(dynamic_names) != 1:
         # One target is written at runtime, not every possible target.
         return state.without_names(dynamic_names)
-    return state.with_exact_values(dynamic_names[0], exact_word_values(command.words[2], state))
+    return state.with_exact_values(
+        dynamic_names[0], exact_word_values(command.words[2], state)
+    ).with_type(dynamic_names[0], word_type_info(command.words[2], state))
+
+
+def word_type_info(
+    word: Word,
+    state: VariableFlowState,
+    call_types: Mapping[tuple[int, int], CallType] | None = None,
+) -> TypeInfo | None:
+    if isinstance(word, BracedWord) or word.expanded or len(word.parts) != 1:
+        return None
+    part = word.parts[0]
+    if isinstance(part, VariableSubstitution):
+        return state.type_info(part.name)
+    if isinstance(part, CommandSubstitution) and len(part.script.commands) == 1 and call_types:
+        command = part.script.commands[-1]
+        call = call_types.get((command.span.start.offset, command.span.end.offset))
+        return call.return_type if call else None
+    return None
 
 
 def state_with_unset_command(

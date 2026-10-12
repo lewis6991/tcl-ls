@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, replace
 
+from tcl_lsp.analysis.annotations import procedure_documentation, procedure_signature
 from tcl_lsp.analysis.builtins import (
     BuiltinCommand,
     builtin_commands_for_packages,
@@ -59,6 +60,7 @@ from tcl_lsp.analysis.model import (
 )
 from tcl_lsp.analysis.modules import registry_at_offset
 from tcl_lsp.analysis.signature_matching import display_metadata_signature
+from tcl_lsp.analysis.types import CallType, CallTypes, TypeInfo, literal_values
 from tcl_lsp.common import Diagnostic, HoverInfo, Span, lsp_location
 from tcl_lsp.metadata_paths import (
     DEFAULT_METADATA_REGISTRY,
@@ -120,7 +122,7 @@ class Resolver:
             resolutions=(),
             resolved_references=(),
             document_symbols=facts.document_symbols,
-            hovers=tuple(self._build_definition_hovers(definitions)),
+            hovers=tuple(self._build_definition_hovers(definitions) + _alias_hovers(facts)),
         )
 
     def analyze(
@@ -130,24 +132,7 @@ class Resolver:
         workspace_index: WorkspaceIndex,
     ) -> AnalysisResult:
         diagnostics = list(facts.diagnostics)
-        direct_required_packages = frozenset(
-            requirement.name for requirement in facts.package_requires
-        )
         required_packages = facts.required_packages
-        transitive_required_packages = required_packages - direct_required_packages
-        hover_trace_parents = (
-            _build_hover_trace_parents(
-                facts,
-                workspace_index,
-                metadata_registry=self._metadata_registry,
-            )
-            if (
-                source_id_to_path(uri) is not None
-                and (required_packages or facts.package_requires or facts.source_directives)
-            )
-            else {}
-        )
-
         resolutions: list[ResolutionResult] = []
         resolved_references: list[ResolvedReference] = []
         command_targets: dict[tuple[str, int, int, int, int], ResolvedCommandTarget] = {}
@@ -156,81 +141,16 @@ class Resolver:
         command_hovers: list[HoverInfo] = []
         rename_visibilities: dict[str, CommandVisibility] = {}
 
-        commands: _CommandTable = {}
-        rename_index = workspace_index
-        if facts.command_renames:
-            # Rename sources see prior local definitions from the table, plus
-            # dependencies. Ordinary calls can still find forward definitions.
-            rename_index = workspace_index.clone()
-            rename_index.update(uri, replace(facts, procedures=()))
-        events = (
-            sorted(
-                (*facts.command_calls, *facts.procedures, *facts.command_renames),
-                key=lambda event: event.span.start.offset,
-            )
-            if facts.command_renames
-            else facts.command_calls
-        )
-        for event in events:
-            if isinstance(event, ProcDecl):
-                commands[event.qualified_name] = event
-                continue
+        for event, binding in self._command_bindings(facts, workspace_index):
             command_call = _rename_source_call(event) if isinstance(event, CommandRename) else event
-            registry = registry_at_offset(
-                self._metadata_registry,
-                facts.module_scopes,
-                command_call.name_span.start.offset,
-            )
-            registry = registry_for_packages(registry, required_packages)
-            resolver = (
-                self
-                if registry == self._metadata_registry
-                else Resolver(metadata_registry=registry)
-            )
-            binding = resolver._resolve_command(
-                command_call,
-                rename_index if isinstance(event, CommandRename) else workspace_index,
-                required_packages,
-                transitive_required_packages,
-                hover_trace_parents,
-                commands,
-            )
-            if binding.target is not None:
-                binding = replace(
-                    binding,
-                    resolution=replace(
-                        binding.resolution,
-                        visibility=_command_visibility(binding.target, registry),
-                    ),
-                )
             resolution, command_hover, command_target = (
                 binding.resolution,
                 binding.hover,
                 binding.target,
             )
             if isinstance(event, CommandRename):
-                if (
-                    resolution.uncertainty.state == 'resolved'
-                    and binding.qualified_name is not None
-                ):
-                    commands[binding.qualified_name] = None
-                    if event.new_qualified_name is not None and event.symbol_id is not None:
-                        rename_visibilities[event.symbol_id] = resolution.visibility
-                        detail = f'renamed command {event.new_qualified_name} from {event.old_name}'
-                        if command_hover is not None:
-                            detail += f'\n\n---\n\n{command_hover.contents}'
-                        commands[event.new_qualified_name] = replace(
-                            binding,
-                            qualified_name=event.new_qualified_name,
-                            resolution=replace(
-                                resolution,
-                                uncertainty=AnalysisUncertainty(
-                                    state='resolved', reason='Resolved via a static command rename.'
-                                ),
-                                target_symbol_ids=(event.symbol_id,),
-                            ),
-                            hover=HoverInfo(span=event.new_name_span, contents=detail),
-                        )
+                if event.symbol_id is not None:
+                    rename_visibilities[event.symbol_id] = resolution.visibility
             else:
                 command_resolutions.append(
                     ResolvedCommand(command_call=command_call, resolution=resolution)
@@ -263,6 +183,7 @@ class Resolver:
         definition_by_symbol = {definition.symbol_id: definition for definition in definitions}
         binding_lookup = self._build_binding_lookup(all_bindings)
         hovers = self._build_definition_hovers(definitions)
+        hovers.extend(_alias_hovers(facts))
         hovers.extend(command_hovers)
 
         variable_resolutions: list[ResolvedVariable] = []
@@ -317,6 +238,136 @@ class Resolver:
             document_symbols=facts.document_symbols,
             hovers=tuple(hovers),
         )
+
+    def call_types(self, facts: DocumentFacts, workspace_index: WorkspaceIndex) -> CallTypes:
+        """Supply flow inputs only for calls with an unambiguous resolved target."""
+        if not any(binding.type_info for binding in facts.variable_bindings) and not any(
+            proc.return_type
+            for document in workspace_index.documents()
+            for proc in document.procedures
+        ):
+            return ()
+        result: list[CallType] = []
+        for event, binding in self._command_bindings(facts, workspace_index, include_trace=False):
+            if (
+                isinstance(event, CommandRename)
+                or binding.resolution.uncertainty.state != 'resolved'
+            ):
+                continue
+            target = binding.target
+            return_type = target.return_type if isinstance(target, ProcDecl) else None
+            unpacks_tuple = (
+                isinstance(target, BuiltinCommand)
+                and target.package == 'Tcl'
+                and target.name == 'lassign'
+            )
+            if return_type is not None or unpacks_tuple:
+                result.append(
+                    CallType(
+                        event.span.start.offset, event.span.end.offset, return_type, unpacks_tuple
+                    )
+                )
+        return tuple(sorted(result, key=lambda item: (item.start, item.end)))
+
+    def _command_bindings(
+        self,
+        facts: DocumentFacts,
+        workspace_index: WorkspaceIndex,
+        *,
+        include_trace: bool = True,
+    ) -> Iterator[tuple[CommandCall | CommandRename, _CommandBinding]]:
+        uri = facts.uri
+        direct_required_packages = frozenset(
+            requirement.name for requirement in facts.package_requires
+        )
+        required_packages = facts.required_packages
+        transitive_required_packages = required_packages - direct_required_packages
+        hover_trace_parents = (
+            _build_hover_trace_parents(
+                facts,
+                workspace_index,
+                metadata_registry=self._metadata_registry,
+            )
+            if (
+                include_trace
+                and source_id_to_path(uri) is not None
+                and (required_packages or facts.package_requires or facts.source_directives)
+            )
+            else {}
+        )
+
+        commands: _CommandTable = {}
+        rename_index = workspace_index
+        if facts.command_renames:
+            # Rename sources see prior local definitions from the table, plus
+            # dependencies. Ordinary calls can still find forward definitions.
+            rename_index = workspace_index.clone()
+            rename_index.update(uri, replace(facts, procedures=()))
+        events = (
+            sorted(
+                (*facts.command_calls, *facts.procedures, *facts.command_renames),
+                key=lambda event: event.span.start.offset,
+            )
+            if facts.command_renames
+            else facts.command_calls
+        )
+        for event in events:
+            if isinstance(event, ProcDecl):
+                commands[event.qualified_name] = event
+                continue
+            command_call = _rename_source_call(event) if isinstance(event, CommandRename) else event
+            registry = registry_at_offset(
+                self._metadata_registry,
+                facts.module_scopes,
+                command_call.name_span.start.offset,
+            )
+            registry = registry_for_packages(registry, required_packages)
+            resolver = (
+                self
+                if registry == self._metadata_registry
+                else Resolver(metadata_registry=registry)
+            )
+            binding = resolver._resolve_command(
+                command_call,
+                rename_index if isinstance(event, CommandRename) else workspace_index,
+                required_packages,
+                transitive_required_packages,
+                hover_trace_parents,
+                commands,
+            )
+            if binding.target is not None:
+                binding = replace(
+                    binding,
+                    resolution=replace(
+                        binding.resolution,
+                        visibility=_command_visibility(binding.target, registry),
+                    ),
+                )
+            resolution = binding.resolution
+            command_hover = binding.hover
+            if isinstance(event, CommandRename):
+                if (
+                    resolution.uncertainty.state == 'resolved'
+                    and binding.qualified_name is not None
+                ):
+                    commands[binding.qualified_name] = None
+                    if event.new_qualified_name is not None and event.symbol_id is not None:
+                        detail = f'renamed command {event.new_qualified_name} from {event.old_name}'
+                        if command_hover is not None:
+                            detail += f'\n\n---\n\n{command_hover.contents}'
+                        commands[event.new_qualified_name] = replace(
+                            binding,
+                            qualified_name=event.new_qualified_name,
+                            resolution=replace(
+                                resolution,
+                                uncertainty=AnalysisUncertainty(
+                                    state='resolved', reason='Resolved via a static command rename.'
+                                ),
+                                target_symbol_ids=(event.symbol_id,),
+                            ),
+                            hover=HoverInfo(span=event.new_name_span, contents=detail),
+                        )
+            yield event, binding
 
     def _diagnostics(
         self, uri: str, facts: DocumentFacts, diagnostics: Iterable[Diagnostic]
@@ -383,6 +434,7 @@ class Resolver:
                     span=binding.span,
                     detail=f'{binding.kind} {binding.name}',
                     exact_values=binding.exact_values,
+                    type_info=binding.type_info,
                 )
             )
 
@@ -903,6 +955,7 @@ class Resolver:
                     contents=_variable_hover_detail(
                         definition.detail,
                         variable_reference.exact_values,
+                        variable_reference.type_info,
                     ),
                 )
         state = 'resolved' if len(symbol_ids) == 1 else 'ambiguous'
@@ -1029,7 +1082,14 @@ def _command_reference(command_call: CommandCall) -> ReferenceSite:
     )
 
 
-def _variable_hover_detail(detail: str, exact_values: tuple[str, ...]) -> str:
+def _variable_hover_detail(
+    detail: str, exact_values: tuple[str, ...], type_info: TypeInfo | None = None
+) -> str:
+    if type_info:
+        detail = f'{detail}: {type_info.expression.text}'
+        if exact_values and exact_values != literal_values(type_info.resolved):
+            detail += ' = ' + ' | '.join(f'"{value}"' for value in exact_values)
+        return detail
     if not exact_values:
         return detail
 
@@ -1042,7 +1102,7 @@ def _definition_hover_detail(definition: DefinitionTarget) -> str:
         return _hover_with_visibility(definition.detail, definition.visibility)
     if definition.kind != 'variable':
         return definition.detail
-    return _variable_hover_detail(definition.detail, definition.exact_values)
+    return _variable_hover_detail(definition.detail, definition.exact_values, definition.type_info)
 
 
 def _metadata_var_binding(
@@ -1136,16 +1196,23 @@ def _metadata_variable_name(name: str) -> str | None:
     return name
 
 
-def _proc_detail(proc: ProcDecl) -> str:
-    parameters = ', '.join(parameter.name for parameter in proc.parameters)
-    return f'proc {proc.qualified_name}({parameters})'
-
-
 def _proc_hover(proc: ProcDecl) -> str:
-    detail = _proc_detail(proc)
-    if proc.documentation is None:
+    detail = procedure_signature(proc)
+    documentation = procedure_documentation(proc)
+    if documentation is None:
         return detail
-    return f'{detail}\n\n{proc.documentation}'
+    return f'{detail}\n\n{documentation}'
+
+
+def _alias_hovers(facts: DocumentFacts) -> list[HoverInfo]:
+    return [
+        HoverInfo(
+            span=alias.span,
+            contents=f'`{alias.name} = {alias.type.text}`'
+            + (f'\n\n{alias.description}' if alias.description else ''),
+        )
+        for alias in facts.type_aliases
+    ]
 
 
 def _hover_with_visibility(contents: str, visibility: CommandVisibility) -> str:

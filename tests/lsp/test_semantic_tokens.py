@@ -48,6 +48,9 @@ def test_language_server_initialize_advertises_semantic_tokens() -> None:
         'variable',
         'string',
         'operator',
+        'type',
+        'property',
+        'number',
     ]
     assert legend['tokenModifiers'] == ['declaration', 'defaultLibrary', 'deprecated']
     assert semantic_tokens['full'] == {'delta': True}

@@ -8,6 +8,7 @@ from typing import Literal
 from lsprotocol import types
 
 from tcl_lsp.analysis import WorkspaceIndex
+from tcl_lsp.analysis.annotations import procedure_documentation, procedure_signature
 from tcl_lsp.analysis.builtins import (
     BuiltinCommand,
     BuiltinOverload,
@@ -574,11 +575,6 @@ def _procedure_completion_rank(qualified_name: str, *, current_namespace: str) -
     return 1
 
 
-def _proc_completion_detail(procedure: ProcDecl) -> str:
-    parameter_names = ', '.join(parameter.name for parameter in procedure.parameters)
-    return f'proc {procedure.qualified_name}({parameter_names})'
-
-
 def _builtin_completion_detail(
     name: str,
     package_name: str,
@@ -608,12 +604,15 @@ def _command_candidate_sort_key(candidate: _CommandCandidate) -> tuple[str, str]
 
 def _command_completion_item(candidate: _CommandCandidate) -> types.CompletionItem:
     if candidate.procedure is not None:
+        documentation = procedure_documentation(candidate.procedure)
         return types.CompletionItem(
             label=candidate.label,
             insert_text=candidate.label,
             kind=types.CompletionItemKind.Function,
-            detail=_proc_completion_detail(candidate.procedure),
-            documentation=candidate.procedure.documentation,
+            detail=procedure_signature(candidate.procedure),
+            documentation=types.MarkupContent(kind=types.MarkupKind.Markdown, value=documentation)
+            if documentation
+            else None,
             sort_text=candidate.sort_text,
         )
 
