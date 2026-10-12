@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from threading import RLock
 
 from tcl_lsp.analysis.facts.parsing import (
     ConditionVariableSubstitution,
@@ -431,68 +432,98 @@ class _SwitchOptionState:
     regexp_binding_words: tuple[Word, ...]
 
 
-def lower_parse_result(
-    parse_result: ParseResult,
-    *,
-    parser: Parser,
-    collect_lexical_spans: bool = True,
-) -> LoweringResult:
-    lowering_result = lower_script(
-        parse_result.script,
-        parser=parser,
-        source_id=parse_result.source_id,
-        collect_lexical_spans=collect_lexical_spans,
-    )
-    return LoweringResult(
-        script=lowering_result.script,
-        diagnostics=lowering_result.diagnostics,
-        comment_spans=(
-            tuple(token.span for token in parse_result.tokens if token.kind == 'comment')
-            + lowering_result.comment_spans
-            if collect_lexical_spans
-            else ()
-        ),
-        string_spans=lowering_result.string_spans,
-        operator_spans=(
-            tuple(
-                token.span
-                for token in parse_result.tokens
-                if token.kind == 'separator' and token.text == ';'
-            )
-            + lowering_result.operator_spans
-            if collect_lexical_spans
-            else ()
-        ),
-    )
+class _BodyParser(Parser):
+    """Parse each body once for one document version, including its tokens."""
+
+    def __init__(self, parser: Parser, source_id: str) -> None:
+        self._parser = parser
+        self._source_id = source_id
+        self._bodies: dict[tuple[str, Position], ParseResult] = {}
+        self._lock = RLock()
+
+    def parse_embedded_script(
+        self, source_id: str, text: str, start_position: Position
+    ) -> ParseResult:
+        assert source_id == self._source_id
+        key = (text, start_position)
+        with self._lock:
+            parsed = self._bodies.get(key)
+            if parsed is None:
+                parsed = self._parser.parse_embedded_script(source_id, text, start_position)
+                self._bodies[key] = parsed
+            return parsed
 
 
-def lower_script(
-    script: Script,
-    *,
-    parser: Parser,
-    source_id: str,
-    collect_lexical_spans: bool = True,
-) -> LoweringResult:
-    lowerer = _Lowerer(
-        parser=parser,
-        source_id=source_id,
-        collect_lexical_spans=collect_lexical_spans,
-    )
-    string_spans: tuple[Span, ...] = ()
-    operator_spans: tuple[Span, ...] = ()
-    if collect_lexical_spans:
-        string_spans, operator_spans = _script_lexical_spans(
-            script,
-            parser=parser,
-            source_id=source_id,
+class DocumentSyntax:
+    """Syntax owned by a document version, independent of metadata and flow state."""
+
+    def __init__(self, parse_result: ParseResult, *, parser: Parser) -> None:
+        self.parse_result = parse_result
+        self.parser = _BodyParser(parser, parse_result.source_id)
+        # Keep the script beside the result so an identity key cannot be reused.
+        self._lowered: dict[tuple[int, bool], tuple[Script, LoweringResult]] = {}
+        self._lexical_spans: tuple[tuple[Span, ...], tuple[Span, ...], tuple[Span, ...]] | None = (
+            None
         )
-    return LoweringResult(
-        script=lowerer.lower_script(script),
-        diagnostics=tuple(lowerer.diagnostics),
-        comment_spans=tuple(lowerer.comment_spans),
-        string_spans=string_spans + tuple(lowerer.string_spans),
-        operator_spans=operator_spans + tuple(lowerer.operator_spans),
-    )
+        self._lock = RLock()
+
+    def lexical_spans(self) -> tuple[tuple[Span, ...], tuple[Span, ...], tuple[Span, ...]]:
+        with self._lock:
+            if self._lexical_spans is None:
+                self._lexical_spans = collect_parse_result_lexical_spans(
+                    self.parse_result, parser=self.parser
+                )
+            return self._lexical_spans
+
+    def lower_parse_result(
+        self, parsed: ParseResult, *, collect_lexical_spans: bool
+    ) -> LoweringResult:
+        result = self.lower_script(parsed.script, collect_lexical_spans=collect_lexical_spans)
+        return LoweringResult(
+            script=result.script,
+            diagnostics=result.diagnostics,
+            comment_spans=(
+                tuple(token.span for token in parsed.tokens if token.kind == 'comment')
+                + result.comment_spans
+                if collect_lexical_spans
+                else ()
+            ),
+            string_spans=result.string_spans,
+            operator_spans=(
+                tuple(
+                    token.span
+                    for token in parsed.tokens
+                    if token.kind == 'separator' and token.text == ';'
+                )
+                + result.operator_spans
+                if collect_lexical_spans
+                else ()
+            ),
+        )
+
+    def lower_script(self, script: Script, *, collect_lexical_spans: bool) -> LoweringResult:
+        key = (id(script), collect_lexical_spans)
+        with self._lock:
+            cached = self._lowered.get(key)
+            if cached is not None:
+                return cached[1]
+            lowerer = _Lowerer(syntax=self, collect_lexical_spans=collect_lexical_spans)
+            strings, operators = (
+                _script_lexical_spans(
+                    script, parser=self.parser, source_id=self.parse_result.source_id
+                )
+                if collect_lexical_spans
+                else ((), ())
+            )
+            result = LoweringResult(
+                script=lowerer.lower_script(script),
+                diagnostics=tuple(lowerer.diagnostics),
+                comment_spans=tuple(lowerer.comment_spans),
+                string_spans=strings + tuple(lowerer.string_spans),
+                operator_spans=operators + tuple(lowerer.operator_spans),
+            )
+            self._lowered[key] = (script, result)
+            return result
 
 
 class _Lowerer:
@@ -500,6 +531,7 @@ class _Lowerer:
         '_collect_lexical_spans',
         '_parser',
         '_source_id',
+        '_syntax',
         'comment_spans',
         'diagnostics',
         'operator_spans',
@@ -509,13 +541,13 @@ class _Lowerer:
     def __init__(
         self,
         *,
-        parser: Parser,
-        source_id: str,
+        syntax: DocumentSyntax,
         collect_lexical_spans: bool,
     ) -> None:
         self._collect_lexical_spans = collect_lexical_spans
-        self._parser = parser
-        self._source_id = source_id
+        self._syntax = syntax
+        self._parser = syntax.parser
+        self._source_id = syntax.parse_result.source_id
         self.diagnostics: list[Diagnostic] = []
         self.comment_spans: list[Span] = []
         self.string_spans: list[Span] = []
@@ -898,31 +930,14 @@ class _Lowerer:
         )
 
     def _lower_embedded_script(self, text: str, start_position: Position) -> LoweredScript:
-        if not self._collect_lexical_spans:
-            script = self._parser.parse_embedded_script_for_analysis(
-                source_id=self._source_id,
-                text=text,
-                start_position=start_position,
-                diagnostics=self.diagnostics,
-            )
-            lowering_result = lower_script(
-                script,
-                parser=self._parser,
-                source_id=self._source_id,
-                collect_lexical_spans=False,
-            )
-            self.diagnostics.extend(lowering_result.diagnostics)
-            return lowering_result.script
-
         parse_result = self._parser.parse_embedded_script(
             source_id=self._source_id,
             text=text,
             start_position=start_position,
         )
-        lowering_result = lower_parse_result(
+        lowering_result = self._syntax.lower_parse_result(
             parse_result,
-            parser=self._parser,
-            collect_lexical_spans=True,
+            collect_lexical_spans=self._collect_lexical_spans,
         )
         self.diagnostics.extend(parse_result.diagnostics)
         self.diagnostics.extend(lowering_result.diagnostics)

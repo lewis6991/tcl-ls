@@ -14,7 +14,6 @@ from pygls.protocol.language_server import LanguageServerProtocol
 
 from tcl_lsp import __version__
 from tcl_lsp.analysis import FactExtractor, Resolver, WorkspaceIndex
-from tcl_lsp.analysis.facts.lowering import collect_parse_result_lexical_spans
 from tcl_lsp.common import Diagnostic, lsp_range
 from tcl_lsp.lsp.document_changes import DocumentChangeWorker
 from tcl_lsp.lsp.features.completion import CompletionResults, completion_items
@@ -43,8 +42,6 @@ from tcl_lsp.lsp.workspace_rebuild import (
     DocumentBuildSnapshot,
     RebuildResult,
     WorkspaceRebuilder,
-    analysis_workspace_index,
-    prepare_workspace_documents,
 )
 from tcl_lsp.metadata_paths import (
     DEFAULT_METADATA_REGISTRY,
@@ -52,8 +49,9 @@ from tcl_lsp.metadata_paths import (
     create_metadata_registry,
 )
 from tcl_lsp.parser import Parser
-from tcl_lsp.project.config import configured_library_paths, configured_metadata_paths
-from tcl_lsp.project.paths import source_id_to_path
+from tcl_lsp.project.config import config_files, configured_library_paths, configured_metadata_paths
+from tcl_lsp.project.declarations import load_declaration_snapshot
+from tcl_lsp.project.paths import FileRevision, revision_is_current, source_id_to_path
 
 _DIAGNOSTIC_SEVERITY_MAP = {
     'error': types.DiagnosticSeverity.Error,
@@ -82,6 +80,14 @@ class _CachedDiskDocument:
     document: ManagedDocument
 
 
+@dataclass(frozen=True, slots=True)
+class _PreparedWorkspace:
+    snapshot: DocumentBuildSnapshot
+    pending_documents: tuple[tuple[str, str, int], ...]
+    result: RebuildResult
+    disk_revision: FileRevision
+
+
 def _active_metadata_paths(snapshot: DocumentBuildSnapshot) -> tuple[Path, ...]:
     active_paths: dict[Path, None] = {}
     for uri in snapshot.open_document_uris:
@@ -107,6 +113,10 @@ class LanguageServer(PyglsLanguageServer):
     _resolver: Resolver
     _scanned_package_roots: set[Path]
     _semantic_token_results_by_uri: dict[str, OrderedDict[str, _SemanticTokenResult]]
+    _preparation_lock: threading.RLock
+    _prepared: _PreparedWorkspace | None
+    _configuration_revision: FileRevision
+    _disk_revision: FileRevision
     _state_lock: threading.RLock
     _toolkit_lock: threading.RLock
     _workspace_index: WorkspaceIndex
@@ -125,6 +135,7 @@ class LanguageServer(PyglsLanguageServer):
             text_document_sync_kind=types.TextDocumentSyncKind.Full,
             protocol_cls=_TclLanguageServerProtocol,
         )
+        self._preparation_lock = threading.RLock()
         self._state_lock = threading.RLock()
         self._toolkit_lock = threading.RLock()
         self._indexing_notification_shown = False
@@ -222,28 +233,30 @@ class LanguageServer(PyglsLanguageServer):
         )
 
     def close_document(self, uri: str) -> None:
-        with self._state_lock:
-            self._semantic_token_results_by_uri.pop(uri, None)
-            if uri not in self.documents:
-                return
+        with self._preparation_lock:
+            with self._state_lock:
+                self._semantic_token_results_by_uri.pop(uri, None)
+                if uri not in self.documents:
+                    return
 
-            open_document_uris = set(self._open_document_uris)
-            open_document_uris.discard(uri)
-            metadata_paths_by_uri = dict(self._metadata_paths_by_uri)
-            metadata_paths_by_uri.pop(uri, None)
-            library_paths_by_uri = dict(self._library_paths_by_uri)
-            library_paths_by_uri.pop(uri, None)
-            snapshot = DocumentBuildSnapshot(
-                documents=dict(self.documents),
-                open_document_uris=tuple(open_document_uris),
-                metadata_paths_by_uri=metadata_paths_by_uri,
-                library_paths_by_uri=library_paths_by_uri,
-                workspace_index=self._workspace_index,
-                scanned_package_roots=tuple(self._scanned_package_roots),
-            )
+                open_document_uris = set(self._open_document_uris)
+                open_document_uris.discard(uri)
+                metadata_paths_by_uri = dict(self._metadata_paths_by_uri)
+                metadata_paths_by_uri.pop(uri, None)
+                library_paths_by_uri = dict(self._library_paths_by_uri)
+                library_paths_by_uri.pop(uri, None)
+                snapshot = DocumentBuildSnapshot(
+                    documents=dict(self.documents),
+                    open_document_uris=tuple(open_document_uris),
+                    metadata_paths_by_uri=metadata_paths_by_uri,
+                    library_paths_by_uri=library_paths_by_uri,
+                    workspace_index=self._workspace_index,
+                    scanned_package_roots=tuple(self._scanned_package_roots),
+                    configuration_revision=self._configuration_revision,
+                )
 
-        self._change_worker.discard(uri)
-        self._rebuild_documents(snapshot, ())
+            self._change_worker.discard(uri)
+            self._rebuild_documents(snapshot, ())
 
     @property
     def metadata_registry(self) -> MetadataRegistry:
@@ -277,22 +290,30 @@ class LanguageServer(PyglsLanguageServer):
         return document.version
 
     def current_managed_document(self, uri: str) -> ManagedDocument | None:
-        snapshot = self.analysis_snapshot()
+        snapshot = self._current_analysis_snapshot(self.analysis_snapshot(), uri)
+        return snapshot.documents.get(uri)
+
+    def _current_analysis_snapshot(self, snapshot: AnalysisSnapshot, uri: str) -> AnalysisSnapshot:
+        with self._preparation_lock:
+            # A background build may have completed while this request waited.
+            current = self.analysis_snapshot()
+            if current.workspace_index is not snapshot.workspace_index:
+                snapshot = current
+            return self._prepare_live_snapshot(snapshot, uri)
+
+    def _prepare_live_snapshot(self, snapshot: AnalysisSnapshot, uri: str) -> AnalysisSnapshot:
         document = snapshot.documents.get(uri)
         workspace_document = self._workspace_document_state(uri)
-        if workspace_document is None:
-            return document
-
+        if document is None or workspace_document is None:
+            return snapshot
         text, version = workspace_document
-        if document is not None and document.version == version and document.text == text:
-            return document
-
-        return self._analyze_workspace_document(
-            snapshot,
-            uri=uri,
-            text=text,
-            version=version,
-        )
+        if document.version == version and document.text == text:
+            return snapshot
+        prepared = self._prepare_documents(((uri, text, version),))
+        if prepared is None:
+            return snapshot
+        result = prepared.result
+        return AnalysisSnapshot(result.documents, result.workspace_index, result.metadata_registry)
 
     def semantic_tokens(self, uri: str) -> types.SemanticTokens | None:
         current_result = self._current_semantic_token_result(uri)
@@ -362,10 +383,7 @@ class LanguageServer(PyglsLanguageServer):
 
         # Lexical spans only feed semantic tokens, so keep them lazy in the LSP path.
         with self._toolkit_lock:
-            comment_spans, string_spans, operator_spans = collect_parse_result_lexical_spans(
-                document.parse_result,
-                parser=self._parser,
-            )
+            comment_spans, string_spans, operator_spans = document.syntax.lexical_spans()
         facts = replace(
             document.facts,
             comment_spans=comment_spans,
@@ -391,12 +409,11 @@ class LanguageServer(PyglsLanguageServer):
 
         with self._state_lock:
             current_document = self.documents.get(document.uri)
-            if (
-                current_document is not None
-                and current_document.version == document.version
-                and current_document.text == document.text
-            ):
+            if current_document is document:
                 self.documents[document.uri] = updated_document
+            prepared = self._prepared
+            if prepared is not None and prepared.result.documents.get(document.uri) is document:
+                prepared.result.documents[document.uri] = updated_document
         return updated_document
 
     def _remember_semantic_tokens(
@@ -432,60 +449,6 @@ class LanguageServer(PyglsLanguageServer):
             cached_results.move_to_end(result_id)
             return cached_result.data
 
-    def _analyze_workspace_document(
-        self,
-        snapshot: AnalysisSnapshot,
-        *,
-        uri: str,
-        text: str,
-        version: int,
-    ) -> ManagedDocument:
-        parser = Parser()
-        extractor = FactExtractor(parser, metadata_registry=snapshot.metadata_registry)
-        resolver = Resolver(metadata_registry=snapshot.metadata_registry)
-
-        try:
-            parse_result = parser.parse_document(path=uri, text=text)
-            facts = extractor.extract(
-                parse_result,
-                include_lexical_spans=False,
-            )
-            managed_document = ManagedDocument(
-                uri=uri,
-                version=version,
-                text=text,
-                parse_result=parse_result,
-                facts=facts,
-                analysis=empty_analysis(uri, facts.document_symbols),
-                lexical_spans_included=False,
-            )
-
-            documents = dict(snapshot.documents)
-            documents[uri] = managed_document
-            workspace_index = snapshot.workspace_index.clone()
-            workspace_index.update(uri, facts)
-            prepare_workspace_documents(
-                documents, extractor=extractor, workspace_index=workspace_index
-            )
-            managed_document = documents[uri]
-            facts = managed_document.facts
-            document_workspace_index = analysis_workspace_index(
-                root_uri=uri,
-                documents=documents,
-                workspace_index=workspace_index,
-                metadata_registry=snapshot.metadata_registry,
-            )
-
-            analysis = resolver.analyze(
-                uri=uri,
-                facts=facts,
-                workspace_index=document_workspace_index,
-            )
-
-            return replace(managed_document, analysis=analysis)
-        finally:
-            extractor.close()
-
     def completion_items_at(
         self,
         snapshot: AnalysisSnapshot,
@@ -494,13 +457,11 @@ class LanguageServer(PyglsLanguageServer):
         line: int,
         character: int,
     ) -> CompletionResults:
-        workspace_document = self._workspace_document_state(uri)
+        snapshot = self._current_analysis_snapshot(snapshot, uri)
         return completion_items(
             snapshot.documents,
             workspace_index=snapshot.workspace_index,
             metadata_registry=snapshot.metadata_registry,
-            parser=self.parser,
-            live_text=None if workspace_document is None else workspace_document[0],
             uri=uri,
             line=line,
             character=character,
@@ -616,6 +577,9 @@ class LanguageServer(PyglsLanguageServer):
         ):
             raise ValueError('Resolver metadata registry does not match LanguageServer.')
 
+        self._prepared = None
+        self._configuration_revision = ()
+        self._disk_revision = ()
         self._metadata_registry = resolved_metadata_registry
         self._parser = Parser() if parser is None else parser
         self._extractor = (
@@ -636,17 +600,6 @@ class LanguageServer(PyglsLanguageServer):
         self._metadata_paths_by_uri = {}
         self._library_paths_by_uri = {}
 
-    def _document_build_snapshot(self) -> DocumentBuildSnapshot:
-        with self._state_lock:
-            return DocumentBuildSnapshot(
-                documents=dict(self.documents),
-                open_document_uris=tuple(self._open_document_uris),
-                metadata_paths_by_uri=dict(self._metadata_paths_by_uri),
-                library_paths_by_uri=dict(self._library_paths_by_uri),
-                workspace_index=self._workspace_index,
-                scanned_package_roots=tuple(self._scanned_package_roots),
-            )
-
     def _pending_document_build_snapshot(
         self,
         pending_documents: tuple[tuple[str, str, int], ...],
@@ -661,8 +614,15 @@ class LanguageServer(PyglsLanguageServer):
             scanned_package_roots = tuple(self._scanned_package_roots)
 
         path_settings_changed = False
-        for uri, _, _ in pending_documents:
+        open_document_uris.update(uri for uri, _, _ in pending_documents)
+        configuration_revision: dict[tuple[Path, int, int], None] = {}
+        for uri in sorted(open_document_uris):
             path = source_id_to_path(uri)
+            if path is not None:
+                for config_path in config_files(path):
+                    configuration_revision.update(
+                        dict.fromkeys(load_declaration_snapshot(config_path).revision)
+                    )
             metadata_paths = () if path is None else configured_metadata_paths(path)
             library_paths = () if path is None else configured_library_paths(path)
             if uri in existing_open_document_uris and (
@@ -670,7 +630,6 @@ class LanguageServer(PyglsLanguageServer):
                 or library_paths_by_uri.get(uri, ()) != library_paths
             ):
                 path_settings_changed = True
-            open_document_uris.add(uri)
             metadata_paths_by_uri[uri] = metadata_paths
             library_paths_by_uri[uri] = library_paths
 
@@ -681,9 +640,71 @@ class LanguageServer(PyglsLanguageServer):
             library_paths_by_uri=library_paths_by_uri,
             workspace_index=workspace_index,
             scanned_package_roots=scanned_package_roots,
+            configuration_revision=tuple(configuration_revision),
         )
+        path_settings_changed |= snapshot.configuration_revision != self._configuration_revision
         target_metadata_registry = create_metadata_registry(_active_metadata_paths(snapshot))
         return snapshot, target_metadata_registry, path_settings_changed
+
+    def _prepare_documents(
+        self,
+        pending_documents: tuple[tuple[str, str, int], ...],
+        *,
+        progress: IndexingProgressCallback | None = None,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> _PreparedWorkspace | None:
+        # One bounded result serves completion, tokens, and the next diagnostics
+        # update. Serialize preparation so simultaneous requests share the work.
+        with self._preparation_lock:
+            if should_cancel is not None and should_cancel():
+                return None
+            snapshot, registry, settings_changed = self._pending_document_build_snapshot(
+                pending_documents
+            )
+            cached = self._prepared
+            if (
+                cached is not None
+                and cached.snapshot.workspace_index is snapshot.workspace_index
+                and cached.pending_documents == pending_documents
+                and cached.snapshot.configuration_revision == snapshot.configuration_revision
+                and cached.result.metadata_registry == registry
+                and revision_is_current(cached.disk_revision)
+            ):
+                return cached
+            dependencies_changed = not revision_is_current(self._disk_revision)
+            metadata_changed = registry != self._metadata_registry
+            if settings_changed or metadata_changed or dependencies_changed:
+                self._clear_cached_disk_documents()
+            if progress is not None:
+                progress('Rebuilding workspace index', 10)
+            rebuilder = WorkspaceRebuilder(
+                progress=progress, should_cancel=should_cancel, metadata_registry=registry
+            )
+            build = (
+                rebuilder.incremental_rebuild
+                if not settings_changed
+                and not dependencies_changed
+                and (not metadata_changed or not snapshot.documents)
+                else rebuilder.rebuild
+            )
+            result = build(
+                snapshot,
+                pending_documents,
+                load_cached_document=self._cached_disk_document,
+                cache_document=self._remember_disk_document,
+            )
+            if result is None:
+                return None
+            prepared = _PreparedWorkspace(
+                snapshot,
+                pending_documents,
+                result,
+                result.disk_revision(snapshot.open_document_uris),
+            )
+            with self._state_lock:
+                if self._workspace_index is snapshot.workspace_index:
+                    self._prepared = prepared
+            return prepared
 
     def _load_documents(
         self,
@@ -692,78 +713,27 @@ class LanguageServer(PyglsLanguageServer):
         progress: IndexingProgressCallback | None = None,
         should_cancel: Callable[[], bool] | None = None,
     ) -> bool:
-        pending_documents = tuple(documents)
-        snapshot, target_metadata_registry, path_settings_changed = (
-            self._pending_document_build_snapshot(pending_documents)
-        )
-        metadata_registry_changed = target_metadata_registry != self._metadata_registry
-        if metadata_registry_changed:
-            self._clear_cached_disk_documents()
-        if progress is not None:
-            progress('Rebuilding workspace index', 10)
-
-        use_incremental = not path_settings_changed and (
-            not metadata_registry_changed or not snapshot.documents
-        )
-        if use_incremental:
-            return self._incremental_load_documents(
-                snapshot,
-                pending_documents,
-                progress=progress,
-                should_cancel=should_cancel,
+        with self._preparation_lock:
+            prepared = self._prepare_documents(
+                tuple(documents), progress=progress, should_cancel=should_cancel
             )
-        return self._rebuild_documents(
-            snapshot,
-            pending_documents,
-            progress=progress,
-            should_cancel=should_cancel,
-        )
+            return prepared is not None and self._apply_rebuild_result(
+                prepared.snapshot, prepared.result, should_cancel=should_cancel
+            )
 
     def _rebuild_documents(
         self,
         snapshot: DocumentBuildSnapshot,
         pending_documents: tuple[tuple[str, str, int], ...],
-        *,
-        progress: IndexingProgressCallback | None = None,
-        should_cancel: Callable[[], bool] | None = None,
     ) -> bool:
-        rebuild_result = WorkspaceRebuilder(
-            progress=progress,
-            should_cancel=should_cancel,
-        ).rebuild(
-            snapshot,
-            pending_documents,
-            load_cached_document=self._cached_disk_document,
-            cache_document=self._remember_disk_document,
-        )
-        return self._apply_rebuild_result(
-            snapshot,
-            rebuild_result,
-            should_cancel=should_cancel,
-        )
-
-    def _incremental_load_documents(
-        self,
-        snapshot: DocumentBuildSnapshot,
-        pending_documents: tuple[tuple[str, str, int], ...],
-        *,
-        progress: IndexingProgressCallback | None = None,
-        should_cancel: Callable[[], bool] | None = None,
-    ) -> bool:
-        rebuild_result = WorkspaceRebuilder(
-            progress=progress,
-            should_cancel=should_cancel,
-        ).incremental_rebuild(
-            snapshot,
-            pending_documents,
-            load_cached_document=self._cached_disk_document,
-            cache_document=self._remember_disk_document,
-        )
-        return self._apply_rebuild_result(
-            snapshot,
-            rebuild_result,
-            should_cancel=should_cancel,
-        )
+        with self._preparation_lock:
+            result = WorkspaceRebuilder().rebuild(
+                snapshot,
+                pending_documents,
+                load_cached_document=self._cached_disk_document,
+                cache_document=self._remember_disk_document,
+            )
+            return self._apply_rebuild_result(snapshot, result)
 
     def _apply_rebuild_result(
         self,
@@ -776,10 +746,15 @@ class LanguageServer(PyglsLanguageServer):
             return False
 
         with self._state_lock:
+            if self._workspace_index is not snapshot.workspace_index:
+                return False
             if should_cancel is not None and should_cancel():
                 return False
             with self._toolkit_lock:
                 self._set_metadata_registry(rebuild_result.metadata_registry)
+            self._prepared = None
+            self._configuration_revision = snapshot.configuration_revision
+            self._disk_revision = rebuild_result.disk_revision(snapshot.open_document_uris)
             self.documents = rebuild_result.documents
             self._workspace_index = rebuild_result.workspace_index
             self._scanned_package_roots = rebuild_result.scanned_package_roots
@@ -857,7 +832,7 @@ class LanguageServer(PyglsLanguageServer):
             uri=uri,
             version=0,
             text=cached_document.text,
-            parse_result=cached_document.parse_result,
+            syntax=cached_document.syntax,
             facts=facts,
             analysis=analysis,
             lexical_spans_included=cached_document.lexical_spans_included,

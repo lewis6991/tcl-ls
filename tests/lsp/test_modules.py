@@ -1,11 +1,13 @@
 from pathlib import Path
 
 import pytest
+from lsprotocol import types
 
 from tcl_lsp.checker.service import check_project
 from tcl_lsp.lsp import LanguageServer
 from tcl_lsp.lsp.features.completion import completion_items
 from tcl_lsp.lsp.features.navigation import definition
+from tests.lsp_support import process_message
 
 
 @pytest.fixture
@@ -238,16 +240,20 @@ def test_live_completion_uses_dependency_body_metadata(package_project: Path, ac
     dependency = 'source [file join [file dirname [info script]] deps.inc]\n'
     server = LanguageServer()
     try:
+        process_message(
+            server,
+            {'jsonrpc': '2.0', 'id': 0, 'method': 'initialize', 'params': {'capabilities': {}}},
+        )
         server.open_document(source.as_uri(), dependency, 1)
         snapshot = server.analysis_snapshot()
         body = 'sample::run {sample::define greet {return ok}; gre}'
         text = (dependency if active else '\n') + body + '\n'
-        result = completion_items(
-            snapshot.documents,
-            workspace_index=snapshot.workspace_index,
-            metadata_registry=snapshot.metadata_registry,
+        server.workspace.put_text_document(
+            types.TextDocumentItem(uri=source.as_uri(), language_id='tcl', version=2, text=text)
+        )
+        result = server.completion_items_at(
+            snapshot,
             uri=source.as_uri(),
-            live_text=text,
             line=1,
             character=len(body) - 1,
         )

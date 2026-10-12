@@ -5,12 +5,17 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from tcl_lsp.cache import metadata_lru_cache
-from tcl_lsp.project.declarations import load_declarations, metadata_root, metadata_roots
+from tcl_lsp.project.declarations import (
+    load_declaration_snapshot,
+    metadata_root,
+    metadata_roots,
+)
+from tcl_lsp.project.paths import FileRevision
 
 _PACKAGE_META_DIR = Path(__file__).resolve().parent / 'meta'
 _REPO_META_DIR = Path(__file__).resolve().parents[2] / 'meta'
 METADATA_FILE_SUFFIX = '.meta.tcl'
-type MetadataRevision = tuple[tuple[Path, int, int], ...]
+type MetadataRevision = FileRevision
 
 _SOURCE_FILE_SUFFIXES = ('.tcl', '.tm')
 
@@ -22,13 +27,11 @@ def bundled_metadata_dir() -> Path:
 
 
 @dataclass(frozen=True, slots=True)
-class MetadataRegistry:
-    extra_metadata_paths: tuple[Path, ...] = ()
-    modules: tuple[str, ...] = ()
-    revision: MetadataRevision = ()
+class MetadataCatalog:
+    """Metadata files and their revision, independent of module selection."""
 
-    def with_modules(self, modules: tuple[str, ...]) -> MetadataRegistry:
-        return replace(self, modules=modules)
+    extra_metadata_paths: tuple[Path, ...] = ()
+    revision: MetadataRevision = ()
 
     def metadata_paths(self) -> tuple[Path, ...]:
         return (bundled_metadata_dir(), *self.extra_metadata_paths)
@@ -55,6 +58,15 @@ class MetadataRegistry:
         return tuple(layers)
 
 
+@dataclass(frozen=True, slots=True)
+class MetadataRegistry:
+    catalog: MetadataCatalog = MetadataCatalog()
+    modules: tuple[str, ...] = ()
+
+    def with_modules(self, modules: tuple[str, ...]) -> MetadataRegistry:
+        return self if modules == self.modules else replace(self, modules=modules)
+
+
 DEFAULT_METADATA_REGISTRY = MetadataRegistry()
 
 
@@ -62,19 +74,14 @@ def create_metadata_registry(
     paths: Iterable[Path | str] = (), *, module: str | None = None
 ) -> MetadataRegistry:
     normalized = _normalize_metadata_paths(paths)
-    files = dict.fromkeys(
-        block.path
+    revision = dict.fromkeys(
+        entry
         for root in normalized
         for path in metadata_roots(root)
-        for block in load_declarations(path).blocks()
+        for entry in load_declaration_snapshot(path).revision
     )
-    revision: list[tuple[Path, int, int]] = []
-    for path in files:
-        stat = path.stat()
-        revision.append((path, stat.st_mtime_ns, stat.st_size))
     return MetadataRegistry(
-        extra_metadata_paths=normalized,
-        revision=tuple(revision),
+        catalog=MetadataCatalog(normalized, tuple(revision)),
         modules=(module,) if module and module != 'Tcl' else (),
     )
 

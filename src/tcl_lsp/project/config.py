@@ -3,11 +3,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from tcl_lsp.cache import metadata_lru_cache
 from tcl_lsp.common import Diagnostic
-from tcl_lsp.parser import Parser, ParseResult, word_static_text
+from tcl_lsp.parser import ParseResult, word_static_text
 from tcl_lsp.parser.expr import Expr, parse_expr
 from tcl_lsp.parser.model import Command
-from tcl_lsp.project.declarations import DeclarationError, DeclarationGroup, read_declarations
+from tcl_lsp.project.declarations import (
+    DeclarationError,
+    DeclarationGroup,
+    DeclarationSnapshot,
+    load_declaration_snapshot,
+    read_declarations,
+)
 from tcl_lsp.project.diagnostics import DiagnosticRule, parse_diagnostic_rule
 
 _CONFIG_FILE_NAME = 'tcllsrc.tcl'
@@ -87,13 +94,19 @@ def load_library_paths(config_path: Path) -> tuple[Path, ...]:
 
 
 def load_config_paths(config_path: Path) -> ProjectConfig:
-    text = config_path.read_text(encoding='utf-8')
-    parse_result = Parser().parse_document(path=config_path.as_uri(), text=text)
-    config = parse_config(parse_result, directory=config_path.parent.resolve(strict=False))
+    try:
+        config = _snapshot_config(load_declaration_snapshot(config_path))
+    except DeclarationError as exc:
+        raise RuntimeError(f'Invalid `{_CONFIG_FILE_NAME}`: {exc}') from exc
     if config.diagnostics:
         message = '; '.join(diagnostic.message for diagnostic in config.diagnostics)
         raise RuntimeError(f'Invalid `{_CONFIG_FILE_NAME}`: {message}')
     return config
+
+
+@metadata_lru_cache(maxsize=256)
+def _snapshot_config(snapshot: DeclarationSnapshot) -> ProjectConfig:
+    return _config_from_declarations(snapshot.declarations, snapshot.revision[0][0])
 
 
 def parse_config(parse_result: ParseResult, *, directory: Path) -> ProjectConfig:
@@ -117,6 +130,10 @@ def parse_config(parse_result: ParseResult, *, directory: Path) -> ProjectConfig
                 ),
             ),
         )
+    return _config_from_declarations(declarations, config_path)
+
+
+def _config_from_declarations(declarations: DeclarationGroup, config_path: Path) -> ProjectConfig:
     has_metadata = False
     library_paths: dict[Path, None] = {}
     module_rules: list[ModuleRule] = []

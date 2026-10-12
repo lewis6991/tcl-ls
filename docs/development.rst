@@ -43,9 +43,25 @@ completion with pending text, and semantic tokens. It changes the buffer in
 memory and leaves files untouched. Repeat in fresh processes to compare startup
 costs; result hashes help check that an optimization preserves the replay's
 output. Timings exclude editor transport and the diagnostics debounce.
+Use ``--completion-before-edit`` to request completion before every diagnostic
+update, as an editor may do while typing.
 
 Add ``--profile run.prof`` to record a CPU profile, then inspect it with
 ``uv run python -m pstats run.prof``. Use unprofiled runs for timing comparisons.
+
+Analysis reuse has three lifetimes:
+
+* A metadata catalog shares compiled package data across active module views.
+  Declaration snapshots track each included file and refresh after saved edits.
+* A document version owns its parsed bodies, lowered syntax, and lexical spans.
+  Fact extraction and highlighting share syntax; semantic facts still depend on
+  the active metadata and packages.
+* One pending workspace result serves completion, highlighting, and diagnostics.
+  Reuse requires matching text, versions, configuration, metadata, and dependency
+  state. Cancelled or superseded builds cannot replace published analysis.
+
+Dependency preparation always starts from file-local facts. This prevents
+removed package requirements from remaining active through dependency cycles.
 
 Repository Layout
 -----------------

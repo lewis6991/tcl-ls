@@ -22,6 +22,7 @@ from tcl_lsp.analysis.embedded_languages import (
     resolve_embedded_language_entries,
 )
 from tcl_lsp.analysis.facts.lowering import (
+    DocumentSyntax,
     LoweredCatchCommand,
     LoweredCommand,
     LoweredCondition,
@@ -37,8 +38,6 @@ from tcl_lsp.analysis.facts.lowering import (
     LoweredWhileCommand,
     LoweredWordReferences,
     command_scripts,
-    lower_parse_result,
-    lower_script,
 )
 from tcl_lsp.analysis.facts.parameters import procedure_parameter_items
 from tcl_lsp.analysis.facts.parsing import ListItem, is_simple_name, split_tcl_list
@@ -188,6 +187,7 @@ class FactExtractor:
         self,
         parse_result: ParseResult,
         *,
+        syntax: DocumentSyntax | None = None,
         include_parse_result: bool = True,
         include_lexical_spans: bool | None = None,
         module_rules: tuple[ModuleRule, ...] | None = None,
@@ -203,9 +203,10 @@ class FactExtractor:
         elif module_rules is None:
             module_rules = configured_module_rules(source_path) if source_path is not None else ()
 
-        lowering_result = lower_parse_result(
+        syntax = syntax or DocumentSyntax(parse_result, parser=self._parser)
+        assert syntax.parse_result is parse_result
+        lowering_result = syntax.lower_parse_result(
             parse_result,
-            parser=self._parser,
             collect_lexical_spans=include_lexical_spans,
         )
         diagnostics = parse_result.diagnostics + lowering_result.diagnostics
@@ -224,7 +225,7 @@ class FactExtractor:
                 metadata_registry=self._metadata_registry,
                 required_packages=required_packages,
                 module_rules=module_rules,
-                parser=self._parser,
+                syntax=syntax,
                 plugin_host=self._plugin_host,
                 parse_result=parse_result,
                 comment_spans=lowering_result.comment_spans,
@@ -271,6 +272,7 @@ class _FactCollector:
         '_required_packages',
         '_source_directives',
         '_string_spans',
+        '_syntax',
         '_variable_bindings',
         '_variable_references',
     )
@@ -278,7 +280,7 @@ class _FactCollector:
     def __init__(
         self,
         metadata_registry: MetadataRegistry,
-        parser: Parser,
+        syntax: DocumentSyntax,
         plugin_host: TclPluginHost,
         parse_result: ParseResult,
         *,
@@ -298,10 +300,11 @@ class _FactCollector:
             *metadata_registry.modules,
             *(rule.name for rule in self._module_rules),
         ):
-            if name not in metadata_module_names(metadata_registry):
+            if name not in metadata_module_names(metadata_registry.catalog):
                 raise RuntimeError(f'Unknown metadata module `{name}`.')
         self._module_scopes: list[ModuleSelection] = []
-        self._parser = parser
+        self._syntax = syntax
+        self._parser = syntax.parser
         self._plugin_host = plugin_host
         self._parse_result = parse_result
         self._lowered_script = lowered_script
@@ -460,7 +463,7 @@ class _FactCollector:
             return context
         if len(words) != 3 or words[:2] != ['tcl-ls:', 'module']:
             message = 'Module directives must be `# tcl-ls: module name`.'
-        elif words[2] not in metadata_module_names(context.metadata_registry):
+        elif words[2] not in metadata_module_names(context.metadata_registry.catalog):
             message = f'Unknown metadata module `{words[2]}`.'
         else:
             return replace(context, explicit_modules=(*context.explicit_modules, words[2]))
@@ -1704,9 +1707,7 @@ class _FactCollector:
             else:
                 text, start = body
                 parsed = self._parser.parse_embedded_script(parent_context.uri, text, start)
-                script = lower_parse_result(
-                    parsed, parser=self._parser, collect_lexical_spans=False
-                ).script
+                script = self._syntax.lower_parse_result(parsed, collect_lexical_spans=False).script
                 effects = self._script_effects(script, parent_context)
         next_flow_state = script_body_flow_state(
             parent_context.flow_state,
@@ -1736,10 +1737,8 @@ class _FactCollector:
             span=Span(start=words[0].span.start, end=words[-1].span.end),
             words=words,
         )
-        lowering_result = lower_script(
+        lowering_result = self._syntax.lower_script(
             Script(span=embedded_command.span, commands=(embedded_command,)),
-            parser=self._parser,
-            source_id=context.uri,
             collect_lexical_spans=self._include_lexical_spans,
         )
         self._comment_spans.extend(lowering_result.comment_spans)
@@ -2148,31 +2147,11 @@ class _FactCollector:
             return self._context_with_flow_state(context, context.flow_state.invalidated())
 
         script_text, start_position = embedded_script_text
-        if not self._include_lexical_spans:
-            script = self._parser.parse_embedded_script_for_analysis(
-                context.uri,
-                script_text,
-                start_position,
-                diagnostics=self._diagnostics,
-            )
-            lowering_result = lower_script(
-                script,
-                parser=self._parser,
-                source_id=context.uri,
-                collect_lexical_spans=False,
-            )
-        else:
-            parse_result = self._parser.parse_embedded_script(
-                context.uri,
-                script_text,
-                start_position,
-            )
-            lowering_result = lower_parse_result(
-                parse_result,
-                parser=self._parser,
-                collect_lexical_spans=True,
-            )
-            self._diagnostics.extend(parse_result.diagnostics)
+        parse_result = self._parser.parse_embedded_script(context.uri, script_text, start_position)
+        lowering_result = self._syntax.lower_parse_result(
+            parse_result, collect_lexical_spans=self._include_lexical_spans
+        )
+        self._diagnostics.extend(parse_result.diagnostics)
 
         self._comment_spans.extend(lowering_result.comment_spans)
         self._string_spans.extend(lowering_result.string_spans)
@@ -3119,9 +3098,7 @@ class _FactCollector:
                     text, start = body
                     parsed = self._parser.parse_embedded_script(context.uri, text, start)
                     scripts.append(
-                        lower_parse_result(
-                            parsed, parser=self._parser, collect_lexical_spans=False
-                        ).script
+                        self._syntax.lower_parse_result(parsed, collect_lexical_spans=False).script
                     )
             for child in scripts:
                 effects = effects.combined(self._script_effects(child, context))

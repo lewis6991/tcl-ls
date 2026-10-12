@@ -5,6 +5,7 @@ import pytest
 from tcl_lsp.checker import check_project
 from tcl_lsp.lsp import LanguageServer
 from tcl_lsp.lsp.features.navigation import definition
+from tcl_lsp.parser import Parser, ParseResult
 
 
 @pytest.mark.parametrize('threads', [1, 2])
@@ -113,10 +114,21 @@ def test_directory_discovery_does_not_load_included_fragments_twice(tmp_path: Pa
         check_project(source, threads=1, metadata_paths=(metadata,))
 
 
-def test_saved_include_changes_refresh_editor_and_checker(tmp_path: Path) -> None:
+def test_saved_include_changes_refresh_editor_and_checker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     fragment = tmp_path / 'commands.meta.tcl'
     fragment.write_text('meta command choose {one}\n')
     (tmp_path / 'tcllsrc.tcl').write_text('meta module Tcl {source commands.meta.tcl}\n')
+    parses: list[str] = []
+    parse = Parser.parse_document
+
+    def count(self: Parser, path: str, text: str) -> ParseResult:
+        if path == fragment.as_uri():
+            parses.append(text)
+        return parse(self, path, text)
+
+    monkeypatch.setattr(Parser, 'parse_document', count)
     source = tmp_path / 'main.tcl'
     source.write_text('choose a b\n')
     server = LanguageServer()
@@ -124,9 +136,13 @@ def test_saved_include_changes_refresh_editor_and_checker(tmp_path: Path) -> Non
         assert [d.code for d in server.open_document(source.as_uri(), source.read_text(), 1)] == [
             'wrong-argument-count'
         ]
+        assert len(parses) == 1
+        server.change_document(source.as_uri(), source.read_text(), 2)
+        assert len(parses) == 1
         fragment.write_text('meta command choose {one two}\n')
-        assert server.change_document(source.as_uri(), source.read_text(), 2) == ()
+        assert server.change_document(source.as_uri(), source.read_text(), 3) == ()
         assert check_project(source, threads=1).diagnostics == ()
+        assert len(parses) == 2
     finally:
         server.shutdown()
 

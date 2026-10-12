@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from tcl_lsp.analysis import DocumentFacts, FactExtractor, Resolver, WorkspaceIndex
+from tcl_lsp.analysis.facts.lowering import DocumentSyntax
 from tcl_lsp.lsp.state import (
     IndexingProgressCallback,
     ManagedDocument,
@@ -14,12 +15,19 @@ from tcl_lsp.lsp.state import (
 from tcl_lsp.metadata_paths import MetadataRegistry, create_metadata_registry
 from tcl_lsp.parser import Parser
 from tcl_lsp.project.indexing import (
+    dependency_source_uris_for_facts,
     discover_lazy_package_indexes,
     load_package_index,
     prepare_dependencies,
     reachable_document_uris,
 )
-from tcl_lsp.project.paths import candidate_package_roots, read_source_file, source_id_to_path
+from tcl_lsp.project.paths import (
+    FileRevision,
+    candidate_package_roots,
+    file_revision,
+    read_source_file,
+    source_id_to_path,
+)
 
 type CancelCallback = Callable[[], bool]
 type CachedDocumentLoader = Callable[[str, Resolver | None], ManagedDocument | None]
@@ -34,6 +42,7 @@ class DocumentBuildSnapshot:
     library_paths_by_uri: dict[str, tuple[Path, ...]]
     workspace_index: WorkspaceIndex
     scanned_package_roots: tuple[Path, ...]
+    configuration_revision: FileRevision = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +51,27 @@ class RebuildResult:
     workspace_index: WorkspaceIndex
     scanned_package_roots: set[Path]
     metadata_registry: MetadataRegistry
+
+    def disk_revision(self, open_uris: tuple[str, ...]) -> FileRevision:
+        uris = dict.fromkeys(uri for uri in self.documents if uri not in open_uris)
+        # Track missing source targets too, so their creation invalidates reuse.
+        for document in self.documents.values():
+            uris.update(
+                dict.fromkeys(
+                    dependency_source_uris_for_facts(
+                        source_id_to_path(document.uri),
+                        document.facts,
+                        self.workspace_index,
+                        metadata_registry=self.metadata_registry,
+                    )
+                )
+            )
+        return file_revision(
+            path
+            for uri in uris
+            if uri not in open_uris
+            if (path := source_id_to_path(uri)) is not None
+        )
 
 
 class _AnalysisCancelled(RuntimeError):
@@ -57,9 +87,11 @@ class WorkspaceRebuilder:
         *,
         progress: IndexingProgressCallback | None = None,
         should_cancel: CancelCallback | None = None,
+        metadata_registry: MetadataRegistry | None = None,
     ) -> None:
         self._progress = progress
         self._should_cancel = should_cancel
+        self._metadata_registry = metadata_registry
 
     def rebuild(
         self,
@@ -69,7 +101,9 @@ class WorkspaceRebuilder:
         load_cached_document: CachedDocumentLoader | None = None,
         cache_document: CachedDocumentSaver | None = None,
     ) -> RebuildResult | None:
-        target_metadata_registry = create_metadata_registry(self._active_metadata_paths(snapshot))
+        target_metadata_registry = self._metadata_registry or create_metadata_registry(
+            self._active_metadata_paths(snapshot)
+        )
         parser = Parser()
         extractor = FactExtractor(parser, metadata_registry=target_metadata_registry)
         resolver = Resolver(metadata_registry=target_metadata_registry)
@@ -166,7 +200,9 @@ class WorkspaceRebuilder:
         load_cached_document: CachedDocumentLoader | None = None,
         cache_document: CachedDocumentSaver | None = None,
     ) -> RebuildResult | None:
-        target_metadata_registry = create_metadata_registry(self._active_metadata_paths(snapshot))
+        target_metadata_registry = self._metadata_registry or create_metadata_registry(
+            self._active_metadata_paths(snapshot)
+        )
         parser = Parser()
         extractor = FactExtractor(parser, metadata_registry=target_metadata_registry)
         resolver = Resolver(metadata_registry=target_metadata_registry)
@@ -267,15 +303,17 @@ class WorkspaceRebuilder:
         include_lexical_spans: bool = False,
     ) -> ManagedDocument:
         parse_result = parser.parse_document(path=uri, text=text)
+        syntax = DocumentSyntax(parse_result, parser=parser)
         facts = extractor.extract(
             parse_result,
+            syntax=syntax,
             include_lexical_spans=include_lexical_spans,
         )
         return ManagedDocument(
             uri=uri,
             version=version,
             text=text,
-            parse_result=parse_result,
+            syntax=syntax,
             facts=facts,
             analysis=(
                 empty_analysis(uri, facts.document_symbols)
@@ -500,6 +538,7 @@ def prepare_workspace_documents(
             return document.facts
         return extractor.extract(
             document.parse_result,
+            syntax=document.syntax,
             include_lexical_spans=document.lexical_spans_included,
             module_rules=facts.module_rules,
             required_packages=packages,

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from tcl_lsp.analysis import FactExtractor, WorkspaceIndex
+from tcl_lsp.analysis.builtins import builtin_commands
 from tcl_lsp.analysis.metadata_effects import dependency_required_packages
 from tcl_lsp.metadata_paths import create_metadata_registry
 from tcl_lsp.parser import Parser
@@ -307,3 +308,22 @@ def test_analysis_keeps_option_aware_bindings_conservative_when_prefix_is_dynami
     }
     assert 'Unresolved variable `text`.' in unresolved_messages
     assert 'Unresolved variable `result`.' in unresolved_messages
+
+
+def test_module_views_share_compiled_package_commands(tmp_path: Path) -> None:
+    metadata = tmp_path / 'tools.meta.tcl'
+    metadata.write_text(
+        'meta module Tool {meta command prove {}}\nmeta module Other {meta command assume {}}\n'
+    )
+    registry = create_metadata_registry((metadata,))
+    tool = builtin_commands(metadata_registry=registry.with_modules(('Tool',)))
+    both = builtin_commands(metadata_registry=registry.with_modules(('Tool', 'Other')))
+    assert tool['prove'] is both['prove']
+    assert 'assume' not in tool and 'assume' in both
+    metadata.write_text('meta module Tool {meta command prove {property}}\n')
+    updated = builtin_commands(
+        metadata_registry=create_metadata_registry((metadata,), module='Tool')
+    )
+    assert updated['prove'] is not tool['prove']
+    assert updated['prove'].overloads[0].signature == 'prove {property}'
+    assert tool['prove'].overloads[0].signature == 'prove {}'

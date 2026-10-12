@@ -12,7 +12,7 @@ from tcl_lsp.analysis.metadata_commands import (
     metadata_module_names,
 )
 from tcl_lsp.cache import metadata_lru_cache
-from tcl_lsp.metadata_paths import MetadataRegistry
+from tcl_lsp.metadata_paths import MetadataCatalog, MetadataRegistry
 
 # TclOO ships with the supported Tcl runtime. Other modules need selection.
 _DEFAULT_MODULES = frozenset({'Tcl', 'TclOO'})
@@ -38,7 +38,7 @@ class MetadataView:
 @metadata_lru_cache(maxsize=128)
 def metadata_view(registry: MetadataRegistry) -> MetadataView:
     # File discovery and parsing do not depend on the active module stack.
-    base, modules = _metadata_layers(registry.with_modules(()))
+    base, modules = _metadata_layers(registry.catalog)
     commands: dict[CommandKey, tuple[MetadataCommand, ...]] = {}
     occupied: dict[CommandKey, tuple[MetadataCommand, ...]] = {}
     language_extends: dict[str, bool] = {}
@@ -86,24 +86,24 @@ def metadata_view(registry: MetadataRegistry) -> MetadataView:
 
 @metadata_lru_cache(maxsize=128)
 def _metadata_layers(
-    registry: MetadataRegistry,
+    catalog: MetadataCatalog,
 ) -> tuple[tuple[_MetadataLayer, ...], dict[str, tuple[_MetadataLayer, ...]]]:
-    module_names = metadata_module_names(registry)
+    module_names = metadata_module_names(catalog)
     base: list[_MetadataLayer] = []
     modules: dict[str, list[_MetadataLayer]] = {name: [] for name in module_names}
-    for _, paths in registry.metadata_file_layers():
+    for _, paths in catalog.metadata_file_layers():
         commands_by_module: dict[str | None, list[MetadataCommand]] = {}
         extends_by_module: dict[str | None, dict[str, bool]] = {}
         for path in paths:
             for command in load_metadata_commands(
-                path, alias_paths=registry.metadata_files(), revision=registry.revision
+                path, alias_paths=catalog.metadata_files(), revision=catalog.revision
             ):
                 module = (
                     command.module_name if command.module_name not in _DEFAULT_MODULES else None
                 )
                 commands_by_module.setdefault(module, []).append(command)
             for module, name, extends_tcl in metadata_file_summary(
-                path, revision=registry.revision
+                path, revision=catalog.revision
             ).language_extends:
                 module = module if module not in _DEFAULT_MODULES else None
                 extends = extends_by_module.setdefault(module, {})

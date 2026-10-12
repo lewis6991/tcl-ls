@@ -49,7 +49,7 @@ def test_analysis_reports_no_diagnostics_for_metadata_files(parser: Parser) -> N
     workspace = WorkspaceIndex()
     facts_by_uri: dict[str, DocumentFacts] = {}
 
-    metadata_paths = sorted(DEFAULT_METADATA_REGISTRY.metadata_files())
+    metadata_paths = sorted(DEFAULT_METADATA_REGISTRY.catalog.metadata_files())
     assert metadata_paths
 
     for metadata_path in metadata_paths:

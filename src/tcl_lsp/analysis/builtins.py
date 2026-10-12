@@ -19,7 +19,12 @@ from tcl_lsp.analysis.model import CommandArity, CommandVisibility, DefinitionTa
 from tcl_lsp.analysis.signature_matching import display_metadata_signature
 from tcl_lsp.cache import metadata_lru_cache
 from tcl_lsp.common import Span, lsp_location
-from tcl_lsp.metadata_paths import DEFAULT_METADATA_REGISTRY, MetadataRegistry, MetadataRevision
+from tcl_lsp.metadata_paths import (
+    DEFAULT_METADATA_REGISTRY,
+    MetadataCatalog,
+    MetadataRegistry,
+    MetadataRevision,
+)
 
 _PACKAGE_ALIASES = {
     # Some bundled tcllib metadata is shipped for specific subpackages even when
@@ -62,7 +67,7 @@ def builtin_commands(
 @metadata_lru_cache(maxsize=128)
 def _builtin_commands(metadata_registry: MetadataRegistry) -> dict[str, BuiltinCommand]:
     return {
-        name: _builtin_commands_for_package(command.module_name, metadata_registry)[name]
+        name: _builtin_commands_for_package(command.module_name, metadata_registry.catalog)[name]
         for name, command in metadata_view(metadata_registry).module_commands.items()
         if command.module_name is not None
     }
@@ -73,7 +78,7 @@ def registry_for_packages(
     metadata_registry: MetadataRegistry, required_packages: frozenset[str]
 ) -> MetadataRegistry:
     """Activate known package modules below explicitly selected modules."""
-    available = metadata_module_names(metadata_registry)
+    available = metadata_module_names(metadata_registry.catalog)
     packages = tuple(
         dict.fromkeys(canonical_builtin_package_name(name) for name in sorted(required_packages))
     )
@@ -97,7 +102,7 @@ def _active_annotated_metadata_commands(
             {
                 name: command
                 for name, command in _annotated_metadata_commands_for_package(
-                    package, metadata_registry
+                    package, metadata_registry.catalog
                 ).items()
                 if name in commands and commands[name].package == package
             }
@@ -108,18 +113,16 @@ def _active_annotated_metadata_commands(
 @metadata_lru_cache(maxsize=128)
 def _annotated_metadata_commands_for_package(
     package_name: str,
-    metadata_registry: MetadataRegistry,
+    catalog: MetadataCatalog,
 ) -> dict[str, MetadataCommand]:
-    metadata_path_layers = _builtin_metadata_path_layers_by_package(metadata_registry).get(
-        package_name
-    )
+    metadata_path_layers = _builtin_metadata_path_layers_by_package(catalog).get(package_name)
     if metadata_path_layers is None:
         return {}
     return _load_annotated_metadata_package(
         package_name=package_name,
         metadata_path_layers=metadata_path_layers,
-        alias_paths=metadata_registry.metadata_files(),
-        revision=metadata_registry.revision,
+        alias_paths=catalog.metadata_files(),
+        revision=catalog.revision,
     )
 
 
@@ -146,34 +149,32 @@ def builtin_commands_by_package(
     *,
     metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
 ) -> dict[str, dict[str, BuiltinCommand]]:
-    return _builtin_commands_by_package(metadata_registry)
+    return _builtin_commands_by_package(metadata_registry.catalog)
 
 
 @metadata_lru_cache(maxsize=128)
 def _builtin_commands_by_package(
-    metadata_registry: MetadataRegistry,
+    catalog: MetadataCatalog,
 ) -> dict[str, dict[str, BuiltinCommand]]:
     return {
-        package_name: _builtin_commands_for_package(package_name, metadata_registry)
-        for package_name in _builtin_metadata_path_layers_by_package(metadata_registry)
+        package_name: _builtin_commands_for_package(package_name, catalog)
+        for package_name in _builtin_metadata_path_layers_by_package(catalog)
     }
 
 
 @metadata_lru_cache(maxsize=128)
 def _builtin_commands_for_package(
     package_name: str,
-    metadata_registry: MetadataRegistry,
+    catalog: MetadataCatalog,
 ) -> dict[str, BuiltinCommand]:
-    metadata_path_layers = _builtin_metadata_path_layers_by_package(metadata_registry).get(
-        package_name
-    )
+    metadata_path_layers = _builtin_metadata_path_layers_by_package(catalog).get(package_name)
     if metadata_path_layers is None:
         return {}
     return _load_metadata_package(
         package_name=package_name,
         metadata_path_layers=metadata_path_layers,
-        alias_paths=metadata_registry.metadata_files(),
-        revision=metadata_registry.revision,
+        alias_paths=catalog.metadata_files(),
+        revision=catalog.revision,
     )
 
 
@@ -218,7 +219,9 @@ def is_builtin_package(
     *,
     metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
 ) -> bool:
-    return canonical_builtin_package_name(package_name) in metadata_module_names(metadata_registry)
+    return canonical_builtin_package_name(package_name) in metadata_module_names(
+        metadata_registry.catalog
+    )
 
 
 def canonical_builtin_package_name(package_name: str) -> str:
@@ -382,12 +385,12 @@ def _load_annotated_metadata_package(
     return annotated
 
 
-@metadata_lru_cache(maxsize=1)
+@metadata_lru_cache(maxsize=128)
 def _builtin_metadata_path_layers_by_package(
-    metadata_registry: MetadataRegistry,
+    catalog: MetadataCatalog,
 ) -> dict[str, tuple[tuple[Path, ...], ...]]:
     path_layers_by_package: dict[str, list[tuple[Path, ...]]] = {}
-    for _, layer_paths in metadata_registry.metadata_file_layers():
+    for _, layer_paths in catalog.metadata_file_layers():
         layer_paths_by_package: dict[str, list[Path]] = {}
         for metadata_path in layer_paths:
             for module in metadata_modules(metadata_path):

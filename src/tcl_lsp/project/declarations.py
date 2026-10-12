@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import os
+from collections import OrderedDict
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from pathlib import Path
+from threading import RLock
 
-from tcl_lsp.cache import metadata_lru_cache
+from tcl_lsp.cache import register_cache_clearer
 from tcl_lsp.common import Span
 from tcl_lsp.parser import BracedWord, Command, Parser, ParseResult, word_static_text
+from tcl_lsp.project.paths import FileRevision, revision_is_current
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,9 +62,51 @@ class DeclarationError(RuntimeError):
         super().__init__(message)
 
 
-def load_declarations(path: Path) -> DeclarationGroup:
+@dataclass(frozen=True, slots=True, eq=False)
+class DeclarationSnapshot:
+    declarations: DeclarationGroup
+    revision: FileRevision
+
+    def is_current(self) -> bool:
+        return revision_is_current(self.revision)
+
+
+_SNAPSHOTS: OrderedDict[Path, DeclarationSnapshot] = OrderedDict()
+_SNAPSHOT_LOCK = RLock()
+
+
+def _clear_snapshots() -> None:
+    with _SNAPSHOT_LOCK:
+        _SNAPSHOTS.clear()
+
+
+register_cache_clearer('metadata', _clear_snapshots)
+
+
+def load_declaration_snapshot(path: Path) -> DeclarationSnapshot:
     path = path.resolve(strict=False)
-    return read_declarations(_read_file(path), path=path)
+    with _SNAPSHOT_LOCK:
+        snapshot = _SNAPSHOTS.get(path)
+        if snapshot is not None and snapshot.is_current():
+            _SNAPSHOTS.move_to_end(path)
+            return snapshot
+        # Record every file read, including transitive source includes. Do not
+        # cache failures: a missing include can be created after this request.
+        revision: dict[Path, tuple[int, int]] = {}
+        parsed = _read_file(path, revision)
+        group = _expand(parsed, path, None, (), revision=revision)
+        snapshot = DeclarationSnapshot(
+            group, tuple((file, mtime, size) for file, (mtime, size) in revision.items())
+        )
+        _SNAPSHOTS[path] = snapshot
+        _SNAPSHOTS.move_to_end(path)
+        while len(_SNAPSHOTS) > 256:
+            _SNAPSHOTS.popitem(last=False)
+        return snapshot
+
+
+def load_declarations(path: Path) -> DeclarationGroup:
+    return load_declaration_snapshot(path).declarations
 
 
 def read_declarations(
@@ -74,13 +119,9 @@ def is_declaration_file(path: Path | None) -> bool:
     return path is not None and (path.name == 'tcllsrc.tcl' or path.name.endswith('.meta.tcl'))
 
 
-def _read_file(path: Path) -> ParseResult:
+def _read_file(path: Path, revision: dict[Path, tuple[int, int]]) -> ParseResult:
     stat = path.stat()
-    return _parse_file(path, stat.st_mtime_ns, stat.st_size)
-
-
-@metadata_lru_cache(maxsize=256)
-def _parse_file(path: Path, _mtime: int, _size: int) -> ParseResult:
+    revision[path] = (stat.st_mtime_ns, stat.st_size)
     return Parser().parse_document(path.as_uri(), path.read_text(encoding='utf-8'))
 
 
@@ -91,7 +132,10 @@ def _expand(
     stack: tuple[Path, ...],
     *,
     recover: bool = False,
+    revision: dict[Path, tuple[int, int]] | None = None,
 ) -> DeclarationGroup:
+    if revision is None:
+        revision = {}
     if path not in stack:
         stack = (*stack, path)
     if parsed.diagnostics:
@@ -115,13 +159,15 @@ def _expand(
                 # Keep empty modules visible to module discovery.
                 entries.append(DeclarationBlock(path, scope, ()))
                 nested = _module_body(path, body)
-                entries.append(_expand(nested, path, scope, stack, recover=recover))
+                entries.append(
+                    _expand(nested, path, scope, stack, recover=recover, revision=revision)
+                )
             elif words[0] == 'source':
                 flush()
                 if len(words) != 2 or not words[1]:
                     raise RuntimeError('`source` requires one static path.')
                 target = (path.parent / words[1]).resolve(strict=False)
-                included = _include(target, module, stack)
+                included = _include(target, module, stack, revision)
                 entries.append(replace(included, include_site=(path, command.span)))
             else:
                 commands.append(command)
@@ -140,7 +186,6 @@ def _expand(
     return DeclarationGroup(tuple(entries), errors=tuple(errors))
 
 
-@metadata_lru_cache(maxsize=256)
 def _module_body(path: Path, body: BracedWord) -> ParseResult:
     return Parser().parse_embedded_script(
         path.as_uri(), body.raw_text[1:-1], body.content_span.start
@@ -158,11 +203,16 @@ def _module_block(command: Command) -> tuple[ModuleScope, BracedWord]:
     return ModuleScope(name), body
 
 
-def _include(path: Path, module: ModuleScope | None, stack: tuple[Path, ...]) -> DeclarationGroup:
+def _include(
+    path: Path,
+    module: ModuleScope | None,
+    stack: tuple[Path, ...],
+    revision: dict[Path, tuple[int, int]],
+) -> DeclarationGroup:
     if path in stack:
         chain = ' -> '.join(str(item) for item in (*stack, path))
         raise RuntimeError(f'Metadata include cycle: {chain}')
-    return _expand(_read_file(path), path, module, stack)
+    return _expand(_read_file(path, revision), path, module, stack, revision=revision)
 
 
 def metadata_root(path: Path) -> Path:
@@ -192,7 +242,7 @@ def _directory_roots(directory: Path) -> tuple[tuple[Path, DeclarationGroup], ..
             if not filename.endswith('.meta.tcl'):
                 continue
             path = (Path(root) / filename).resolve(strict=False)
-            group = _include(path, None, ())
+            group = load_declarations(path)
             included.update(block.path for block in group.blocks() if block.path != path)
             candidates.append((path, group))
     return tuple((path, group) for path, group in candidates if path not in included)

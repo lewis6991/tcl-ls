@@ -21,6 +21,11 @@ def main() -> None:
     parser.add_argument('source', type=Path)
     parser.add_argument('--replace', nargs=2, required=True, metavar=('OLD', 'NEW'))
     parser.add_argument('--edits', type=int, default=5)
+    parser.add_argument(
+        '--completion-before-edit',
+        action='store_true',
+        help='request completion before each diagnostic update',
+    )
     parser.add_argument('--profile', type=Path, help='write cProfile data instead of pure timings')
     args = parser.parse_args()
     if args.edits < 1:
@@ -88,6 +93,8 @@ def main() -> None:
         for version in range(2, args.edits + 2):
             text = modified if version % 2 == 0 else original
             buffer(text, version)
+            if args.completion_before_edit and version > 2:
+                measure('pending_completion', completion)
             measure('edit', partial(server.change_document, uri, text, version))
             measure('tokens', lambda: server.semantic_tokens(uri))
             measure('completion', completion)

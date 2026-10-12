@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import heapq
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Literal
 
 from lsprotocol import types
 
-from tcl_lsp.analysis import FactExtractor, WorkspaceIndex
+from tcl_lsp.analysis import WorkspaceIndex
 from tcl_lsp.analysis.builtins import (
     BuiltinCommand,
     BuiltinOverload,
@@ -25,10 +25,8 @@ from tcl_lsp.lsp.features.cursor_context import (
     cursor_context,
     is_empty_command_position,
 )
-from tcl_lsp.lsp.state import ManagedDocument, empty_analysis
-from tcl_lsp.lsp.workspace_rebuild import prepare_workspace_documents
+from tcl_lsp.lsp.state import ManagedDocument
 from tcl_lsp.metadata_paths import MetadataRegistry
-from tcl_lsp.parser import Parser
 
 type CompletionKind = Literal['argument', 'command', 'package', 'variable']
 
@@ -68,8 +66,6 @@ def completion_items(
     *,
     workspace_index: WorkspaceIndex,
     metadata_registry: MetadataRegistry,
-    parser: Parser | None = None,
-    live_text: str | None = None,
     uri: str,
     line: int,
     character: int,
@@ -77,40 +73,6 @@ def completion_items(
     document = documents_by_uri.get(uri)
     if document is None:
         return CompletionResults(items=())
-
-    live_document = live_text is not None and live_text != document.text
-    if live_document:
-        # Use the same extraction as diagnostics. Mixing live cursor positions
-        # with old scopes can select the wrong module, namespace, or body.
-        assert live_text is not None
-        live_parser = parser or Parser()
-        extractor = FactExtractor(live_parser, metadata_registry=metadata_registry)
-        try:
-            parse_result = live_parser.parse_document(uri, live_text)
-            facts = extractor.extract(
-                parse_result,
-                include_lexical_spans=False,
-                module_rules=document.facts.module_rules,
-            )
-            document = replace(
-                document,
-                text=live_text,
-                parse_result=parse_result,
-                facts=facts,
-                base_facts=None,
-                analysis=empty_analysis(uri, facts.document_symbols),
-                lexical_spans_included=False,
-            )
-            live_documents = {**documents_by_uri, uri: document}
-            workspace_index = workspace_index.clone()
-            workspace_index.update(uri, facts)
-            prepare_workspace_documents(
-                live_documents, extractor=extractor, workspace_index=workspace_index
-            )
-            documents_by_uri = live_documents
-            document = live_documents[uri]
-        finally:
-            extractor.close()
 
     context = cursor_context(document, line=line, character=character)
     if context is None:

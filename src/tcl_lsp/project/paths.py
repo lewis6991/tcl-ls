@@ -1,9 +1,27 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 DEFAULT_SOURCE_PATTERNS = ('*.tcl', '*.tm', '*.test')
+type FileRevision = tuple[tuple[Path, int, int], ...]
+
+
+def file_revision(paths: Iterable[Path]) -> FileRevision:
+    revision: list[tuple[Path, int, int]] = []
+    for path in dict.fromkeys(paths):
+        try:
+            stat = path.stat()
+            stamp = (stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            stamp = (-1, -1)
+        revision.append((path, stamp[0], stamp[1]))
+    return tuple(revision)
+
+
+def revision_is_current(revision: FileRevision) -> bool:
+    return file_revision(path for path, _, _ in revision) == revision
 
 
 def discover_tcl_sources(

@@ -7,6 +7,7 @@ from pathlib import Path
 from lsprotocol import types
 
 from tcl_lsp.analysis import AnalysisResult, WorkspaceIndex
+from tcl_lsp.analysis.facts.lowering import DocumentSyntax
 from tcl_lsp.analysis.model import DocumentFacts
 from tcl_lsp.common import Span
 from tcl_lsp.metadata_paths import MetadataRegistry
@@ -19,12 +20,16 @@ class ManagedDocument:
     uri: str
     version: int
     text: str
-    parse_result: ParseResult
+    syntax: DocumentSyntax
     facts: DocumentFacts
     analysis: AnalysisResult
     lexical_spans_included: bool
     # Extraction without external dependencies is the seed for each rebuild.
     base_facts: DocumentFacts | None = None
+
+    @property
+    def parse_result(self) -> ParseResult:
+        return self.syntax.parse_result
 
 
 @dataclass(frozen=True, slots=True)

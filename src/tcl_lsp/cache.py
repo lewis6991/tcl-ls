@@ -12,6 +12,11 @@ _CACHE_CLEARERS: dict[str, list[Callable[[], None]]] = {}
 _CACHE_LOCK = RLock()
 
 
+def register_cache_clearer(group: str, clear: Callable[[], None]) -> None:
+    with _CACHE_LOCK:
+        _CACHE_CLEARERS.setdefault(group, []).append(clear)
+
+
 def registered_lru_cache(
     *,
     group: str,
@@ -20,8 +25,7 @@ def registered_lru_cache(
 ) -> Callable[[Callable[P, R]], Callable[P, R]]:
     def decorator(function: Callable[P, R]) -> Callable[P, R]:
         cached = lru_cache(maxsize=maxsize, typed=typed)(function)
-        with _CACHE_LOCK:
-            _CACHE_CLEARERS.setdefault(group, []).append(cached.cache_clear)
+        register_cache_clearer(group, cached.cache_clear)
         return cast(Callable[P, R], cached)
 
     return decorator

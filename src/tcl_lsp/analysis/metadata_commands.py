@@ -12,6 +12,7 @@ from tcl_lsp.cache import metadata_lru_cache
 from tcl_lsp.common import Diagnostic, Span
 from tcl_lsp.metadata_paths import (
     DEFAULT_METADATA_REGISTRY,
+    MetadataCatalog,
     MetadataRegistry,
     MetadataRevision,
     metadata_lookup_names,
@@ -175,7 +176,7 @@ def load_metadata_commands(
     if not summary.aliases:
         return summary.commands
     if alias_paths is None:
-        alias_paths = (*DEFAULT_METADATA_REGISTRY.metadata_files(), metadata_path)
+        alias_paths = (*DEFAULT_METADATA_REGISTRY.catalog.metadata_files(), metadata_path)
     return _metadata_commands_with_aliases(metadata_path, alias_paths, revision)
 
 
@@ -285,11 +286,9 @@ def metadata_declaration_diagnostics(
 
 
 @metadata_lru_cache(maxsize=128)
-def metadata_module_names(metadata_registry: MetadataRegistry) -> frozenset[str]:
+def metadata_module_names(catalog: MetadataCatalog) -> frozenset[str]:
     return frozenset(
-        module.name
-        for path in metadata_registry.metadata_files()
-        for module in metadata_modules(path)
+        module.name for path in catalog.metadata_files() for module in metadata_modules(path)
     )
 
 
@@ -459,14 +458,14 @@ def _summarize_block(block: DeclarationBlock, *, config: bool) -> MetadataFileSu
 
 @metadata_lru_cache(maxsize=128)
 def file_scoped_metadata_sources(
-    metadata_registry: MetadataRegistry,
+    catalog: MetadataCatalog,
 ) -> dict[str, tuple[Path, ...]]:
     sources: dict[str, tuple[Path, ...]] = {}
-    for _, metadata_files in metadata_registry.metadata_file_layers():
+    for _, metadata_files in catalog.metadata_file_layers():
         layer_sources: dict[str, list[Path]] = {}
         for metadata_path in metadata_files:
             for owner, source in metadata_file_summary(
-                metadata_path, revision=metadata_registry.revision
+                metadata_path, revision=catalog.revision
             ).source_paths:
                 for lookup_name in metadata_lookup_names(owner):
                     layer_sources.setdefault(lookup_name, []).append(source)
@@ -478,18 +477,18 @@ def all_metadata_commands(
     *,
     metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
 ) -> tuple[MetadataCommand, ...]:
-    return _all_metadata_commands(metadata_registry)
+    return _all_metadata_commands(metadata_registry.catalog)
 
 
 @metadata_lru_cache(maxsize=1)
-def _all_metadata_commands(metadata_registry: MetadataRegistry) -> tuple[MetadataCommand, ...]:
+def _all_metadata_commands(catalog: MetadataCatalog) -> tuple[MetadataCommand, ...]:
     commands: list[MetadataCommand] = []
-    for metadata_path in metadata_registry.metadata_files():
+    for metadata_path in catalog.metadata_files():
         commands.extend(
             load_metadata_commands(
                 metadata_path,
-                alias_paths=metadata_registry.metadata_files(),
-                revision=metadata_registry.revision,
+                alias_paths=catalog.metadata_files(),
+                revision=catalog.revision,
             )
         )
     return tuple(commands)
@@ -499,23 +498,23 @@ def file_scoped_annotated_metadata_commands(
     *,
     metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
 ) -> dict[tuple[str, str], MetadataCommand]:
-    return _file_scoped_annotated_metadata_commands(metadata_registry)
+    return _file_scoped_annotated_metadata_commands(metadata_registry.catalog)
 
 
 @metadata_lru_cache(maxsize=1)
 def _file_scoped_annotated_metadata_commands(
-    metadata_registry: MetadataRegistry,
+    catalog: MetadataCatalog,
 ) -> dict[tuple[str, str], MetadataCommand]:
     commands_by_lookup_name: dict[str, dict[str, MetadataCommand]] = {}
-    for _, layer_paths in metadata_registry.metadata_file_layers():
+    for _, layer_paths in catalog.metadata_file_layers():
         layer_overrides_by_lookup_name: dict[str, dict[str, None]] = {}
         layer_commands_by_lookup_name: dict[str, dict[str, MetadataCommand]] = {}
         commands_by_owner: dict[Path, list[MetadataCommand]] = {}
         for root in layer_paths:
             for command in load_metadata_commands(
                 root,
-                alias_paths=metadata_registry.metadata_files(),
-                revision=metadata_registry.revision,
+                alias_paths=catalog.metadata_files(),
+                revision=catalog.revision,
             ):
                 if command.module_name is None:
                     commands_by_owner.setdefault(command.metadata_path, []).append(command)

@@ -402,6 +402,17 @@ def test_language_server_semantic_tokens_do_not_reextract_facts(
 def test_highlighting_parses_nested_bodies_once(
     server: LanguageServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    parsed_bodies: list[tuple[str, Position]] = []
+    original_parse = Parser.parse_embedded_script
+
+    def parse_body(
+        self: Parser, source_id: str, text: str, start_position: Position
+    ) -> ParseResult:
+        if source_id == MAIN_URI:
+            parsed_bodies.append((text, start_position))
+        return original_parse(self, source_id, text, start_position)
+
+    monkeypatch.setattr(Parser, 'parse_embedded_script', parse_body)
     open_server_document(
         server,
         'namespace eval app {\n'
@@ -413,16 +424,6 @@ def test_highlighting_parses_nested_bodies_once(
         '    }\n'
         '}\n',
     )
-    parsed_bodies: list[tuple[str, Position]] = []
-    original_parse = Parser.parse_embedded_script
-
-    def parse_body(
-        self: Parser, source_id: str, text: str, start_position: Position
-    ) -> ParseResult:
-        parsed_bodies.append((text, start_position))
-        return original_parse(self, source_id, text, start_position)
-
-    monkeypatch.setattr(Parser, 'parse_embedded_script', parse_body)
     result = server.semantic_tokens(MAIN_URI)
     assert result is not None
     assert len(parsed_bodies) == 3

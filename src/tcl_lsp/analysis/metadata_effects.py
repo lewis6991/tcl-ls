@@ -152,7 +152,7 @@ class _DependencyScanner:
     required_packages: set[str] = field(init=False, default_factory=set)
 
     def scan_facts(self, facts: DocumentFacts) -> None:
-        for path in file_scoped_metadata_sources(self.metadata_registry).get(
+        for path in file_scoped_metadata_sources(self.metadata_registry.catalog).get(
             self.source_path.name, ()
         ):
             self.source_uris.setdefault(path.as_uri(), None)
