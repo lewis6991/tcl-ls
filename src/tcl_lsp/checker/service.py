@@ -13,6 +13,7 @@ from tcl_lsp.analysis import (
     Resolver,
     WorkspaceIndex,
 )
+from tcl_lsp.analysis.facts.lowering import DocumentSyntax
 from tcl_lsp.common import Diagnostic
 from tcl_lsp.metadata_paths import MetadataRegistry, create_metadata_registry
 from tcl_lsp.parser import Parser
@@ -43,6 +44,7 @@ class _ProjectDocument:
     path: Path
     uri: str
     text: str
+    syntax: DocumentSyntax
     facts: DocumentFacts
 
 
@@ -73,12 +75,15 @@ class _UnitAnalysisReport:
 
 
 class _DocumentCache:
-    __slots__ = ('_documents', '_extractor', '_parser')
+    """Document syntax and package contexts for one check and metadata registry."""
+
+    __slots__ = ('_documents', '_extractor', '_parser', '_prepared_facts')
 
     def __init__(self, *, parser: Parser, extractor: FactExtractor) -> None:
         self._parser = parser
         self._extractor = extractor
         self._documents: dict[Path, _ProjectDocument] = {}
+        self._prepared_facts: dict[tuple[Path, frozenset[str]], DocumentFacts] = {}
 
     @property
     def metadata_registry(self) -> MetadataRegistry:
@@ -99,13 +104,18 @@ class _DocumentCache:
         return document
 
     def extract_facts(self, document: _ProjectDocument, packages: frozenset[str]) -> DocumentFacts:
-        parse_result = self._parser.parse_document(path=document.uri, text=document.text)
-        return self._extractor.extract(
-            parse_result,
-            include_parse_result=False,
-            module_rules=document.facts.module_rules,
-            required_packages=packages,
-        )
+        key = document.path, packages
+        facts = self._prepared_facts.get(key)
+        if facts is None:
+            facts = self._extractor.extract(
+                document.syntax.parse_result,
+                syntax=document.syntax,
+                include_parse_result=False,
+                module_rules=document.facts.module_rules,
+                required_packages=packages,
+            )
+            self._prepared_facts[key] = facts
+        return facts
 
 
 def check_project(
@@ -357,11 +367,13 @@ def _index_document(path: Path, *, parser: Parser, extractor: FactExtractor) -> 
     text = read_source_file(path)
     uri = path.as_uri()
     parse_result = parser.parse_document(path=uri, text=text)
+    syntax = DocumentSyntax(parse_result, parser=parser)
     return _ProjectDocument(
         path=path,
         uri=uri,
         text=text,
-        facts=extractor.extract(parse_result, include_parse_result=False),
+        syntax=syntax,
+        facts=extractor.extract(parse_result, syntax=syntax, include_parse_result=False),
     )
 
 

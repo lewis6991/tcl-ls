@@ -55,7 +55,9 @@ Analysis reuse has three lifetimes:
   Declaration snapshots track each included file and refresh after saved edits.
 * A document version owns its parsed bodies, lowered syntax, and lexical spans.
   Fact extraction and highlighting share syntax; semantic facts still depend on
-  the active metadata and packages.
+  the active metadata and packages. The checker retains syntax and facts for
+  each package context for one check, so shared dependencies are analyzed once
+  per context.
 * One pending workspace result serves completion, highlighting, and diagnostics.
   Reuse requires matching text, versions, configuration, metadata, and dependency
   state. Cancelled or superseded builds cannot replace published analysis.

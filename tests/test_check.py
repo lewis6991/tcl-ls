@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import io
 import sys
+from collections import Counter
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from tcl_lsp.analysis import DocumentFacts, FactExtractor
 from tcl_lsp.checker import check_project, format_report, main
+from tcl_lsp.parser import Parser, ParseResult
 from tests.project_support import (
     write_declaration_plugin_bundle,
     write_effect_clause_plugin_bundle,
@@ -372,6 +376,62 @@ def test_check_project_resolves_transitive_required_packages(tmp_path: Path) -> 
     report = check_project(source_path)
 
     assert report.diagnostics == ()
+
+
+def test_check_project_reuses_syntax_and_distinct_package_contexts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / 'tcllsrc.tcl').write_text(
+        'meta module Sample {meta command run {body} {enter tcl body 1}}\n'
+        'meta module Extra {meta command define {name body} {\n'
+        '    procedure {name select 1; params literal {}; body select 2}\n'
+        '}}\n'
+    )
+    package = tmp_path / 'pkg'
+    package.mkdir()
+    (package / 'pkgIndex.tcl').write_text('')
+    (package / 'sample.inc').write_text('package require Sample\n')
+    (package / 'extra.inc').write_text('package require Extra\n')
+    shared = package / 'shared.inc'
+    shared.write_text(
+        'source [file join [file dirname [info script]] sample.inc]\n'
+        'run {source [file join [file dirname [info script]] extra.inc]}\n'
+        'define greet {return ok}\n'
+    )
+    for name in ('a.tcl', 'b.tcl'):
+        (package / name).write_text(
+            'source [file join [file dirname [info script]] shared.inc]\ngreet\n'
+        )
+    parses = 0
+    contexts: Counter[frozenset[str]] = Counter()
+    parse = Parser.parse_document
+    extract = FactExtractor.extract
+
+    def count_parse(self: Parser, path: str, text: str) -> ParseResult:
+        nonlocal parses
+        if path == shared.as_uri():
+            parses += 1
+        return parse(self, path, text)
+
+    def count_extract(self: FactExtractor, parsed: ParseResult, **kwargs: Any) -> DocumentFacts:
+        if parsed.source_id == shared.as_uri():
+            contexts[kwargs.get('required_packages', frozenset())] += 1
+        return extract(self, parsed, **kwargs)
+
+    monkeypatch.setattr(Parser, 'parse_document', count_parse)
+    monkeypatch.setattr(FactExtractor, 'extract', count_extract)
+
+    assert check_project(package, threads=1).diagnostics == ()
+    assert parses == 1
+    assert contexts == {frozenset(): 1, frozenset({'Sample'}): 1, frozenset({'Sample', 'Extra'}): 1}
+
+    # A new check must see saved changes instead of reusing the previous facts.
+    shared.write_text(shared.read_text().replace('define greet', 'define farewell'))
+    report = check_project(package, threads=1)
+    assert [item.diagnostic.message for item in report.diagnostics] == [
+        'Unresolved command `greet`.',
+        'Unresolved command `greet`.',
+    ]
 
 
 def test_check_project_loads_generated_project_metadata_without_docs(tmp_path: Path) -> None:
