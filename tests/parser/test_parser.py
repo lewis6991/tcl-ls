@@ -164,6 +164,10 @@ def test_parser_marks_argument_expansion_words(parser: Parser) -> None:
     variable = bare_word.parts[0]
     assert isinstance(variable, VariableSubstitution)
     assert variable.name == 'args'
+    assert bare_word.span.start == Position(offset=5, line=0, character=5)
+    assert bare_word.content_span == variable.span
+    assert bare_word.content_span.start == Position(offset=8, line=0, character=8)
+    assert bare_word.span.end == Position(offset=13, line=0, character=13)
 
     braced_word = words[2]
     assert isinstance(braced_word, BracedWord)

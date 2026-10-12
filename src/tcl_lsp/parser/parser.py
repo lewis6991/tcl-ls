@@ -87,6 +87,7 @@ class _ParserImplementation:
         '_index',
         '_line',
         '_offset',
+        '_position',
         '_source_id',
         '_text',
         '_text_length',
@@ -106,6 +107,7 @@ class _ParserImplementation:
         self._text_length = len(text)
         self._index = 0
         self._offset = start_position.offset
+        self._position = start_position
         self._line = start_position.line
         self._character = start_position.character
         self._collect_tokens = collect_tokens
@@ -305,9 +307,12 @@ class _ParserImplementation:
 
         self._flush_buffer(buffer, parts)
         end_position = self._current_position()
+        content_span = (
+            parts[0].span if len(parts) == 1 else Span(content_start_position, end_position)
+        )
         word = BareWord(
-            span=Span(start=word_start_position, end=end_position),
-            content_span=Span(start=content_start_position, end=end_position),
+            span=Span(word_start_position, end_position) if expanded else content_span,
+            content_span=content_span,
             parts=tuple(parts),
             expanded=expanded,
         )
@@ -741,7 +746,12 @@ class _ParserImplementation:
         return self._index >= self._text_length
 
     def _current_position(self) -> Position:
-        return Position(offset=self._offset, line=self._line, character=self._character)
+        # Nodes at the same cursor position share one immutable snapshot.
+        if self._position.offset != self._offset:
+            self._position = Position(
+                offset=self._offset, line=self._line, character=self._character
+            )
+        return self._position
 
     def _position_after_char(self, char: str) -> Position:
         if char == '\n':
