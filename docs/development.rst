@@ -29,6 +29,24 @@ To inspect diagnostics across the cached Tcllib tree:
 
    make check-tcllib TCL_CHECK_ARGS="--context-lines=1 --fail-on-diagnostics"
 
+Performance
+-----------
+
+Replay edits against a real project and its ``tcllsrc.tcl`` configuration:
+
+.. code-block:: sh
+
+   uv run python scripts/benchmark_lsp.py path/to/main.tcl --replace old_command new_command
+
+The script reports JSON timings and result hashes for opening the file, editing,
+completion with pending text, and semantic tokens. It changes the buffer in
+memory and leaves files untouched. Repeat in fresh processes to compare startup
+costs; result hashes help check that an optimization preserves the replay's
+output. Timings exclude editor transport and the diagnostics debounce.
+
+Add ``--profile run.prof`` to record a CPU profile, then inspect it with
+``uv run python -m pstats run.prof``. Use unprofiled runs for timing comparisons.
+
 Repository Layout
 -----------------
 

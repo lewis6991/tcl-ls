@@ -75,6 +75,14 @@ def eval_expr_text(
     expr = parse_expr(expr_text)
     if expr is None:
         return ExprEval.unknown()
+    return eval_expr(state, expr, script_val_resolver)
+
+
+def eval_expr(
+    state: VariableFlowState,
+    expr: Expr,
+    script_val_resolver: ScriptValResolver,
+) -> ExprEval:
     return _ExprAnalyzer(script_val_resolver).eval_expr(state, expr)
 
 

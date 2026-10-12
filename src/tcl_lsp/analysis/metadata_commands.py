@@ -1709,23 +1709,15 @@ def _annotation_words(command: Command, command_name: str) -> list[str]:
 def _commands_with_derived_subcommands(
     commands: tuple[MetadataCommand, ...],
 ) -> tuple[MetadataCommand, ...]:
-    child_values_by_key: dict[tuple[str | None, str], tuple[str, ...]] = {}
-    for context_name in {command.context_name for command in commands}:
-        command_names = tuple(
-            command.name for command in commands if command.context_name == context_name
-        )
-        for command_name in command_names:
-            prefix = command_name + ' '
-            values: dict[str, None] = {}
-            for candidate_name in command_names:
-                if not candidate_name.startswith(prefix):
-                    continue
-                remainder = candidate_name[len(prefix) :]
-                if not remainder:
-                    continue
-                values.setdefault(remainder.split(' ', maxsplit=1)[0], None)
-            if values:
-                child_values_by_key[(context_name, command_name)] = tuple(values)
+    child_values_by_key: dict[tuple[str | None, str], dict[str, None]] = {}
+    # Each name supplies the next subcommand for each of its prefixes.
+    for command in commands:
+        for index, character in enumerate(command.name):
+            if character != ' ' or index + 1 == len(command.name):
+                continue
+            key = (command.context_name, command.name[:index])
+            child = command.name[index + 1 :].split(' ', maxsplit=1)[0]
+            child_values_by_key.setdefault(key, {}).setdefault(child, None)
 
     if not child_values_by_key:
         return commands
@@ -1737,7 +1729,7 @@ def _commands_with_derived_subcommands(
             derived_commands.append(command)
             continue
 
-        subcommands = _merge_subcommands(command.subcommands, derived_values)
+        subcommands = _merge_subcommands(command.subcommands, tuple(derived_values))
 
         derived_commands.append(replace(command, subcommands=subcommands))
 

@@ -141,6 +141,50 @@ def test_metadata_bodies_can_reveal_more_dependencies(package_project: Path, thr
     ]
 
 
+@pytest.mark.parametrize('changed_input', ['source', 'metadata'])
+def test_edits_reuse_dependency_facts_until_inputs_change(
+    package_project: Path, changed_input: str
+) -> None:
+    helper = package_project / 'helper.inc'
+    helper_text = (
+        'source [file join [file dirname [info script]] deps.inc]\n'
+        'sample::define greet {return ok}\n'
+    )
+    helper.write_text(helper_text)
+    source = package_project / 'main.tcl'
+    text = 'source [file join [file dirname [info script]] helper.inc]\ngreet\n'
+    server = LanguageServer()
+    try:
+        assert server.open_document(source.as_uri(), text, 1) == ()
+        helper_facts = server.documents[helper.as_uri()].facts
+        assert [p.qualified_name for p in helper_facts.procedures] == ['::greet']
+
+        diagnostics = server.change_document(source.as_uri(), text + 'missing\n', 2)
+        assert [d.message for d in diagnostics] == ['Unresolved command `missing`.']
+        assert server.documents[helper.as_uri()].facts is helper_facts
+
+        if changed_input == 'source':
+            assert (
+                server.open_document(helper.as_uri(), helper_text.replace('greet', 'hello'), 1)
+                == ()
+            )
+        else:
+            config = package_project / 'tcllsrc.tcl'
+            config.write_text(
+                config.read_text().replace(
+                    'procedure {name select 1; params literal {}; body select 2}', ''
+                )
+            )
+            server.change_document(source.as_uri(), text + 'missing\n', 3)
+        assert server.documents[helper.as_uri()].facts is not helper_facts
+        assert [d.message for d in server.documents[source.as_uri()].analysis.diagnostics] == [
+            'Unresolved command `greet`.',
+            'Unresolved command `missing`.',
+        ]
+    finally:
+        server.shutdown()
+
+
 def test_dependency_edits_remove_body_facts_even_with_a_cycle(package_project: Path) -> None:
     root = package_project
     dependency = root / 'deps.inc'

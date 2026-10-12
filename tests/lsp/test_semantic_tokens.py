@@ -6,7 +6,9 @@ from typing import Any, cast
 import pytest
 
 from tcl_lsp.analysis import FactExtractor
+from tcl_lsp.common import Position
 from tcl_lsp.lsp import LanguageServer
+from tcl_lsp.parser import Parser, ParseResult
 from tests.lsp.helpers import (
     MAIN_URI,
     apply_semantic_token_edits,
@@ -395,6 +397,44 @@ def test_language_server_semantic_tokens_do_not_reextract_facts(
     server_document_request(server, method='textDocument/semanticTokens/full')
 
     assert extract_count == initial_extract_count
+
+
+def test_highlighting_parses_nested_bodies_once(
+    server: LanguageServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    open_server_document(
+        server,
+        'namespace eval app {\n'
+        '    proc run {} {\n'
+        '        if {1} {\n'
+        '            # body\n'
+        '            puts "hello"\n'
+        '        }\n'
+        '    }\n'
+        '}\n',
+    )
+    parsed_bodies: list[tuple[str, Position]] = []
+    original_parse = Parser.parse_embedded_script
+
+    def parse_body(
+        self: Parser, source_id: str, text: str, start_position: Position
+    ) -> ParseResult:
+        parsed_bodies.append((text, start_position))
+        return original_parse(self, source_id, text, start_position)
+
+    monkeypatch.setattr(Parser, 'parse_embedded_script', parse_body)
+    result = server.semantic_tokens(MAIN_URI)
+    assert result is not None
+    assert len(parsed_bodies) == 3
+    assert len(set(parsed_bodies)) == len(parsed_bodies)
+    token_types, token_modifiers = semantic_tokens_legend(server)
+    decoded = decode_semantic_tokens(
+        list(result.data), token_types=token_types, token_modifiers=token_modifiers
+    )
+    assert semantic_token(line=3, character=12, length=6, token_type='comment') in decoded
+
+    assert server.semantic_tokens(MAIN_URI) == result
+    assert len(parsed_bodies) == 3
 
 
 def test_language_server_returns_semantic_tokens_for_nested_delimiters_in_braced_words(

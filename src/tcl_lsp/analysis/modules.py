@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from tcl_lsp.analysis.flow import VariableFlowState
-from tcl_lsp.analysis.flow.exprs import eval_expr_text
+from tcl_lsp.analysis.flow.exprs import eval_expr
 from tcl_lsp.common import Span
 from tcl_lsp.metadata_paths import MetadataRegistry
 from tcl_lsp.project.config import ModuleRule
@@ -23,7 +23,7 @@ def active_modules(
     modules = list(explicit)
     for rule in rules:
         # Static expression analysis only; never execute command substitutions.
-        result = eval_expr_text(state, rule.condition, lambda _script, _state: ())
+        result = eval_expr(state, rule.condition, lambda _script, _state: ())
         if result.true_possible and not result.false_possible and rule.name not in modules:
             modules.append(rule.name)
     return tuple(modules)

@@ -198,40 +198,12 @@ def collect_parse_result_lexical_spans(
     *,
     parser: Parser,
 ) -> tuple[tuple[Span, ...], tuple[Span, ...], tuple[Span, ...]]:
-    comment_spans: list[Span] = []
-    string_spans: list[Span] = []
-    operator_spans: list[Span] = []
-    _collect_parse_result_lexical_spans(
-        parse_result,
-        parser=parser,
-        comment_spans=comment_spans,
-        string_spans=string_spans,
-        operator_spans=operator_spans,
-    )
-    return tuple(comment_spans), tuple(string_spans), tuple(operator_spans)
-
-
-def _collect_parse_result_lexical_spans(
-    parse_result: ParseResult,
-    *,
-    parser: Parser,
-    comment_spans: list[Span],
-    string_spans: list[Span],
-    operator_spans: list[Span],
-) -> None:
-    comment_spans.extend(token.span for token in parse_result.tokens if token.kind == 'comment')
-    operator_spans.extend(
-        token.span
-        for token in parse_result.tokens
-        if token.kind == 'separator' and token.text == ';'
-    )
-    _collect_script_lexical_spans(
-        parse_result.script,
-        parser=parser,
-        source_id=parse_result.source_id,
-        comment_spans=comment_spans,
-        string_spans=string_spans,
-        operator_spans=operator_spans,
+    collector = _LexicalCollector(parser, parse_result.source_id)
+    collector.collect_parse_result(parse_result)
+    return (
+        tuple(collector.comment_spans),
+        tuple(collector.string_spans),
+        tuple(collector.operator_spans),
     )
 
 
@@ -241,454 +213,195 @@ def _script_lexical_spans(
     parser: Parser,
     source_id: str,
 ) -> tuple[tuple[Span, ...], tuple[Span, ...]]:
-    string_spans: list[Span] = []
-    operator_spans: list[Span] = []
-    _collect_script_lexical_spans(
-        script,
-        parser=parser,
-        source_id=source_id,
-        comment_spans=None,
-        string_spans=string_spans,
-        operator_spans=operator_spans,
-    )
-    return tuple(string_spans), tuple(operator_spans)
+    collector = _LexicalCollector(parser, source_id)
+    collector.collect_script(script, collect_comments=False)
+    return tuple(collector.string_spans), tuple(collector.operator_spans)
 
 
-def _collect_script_lexical_spans(
-    script: Script,
-    *,
-    parser: Parser,
-    source_id: str,
-    comment_spans: list[Span] | None,
-    string_spans: list[Span],
-    operator_spans: list[Span],
-) -> None:
-    for command in script.commands:
-        for word in command.words:
-            _collect_word_lexical_spans(
-                word,
-                parser=parser,
-                source_id=source_id,
-                comment_spans=comment_spans,
-                string_spans=string_spans,
-                operator_spans=operator_spans,
-            )
-        # Structured Tcl commands hide nested scripts inside body words, so the
-        # semantic-token fast path still needs to parse those slots explicitly.
-        if comment_spans is not None:
-            _collect_command_embedded_script_lexical_spans(
-                command,
-                parser=parser,
-                source_id=source_id,
-                comment_spans=comment_spans,
-                string_spans=string_spans,
-                operator_spans=operator_spans,
-            )
+class _LexicalCollector:
+    def __init__(self, parser: Parser, source_id: str) -> None:
+        self._parser = parser
+        self._source_id = source_id
+        self._visited: set[tuple[str, Position, bool]] = set()
+        self.comment_spans: list[Span] = []
+        self.string_spans: list[Span] = []
+        self.operator_spans: list[Span] = []
 
-
-def _collect_command_embedded_script_lexical_spans(
-    command: Command,
-    *,
-    parser: Parser,
-    source_id: str,
-    comment_spans: list[Span],
-    string_spans: list[Span],
-    operator_spans: list[Span],
-) -> None:
-    if not command.words:
-        return
-
-    command_name = word_static_text(command.words[0])
-    dispatch_name = normalize_command_name(command_name) if command_name is not None else None
-    if dispatch_name == 'proc':
-        _collect_embedded_script_word_lexical_spans(
-            command.words[3] if len(command.words) > 3 else None,
-            parser=parser,
-            source_id=source_id,
-            comment_spans=comment_spans,
-            string_spans=string_spans,
-            operator_spans=operator_spans,
+    def collect_parse_result(self, parsed: ParseResult) -> None:
+        self.comment_spans.extend(token.span for token in parsed.tokens if token.kind == 'comment')
+        self.operator_spans.extend(
+            token.span for token in parsed.tokens if token.kind == 'separator' and token.text == ';'
         )
-        return
+        self.collect_script(parsed.script, collect_comments=True)
 
-    if dispatch_name == 'namespace' and len(command.words) > 1:
-        if word_static_text(command.words[1]) == 'eval':
-            _collect_embedded_script_word_lexical_spans(
-                command.words[3] if len(command.words) > 3 else None,
-                parser=parser,
-                source_id=source_id,
-                comment_spans=comment_spans,
-                string_spans=string_spans,
-                operator_spans=operator_spans,
-            )
-        return
+    def collect_script(self, script: Script, *, collect_comments: bool) -> None:
+        for command in script.commands:
+            for word in command.words:
+                self._collect_word(word, collect_comments=collect_comments)
+            if collect_comments:
+                self._collect_command_bodies(command)
 
-    if dispatch_name == 'for':
-        for word_index in (1, 3, 4):
-            _collect_embedded_script_word_lexical_spans(
-                command.words[word_index] if len(command.words) > word_index else None,
-                parser=parser,
-                source_id=source_id,
-                comment_spans=comment_spans,
-                string_spans=string_spans,
-                operator_spans=operator_spans,
-            )
-        return
+    def _collect_script_text(
+        self, text: str, start: Position, *, collect_comments: bool = True
+    ) -> None:
+        # A body can be reached both as a braced word and as a command's script
+        # argument. Visit it once per collection, including nested bodies.
+        key = (text, start, collect_comments)
+        if key in self._visited:
+            return
+        self._visited.add(key)
+        parsed = self._parser.parse_embedded_script(self._source_id, text, start)
+        if collect_comments:
+            self.collect_parse_result(parsed)
+        else:
+            self.collect_script(parsed.script, collect_comments=False)
 
-    if dispatch_name == 'if':
+    def _collect_script_word(self, word: Word | None) -> None:
+        if word is None:
+            return
+        text = (
+            _braced_word_raw_content(word)
+            if isinstance(word, BracedWord) and not word.expanded
+            else word_static_text(word)
+        )
+        if text is not None:
+            self._collect_script_text(text, word.content_span.start)
+
+    def _collect_command_bodies(self, command: Command) -> None:
+        words = command.words
+        if not words:
+            return
+        name = word_static_text(words[0])
+        name = normalize_command_name(name) if name is not None else None
+        if name == 'proc':
+            self._collect_script_word(words[3] if len(words) > 3 else None)
+        elif name == 'namespace' and len(words) > 1:
+            if word_static_text(words[1]) == 'eval':
+                self._collect_script_word(words[3] if len(words) > 3 else None)
+        elif name == 'for':
+            for index in (1, 3, 4):
+                self._collect_script_word(words[index] if len(words) > index else None)
+        elif name == 'if':
+            self._collect_if_bodies(words)
+        elif name == 'catch':
+            self._collect_script_word(words[1] if len(words) > 1 else None)
+        elif name == 'try':
+            self._collect_try_bodies(words)
+        elif name == 'switch':
+            self._collect_switch_bodies(words)
+        elif name == 'while':
+            self._collect_script_word(words[2] if len(words) > 2 else None)
+
+    def _collect_if_bodies(self, words: tuple[Word, ...]) -> None:
         index = 1
-        while index < len(command.words):
+        while index < len(words):
             if index > 1:
-                keyword = word_static_text(command.words[index])
+                keyword = word_static_text(words[index])
                 if keyword == 'elseif':
                     index += 1
                 elif keyword == 'else':
-                    _collect_embedded_script_word_lexical_spans(
-                        command.words[index + 1] if index + 1 < len(command.words) else None,
-                        parser=parser,
-                        source_id=source_id,
-                        comment_spans=comment_spans,
-                        string_spans=string_spans,
-                        operator_spans=operator_spans,
-                    )
+                    self._collect_script_word(words[index + 1] if index + 1 < len(words) else None)
                     return
                 else:
                     return
-
-            body_index = _if_body_word_index(command.words, index + 1)
-            if body_index is None:
+            body_index = index + 1
+            if body_index < len(words) and word_static_text(words[body_index]) == 'then':
+                body_index += 1
+            if body_index >= len(words):
                 return
-            _collect_embedded_script_word_lexical_spans(
-                command.words[body_index],
-                parser=parser,
-                source_id=source_id,
-                comment_spans=comment_spans,
-                string_spans=string_spans,
-                operator_spans=operator_spans,
-            )
+            self._collect_script_word(words[body_index])
             index = body_index + 1
-        return
 
-    if dispatch_name == 'catch':
-        _collect_embedded_script_word_lexical_spans(
-            command.words[1] if len(command.words) > 1 else None,
-            parser=parser,
-            source_id=source_id,
-            comment_spans=comment_spans,
-            string_spans=string_spans,
-            operator_spans=operator_spans,
-        )
-        return
-
-    if dispatch_name == 'try':
-        _collect_embedded_script_word_lexical_spans(
-            command.words[1] if len(command.words) > 1 else None,
-            parser=parser,
-            source_id=source_id,
-            comment_spans=comment_spans,
-            string_spans=string_spans,
-            operator_spans=operator_spans,
-        )
-
+    def _collect_try_bodies(self, words: tuple[Word, ...]) -> None:
+        self._collect_script_word(words[1] if len(words) > 1 else None)
         index = 2
-        while index < len(command.words):
-            clause_word = command.words[index]
-            if clause_word.expanded:
+        while index < len(words):
+            if words[index].expanded:
                 return
-
-            clause_name = word_static_text(clause_word)
+            clause_name = word_static_text(words[index])
             if clause_name == 'finally':
-                _collect_embedded_script_word_lexical_spans(
-                    command.words[index + 1]
-                    if index + 1 < len(command.words) and not command.words[index + 1].expanded
-                    else None,
-                    parser=parser,
-                    source_id=source_id,
-                    comment_spans=comment_spans,
-                    string_spans=string_spans,
-                    operator_spans=operator_spans,
+                self._collect_script_word(
+                    words[index + 1]
+                    if index + 1 < len(words) and not words[index + 1].expanded
+                    else None
                 )
                 return
-
-            if clause_name not in {'on', 'trap'} or index + 3 >= len(command.words):
+            if clause_name not in {'on', 'trap'} or index + 3 >= len(words):
                 return
-            if any(command.words[offset].expanded for offset in range(index, index + 4)):
+            if any(words[offset].expanded for offset in range(index, index + 4)):
                 return
-            _collect_embedded_script_word_lexical_spans(
-                command.words[index + 3],
-                parser=parser,
-                source_id=source_id,
-                comment_spans=comment_spans,
-                string_spans=string_spans,
-                operator_spans=operator_spans,
-            )
+            self._collect_script_word(words[index + 3])
             index += 4
-        return
 
-    if dispatch_name == 'switch':
-        _collect_switch_embedded_script_lexical_spans(
-            command.words,
-            parser=parser,
-            source_id=source_id,
-            comment_spans=comment_spans,
-            string_spans=string_spans,
-            operator_spans=operator_spans,
-        )
-        return
-
-    if dispatch_name == 'while':
-        _collect_embedded_script_word_lexical_spans(
-            command.words[2] if len(command.words) > 2 else None,
-            parser=parser,
-            source_id=source_id,
-            comment_spans=comment_spans,
-            string_spans=string_spans,
-            operator_spans=operator_spans,
-        )
-
-
-def _collect_switch_embedded_script_lexical_spans(
-    words: tuple[Word, ...],
-    *,
-    parser: Parser,
-    source_id: str,
-    comment_spans: list[Span],
-    string_spans: list[Span],
-    operator_spans: list[Span],
-) -> None:
-    if len(words) < 3:
-        return
-
-    value_index = 1
-    while value_index < len(words):
-        option = word_static_text(words[value_index])
-        if option is None:
-            break
-        if option == '--':
-            value_index += 1
-            break
-        if option in {'-exact', '-glob', '-nocase', '-regexp'}:
-            value_index += 1
-            continue
-        if option in {'-matchvar', '-indexvar'} and value_index + 1 < len(words):
-            value_index += 2
-            continue
-        if option.startswith('-') and option != '-':
+    def _collect_switch_bodies(self, words: tuple[Word, ...]) -> None:
+        if len(words) < 3:
             return
-        break
-
-    branch_words = words[value_index + 1 :]
-    if not branch_words:
-        return
-
-    if len(branch_words) == 1:
-        items = _parse_list_items_for_lexical_spans(branch_words[0])
-        if len(items) % 2 != 0:
-            return
-        for index in range(0, len(items), 2):
-            body_item = items[index + 1]
-            if body_item.text == '-':
+        value_index = 1
+        while value_index < len(words):
+            option = word_static_text(words[value_index])
+            if option is None:
+                break
+            if option == '--':
+                value_index += 1
+                break
+            if option in {'-exact', '-glob', '-nocase', '-regexp'}:
+                value_index += 1
                 continue
-            _collect_embedded_script_text_lexical_spans(
-                body_item.text,
-                body_item.content_start,
-                parser=parser,
-                source_id=source_id,
-                comment_spans=comment_spans,
-                string_spans=string_spans,
-                operator_spans=operator_spans,
+            if option in {'-matchvar', '-indexvar'} and value_index + 1 < len(words):
+                value_index += 2
+                continue
+            if option.startswith('-') and option != '-':
+                return
+            break
+        branches = words[value_index + 1 :]
+        if len(branches) == 1:
+            word = branches[0]
+            text = (
+                _braced_word_raw_content(word)
+                if isinstance(word, BracedWord) and not word.expanded
+                else word_static_text(word)
             )
-        return
+            if text is None:
+                return
+            items = split_tcl_list(text, word.content_span.start)
+            if len(items) % 2 == 0:
+                for body in items[1::2]:
+                    if body.text != '-':
+                        self._collect_script_text(body.text, body.content_start)
+        elif len(branches) % 2 == 0:
+            for body_word in branches[1::2]:
+                if word_static_text(body_word) != '-':
+                    self._collect_script_word(body_word)
 
-    if len(branch_words) % 2 != 0:
-        return
-
-    for index in range(0, len(branch_words), 2):
-        body_word = branch_words[index + 1]
-        if word_static_text(body_word) == '-':
-            continue
-        _collect_embedded_script_word_lexical_spans(
-            body_word,
-            parser=parser,
-            source_id=source_id,
-            comment_spans=comment_spans,
-            string_spans=string_spans,
-            operator_spans=operator_spans,
-        )
-
-
-def _collect_embedded_script_word_lexical_spans(
-    word: Word | None,
-    *,
-    parser: Parser,
-    source_id: str,
-    comment_spans: list[Span],
-    string_spans: list[Span],
-    operator_spans: list[Span],
-) -> None:
-    if word is None:
-        return
-    if isinstance(word, BracedWord) and not word.expanded:
-        _collect_embedded_script_text_lexical_spans(
-            _braced_word_raw_content(word),
-            word.content_span.start,
-            parser=parser,
-            source_id=source_id,
-            comment_spans=comment_spans,
-            string_spans=string_spans,
-            operator_spans=operator_spans,
-        )
-        return
-
-    text = word_static_text(word)
-    if text is None:
-        return
-    _collect_embedded_script_text_lexical_spans(
-        text,
-        word.content_span.start,
-        parser=parser,
-        source_id=source_id,
-        comment_spans=comment_spans,
-        string_spans=string_spans,
-        operator_spans=operator_spans,
-    )
-
-
-def _collect_embedded_script_text_lexical_spans(
-    text: str,
-    start_position: Position,
-    *,
-    parser: Parser,
-    source_id: str,
-    comment_spans: list[Span],
-    string_spans: list[Span],
-    operator_spans: list[Span],
-) -> None:
-    _collect_parse_result_lexical_spans(
-        parser.parse_embedded_script(
-            source_id=source_id,
-            text=text,
-            start_position=start_position,
-        ),
-        parser=parser,
-        comment_spans=comment_spans,
-        string_spans=string_spans,
-        operator_spans=operator_spans,
-    )
-
-
-def _parse_list_items_for_lexical_spans(word: Word | None) -> tuple[ListItem, ...]:
-    if word is None:
-        return ()
-    if isinstance(word, BracedWord) and not word.expanded:
-        return tuple(split_tcl_list(_braced_word_raw_content(word), word.content_span.start))
-    static_text = word_static_text(word)
-    if static_text is None:
-        return ()
-    return tuple(split_tcl_list(static_text, word.content_span.start))
-
-
-def _if_body_word_index(words: tuple[Word, ...], index: int) -> int | None:
-    if index < len(words) and word_static_text(words[index]) == 'then':
-        index += 1
-    if index >= len(words):
-        return None
-    return index
-
-
-def _collect_word_lexical_spans(
-    word: Word,
-    *,
-    parser: Parser,
-    source_id: str,
-    comment_spans: list[Span] | None,
-    string_spans: list[Span],
-    operator_spans: list[Span],
-) -> None:
-    if isinstance(word, BracedWord):
-        if not word.expanded:
-            operator_spans.append(Span(start=word.span.start, end=word.content_span.start))
-            operator_spans.append(Span(start=word.content_span.end, end=word.span.end))
-            if any(char in word.text for char in '{}[]"'):
-                nested_parse_result = parser.parse_embedded_script(
-                    source_id=source_id,
-                    text=_braced_word_raw_content(word),
-                    start_position=word.content_span.start,
-                )
-                if comment_spans is not None:
-                    _collect_parse_result_lexical_spans(
-                        nested_parse_result,
-                        parser=parser,
-                        comment_spans=comment_spans,
-                        string_spans=string_spans,
-                        operator_spans=operator_spans,
+    def _collect_word(self, word: Word, *, collect_comments: bool) -> None:
+        if isinstance(word, BracedWord):
+            if not word.expanded:
+                self.operator_spans.append(Span(word.span.start, word.content_span.start))
+                self.operator_spans.append(Span(word.content_span.end, word.span.end))
+                if any(char in word.text for char in '{}[]"'):
+                    self._collect_script_text(
+                        _braced_word_raw_content(word),
+                        word.content_span.start,
+                        collect_comments=collect_comments,
                     )
-                else:
-                    nested_strings, nested_operators = _script_lexical_spans(
-                        nested_parse_result.script,
-                        parser=parser,
-                        source_id=source_id,
-                    )
-                    string_spans.extend(nested_strings)
-                    operator_spans.extend(nested_operators)
-        return
-
-    if isinstance(word, QuotedWord):
-        string_spans.append(Span(start=word.span.start, end=word.content_span.start))
-        string_spans.append(Span(start=word.content_span.end, end=word.span.end))
-
-    for part in word.parts:
-        if isinstance(part, LiteralText):
-            if isinstance(word, QuotedWord):
-                string_spans.append(part.span)
-            continue
-        if isinstance(part, VariableSubstitution):
-            _collect_variable_substitution_lexical_spans(
-                part,
-                operator_spans=operator_spans,
-            )
-            continue
-        _collect_command_substitution_lexical_spans(
-            part,
-            parser=parser,
-            source_id=source_id,
-            string_spans=string_spans,
-            operator_spans=operator_spans,
-        )
-
-
-def _collect_command_substitution_lexical_spans(
-    substitution: CommandSubstitution,
-    *,
-    parser: Parser,
-    source_id: str,
-    string_spans: list[Span],
-    operator_spans: list[Span],
-) -> None:
-    operator_spans.append(Span(start=substitution.span.start, end=substitution.content_span.start))
-    operator_spans.append(Span(start=substitution.content_span.end, end=substitution.span.end))
-    nested_strings, nested_operators = _script_lexical_spans(
-        substitution.script,
-        parser=parser,
-        source_id=source_id,
-    )
-    string_spans.extend(nested_strings)
-    operator_spans.extend(nested_operators)
-
-
-def _collect_variable_substitution_lexical_spans(
-    substitution: VariableSubstitution,
-    *,
-    operator_spans: list[Span],
-) -> None:
-    if not substitution.brace_wrapped:
-        return
-
-    opening_brace_start = substitution.span.start.advance('$')
-    opening_brace_end = opening_brace_start.advance('{')
-    closing_brace_start = opening_brace_end.advance(substitution.name)
-    operator_spans.append(Span(start=opening_brace_start, end=opening_brace_end))
-    operator_spans.append(Span(start=closing_brace_start, end=substitution.span.end))
+            return
+        if isinstance(word, QuotedWord):
+            self.string_spans.append(Span(word.span.start, word.content_span.start))
+            self.string_spans.append(Span(word.content_span.end, word.span.end))
+        for part in word.parts:
+            if isinstance(part, LiteralText):
+                if isinstance(word, QuotedWord):
+                    self.string_spans.append(part.span)
+            elif isinstance(part, VariableSubstitution):
+                if part.brace_wrapped:
+                    opening = part.span.start.advance('$')
+                    content = opening.advance('{')
+                    self.operator_spans.append(Span(opening, content))
+                    self.operator_spans.append(Span(content.advance(part.name), part.span.end))
+            else:
+                self.operator_spans.append(Span(part.span.start, part.content_span.start))
+                self.operator_spans.append(Span(part.content_span.end, part.span.end))
+                self.collect_script(part.script, collect_comments=False)
 
 
 @dataclass(frozen=True, slots=True)

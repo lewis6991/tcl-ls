@@ -494,6 +494,10 @@ def prepare_workspace_documents(
 
     def extract_facts(facts: DocumentFacts, packages: frozenset[str]) -> DocumentFacts:
         document = documents[facts.uri]
+        # Rebuilds with new metadata replace the documents. Within this snapshot,
+        # the document's prepared facts can be reused once its packages match.
+        if packages == document.facts.required_packages:
+            return document.facts
         return extractor.extract(
             document.parse_result,
             include_lexical_spans=document.lexical_spans_included,

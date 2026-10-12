@@ -5,7 +5,7 @@ from pathlib import Path
 
 from tcl_lsp.common import Diagnostic
 from tcl_lsp.parser import Parser, ParseResult, word_static_text
-from tcl_lsp.parser.expr import parse_expr
+from tcl_lsp.parser.expr import Expr, parse_expr
 from tcl_lsp.parser.model import Command
 from tcl_lsp.project.declarations import DeclarationError, DeclarationGroup, read_declarations
 from tcl_lsp.project.diagnostics import DiagnosticRule, parse_diagnostic_rule
@@ -17,7 +17,7 @@ _LIBRARY_PATH_COMMANDS = frozenset({'lib-path', 'library-path'})
 @dataclass(frozen=True, slots=True)
 class ModuleRule:
     name: str
-    condition: str
+    condition: Expr
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,9 +183,10 @@ def _parse_config_command(
     if command_name == 'module':
         if len(values) != 3 or not values[0] or values[1] != 'when' or not values[2]:
             raise RuntimeError('Module rules must be `module name when {condition}`.')
-        if parse_expr(values[2]) is None:
+        condition = parse_expr(values[2])
+        if condition is None:
             raise RuntimeError(f'Invalid module condition for `{values[0]}`.')
-        return ModuleRule(values[0], values[2])
+        return ModuleRule(values[0], condition)
     if command_name not in _LIBRARY_PATH_COMMANDS:
         raise RuntimeError(f'Unsupported `{_CONFIG_FILE_NAME}` command `{command_name}`.')
     if len(values) != 1:
