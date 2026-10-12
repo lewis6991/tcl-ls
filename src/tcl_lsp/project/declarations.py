@@ -13,7 +13,6 @@ from tcl_lsp.parser import BracedWord, Command, Parser, ParseResult, word_static
 @dataclass(frozen=True, slots=True)
 class ModuleScope:
     name: str
-    is_environment: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,7 +112,7 @@ def _expand(
             if words[:2] == ('meta', 'module'):
                 flush()
                 scope, body = _module_block(command)
-                # Keep empty modules visible to package/environment discovery.
+                # Keep empty modules visible to module discovery.
                 entries.append(DeclarationBlock(path, scope, ()))
                 nested = _module_body(path, body)
                 entries.append(_expand(nested, path, scope, stack, recover=recover))
@@ -151,17 +150,12 @@ def _module_body(path: Path, body: BracedWord) -> ParseResult:
 def _module_block(command: Command) -> tuple[ModuleScope, BracedWord]:
     words = command.words
     body = words[-1]
-    if len(words) not in {4, 5}:
-        raise RuntimeError('Module declarations must be `meta module name ?-environment? {body}`.')
+    if len(words) != 4:
+        raise RuntimeError('Module declarations must be `meta module name {body}`.')
     name = word_static_text(words[2])
-    if (
-        any(word.expanded for word in words)
-        or not name
-        or (len(words) == 5 and word_static_text(words[3]) != '-environment')
-        or not isinstance(body, BracedWord)
-    ):
-        raise RuntimeError('Module declarations must be `meta module name ?-environment? {body}`.')
-    return ModuleScope(name, len(words) == 5), body
+    if any(word.expanded for word in words) or not name or not isinstance(body, BracedWord):
+        raise RuntimeError('Module declarations must be `meta module name {body}`.')
+    return ModuleScope(name), body
 
 
 def _include(path: Path, module: ModuleScope | None, stack: tuple[Path, ...]) -> DeclarationGroup:

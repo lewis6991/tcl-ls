@@ -45,8 +45,8 @@ Configuration And Directive Diagnostics
    A diagnostic comment has invalid syntax, scope, or level, or a statement
    directive has no following statement in its Tcl body.
 
-``invalid-environment``
-   An environment comment has invalid syntax or names an unknown environment.
+``invalid-module``
+   An module comment has invalid syntax or names an unknown module.
 
 Structural Diagnostics
 ----------------------

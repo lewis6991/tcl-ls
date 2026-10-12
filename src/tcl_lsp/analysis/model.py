@@ -10,8 +10,8 @@ from tcl_lsp.parser.model import ParseResult
 
 if TYPE_CHECKING:
     from tcl_lsp.analysis.control_flow import ControlFlowScript
-    from tcl_lsp.analysis.environments import EnvironmentScope
-    from tcl_lsp.project.config import EnvironmentRule
+    from tcl_lsp.analysis.modules import ModuleSelection
+    from tcl_lsp.project.config import ModuleRule
     from tcl_lsp.project.diagnostics import DiagnosticRule
 
 type BindingKind = Literal[
@@ -273,8 +273,8 @@ class DocumentFacts:
     variable_references: tuple[VariableReference, ...]
     document_symbols: tuple[types.DocumentSymbol, ...]
     diagnostics: tuple[Diagnostic, ...]
-    environment_scopes: tuple[EnvironmentScope, ...] = ()
-    environment_rules: tuple[EnvironmentRule, ...] = ()
+    module_scopes: tuple[ModuleSelection, ...] = ()
+    module_rules: tuple[ModuleRule, ...] = ()
     diagnostic_rules: tuple[DiagnosticRule, ...] = ()
 
 

@@ -533,7 +533,7 @@ def test_language_server_returns_semantic_tokens_for_latest_workspace_text_after
 def test_semantic_visibility_follows_resolved_commands(
     tmp_path: Path, visibility: str, server: LanguageServer
 ) -> None:
-    config = f"""meta module Tool -environment {{
+    config = f"""meta module Tool {{
     meta command inspect -visibility {visibility} variants {{
         form {{}}
         form {{value}}
@@ -551,7 +551,7 @@ def test_semantic_visibility_follows_resolved_commands(
 """
     (tmp_path / 'tcllsrc.tcl').write_text(config, encoding='utf-8')
     uri = (tmp_path / 'main.tcl').as_uri()
-    text = """# tcl-ls: env Tool
+    text = """# tcl-ls: module Tool
 inspect
 inspect value
 inspect_alias
@@ -617,16 +617,16 @@ def test_file_metadata_visibility_follows_the_procedure_definition(
     ]
 
 
-def test_visibility_obeys_environment_scope(tmp_path: Path, server: LanguageServer) -> None:
+def test_visibility_obeys_module_scope(tmp_path: Path, server: LanguageServer) -> None:
     (tmp_path / 'tcllsrc.tcl').write_text(
         'meta module Tcl {meta command inspect {}}\n'
-        'meta module Tool -environment {meta override inspect -visibility internal {}}\n',
+        'meta module Tool {meta override inspect -visibility internal {}}\n',
         encoding='utf-8',
     )
     uri = (tmp_path / 'main.tcl').as_uri()
     open_server_document(
         server,
-        'inspect\nif {1} {\n# tcl-ls: env Tool\ninspect\n}\ninspect\n',
+        'inspect\nif {1} {\n# tcl-ls: module Tool\ninspect\n}\ninspect\n',
         uri=uri,
     )
 

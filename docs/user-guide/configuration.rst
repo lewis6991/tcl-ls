@@ -19,7 +19,7 @@ settings first:
 * The checker starts from its target directory (or its target file's directory)
   for metadata and library settings.
 * Both tools start from each analyzed source file's directory for diagnostic
-  and environment rules.
+  and module rules.
 
 Relative paths resolve from the file that contains the declaration.
 
@@ -30,7 +30,7 @@ Config files accept these commands:
   external packages. ``library-path`` is a synonym.
 * ``meta`` declares metadata directly; see :ref:`project-metadata`.
 * ``diagnostic code level ?-path pattern?`` controls diagnostics.
-* ``environment name when {condition}`` selects a tool environment when a
+* ``module name when {condition}`` selects a metadata module when a
   condition is known to be true.
 
 Config files are read as static declarations. Paths and other arguments must
@@ -54,7 +54,7 @@ Metadata can also be declared directly in the config:
 
 .. code-block:: tcl
 
-   meta module JasperGold -environment {
+   meta module JasperGold {
        source .tcl-ls/jasper-commands.meta.tcl
    }
 
@@ -124,49 +124,56 @@ These controls apply to parser and analysis diagnostics in both tools. They do
 not disable parsing, symbol resolution, or completion.
 ``--fail-on-diagnostics`` considers only enabled diagnostics.
 
-.. _tool-environments:
+.. _module-selection:
 
-Tool Environments
------------------
+Module Selection
+----------------
 
-An environment adds a named metadata module above the standard Tcl commands.
-Declare it with ``meta module name -environment {body}``, as above. Loading the
-metadata makes the environment available; selecting it makes its commands
-active. Environments are separate from Tcl packages.
+Loading metadata makes its named modules available. Selecting a module makes
+its commands and embedded languages active. The ``Tcl`` and built-in ``TclOO``
+modules are active by default.
+
+``package require name`` selects the module with the same name. Package
+requirements in a file and its known dependencies apply to the whole file;
+this does not prove runtime execution order. A qualified name such as
+``json::json2dict`` does not select its package.
+
+For commands supplied by a tool, select the module with a source directive,
+a project rule, or ``tcl-check --module name``.
 
 Source Directives
 ~~~~~~~~~~~~~~~~~
 
-Select an environment with a Tcl comment:
+Select a module with a Tcl comment:
 
 .. code-block:: tcl
 
    if {$use_tool} {
-       # tcl-ls: env JasperGold
+       # tcl-ls: module JasperGold
        clock -none
    }
    clock seconds
 
 The directive applies from the comment to the end of the enclosing Tcl body.
-Nested bodies inherit it and can add another environment above it. Leaving a
-body restores the previous environment. A top-level directive applies to the
+Nested bodies inherit it and can add another module above it. Leaving a
+body restores the previous module. A top-level directive applies to the
 rest of the file. Text inside data strings has no effect, and unknown
-environment names produce diagnostics.
+module names produce diagnostics.
 
 Conditional Rules
 ~~~~~~~~~~~~~~~~~
 
-A project rule can select an environment from known variable values:
+A project rule can select a module from known variable values:
 
 .. code-block:: tcl
 
-   environment JasperGold when {$::fts::TOOL eq "jg"}
+   module JasperGold when {$::fts::TOOL eq "jg"}
 
 This selects JasperGold where static analysis knows the condition is true,
 such as the matching ``if`` or ``switch`` branch. It does not assert the
 condition or execute Tcl commands. An unknown condition does not select the
-environment. Use fully qualified variable names for project-wide conditions.
-Matching rules apply in config order, above explicitly selected environments.
+module. Use fully qualified variable names for project-wide conditions.
+Matching rules apply in config order, above explicitly selected modules.
 
 Value tracking has these limits:
 
@@ -180,19 +187,20 @@ Value tracking has these limits:
   variable. Procedure locals remain separate unless ``global`` or ``variable``
   links them. Uncertain links are treated as unknown.
 
-Explicit environment directives do not depend on tracked values.
+Explicit module directives do not depend on tracked values.
 
-Environment Precedence
-~~~~~~~~~~~~~~~~~~~~~~
+Module Precedence
+~~~~~~~~~~~~~~~~~
 
-Environments can add commands. Replacing a command from Tcl or a lower
-environment requires ``meta override``. Embedded languages use the same active
-environment order; inactive environments do not change them. See
+Package modules are applied in name order, below explicit selections and
+matching project rules. Replacing a command from Tcl or a lower
+module requires ``meta override``. Embedded languages use the same active
+module order; inactive modules do not change them. See
 :ref:`metadata-precedence` for replacement rules.
 
-``tcl-check --environment name`` selects an initial environment for the whole
-check. Source directives and conditional rules still apply. Editor environments
-are local to the source position and do not affect other open files.
+``tcl-check --module name`` selects an initial module for the whole
+check. Source directives and conditional rules still apply. Source selections
+are local to their file and position and do not affect other open files.
 
 Editing Config Files
 --------------------

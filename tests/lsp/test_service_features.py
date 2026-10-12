@@ -83,7 +83,7 @@ def test_language_service_hover_shows_resolved_command_visibility(
     service: LanguageService, tmp_path: Path, visibility: str
 ) -> None:
     (tmp_path / 'tcllsrc.tcl').write_text(
-        f"""meta module Tool -environment {{
+        f"""meta module Tool {{
     # Inspect the current design.
     meta command inspect -visibility {visibility} variants {{
         form {{}}
@@ -103,7 +103,7 @@ def test_language_service_hover_shows_resolved_command_visibility(
         encoding='utf-8',
     )
     uri = (tmp_path / 'main.tcl').as_uri()
-    text = """# tcl-ls: env Tool
+    text = """# tcl-ls: module Tool
 inspect
 inspect value
 inspect_alias

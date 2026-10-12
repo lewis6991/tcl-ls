@@ -8,11 +8,14 @@ from tcl_lsp.analysis.metadata_commands import (
     MetadataCommand,
     command_tree_prefixes,
     load_metadata_commands,
-    metadata_environment_names,
     metadata_file_summary,
+    metadata_module_names,
 )
 from tcl_lsp.cache import metadata_lru_cache
 from tcl_lsp.metadata_paths import MetadataRegistry
+
+# TclOO ships with the supported Tcl runtime. Other modules need selection.
+_DEFAULT_MODULES = frozenset({'Tcl', 'TclOO'})
 
 type CommandKey = tuple[str | None, str]
 
@@ -25,66 +28,59 @@ class _MetadataLayer:
 
 @dataclass(frozen=True, slots=True)
 class MetadataView:
-    """Metadata roots followed by the selected environments, in stack order."""
+    """Metadata roots followed by the selected modules, in stack order."""
 
     commands: Mapping[CommandKey, tuple[MetadataCommand, ...]]
-    environment_commands: Mapping[str, MetadataCommand]
+    module_commands: Mapping[str, MetadataCommand]
     language_extends: Mapping[str, bool]
 
 
 @metadata_lru_cache(maxsize=128)
 def metadata_view(registry: MetadataRegistry) -> MetadataView:
-    # File discovery and parsing do not depend on the active environment stack.
-    base, environments = _metadata_layers(registry.with_environments(()))
-    layers = list(base)
+    # File discovery and parsing do not depend on the active module stack.
+    base, modules = _metadata_layers(registry.with_modules(()))
+    commands: dict[CommandKey, tuple[MetadataCommand, ...]] = {}
     occupied: dict[CommandKey, tuple[MetadataCommand, ...]] = {}
+    language_extends: dict[str, bool] = {}
     for layer in base:
+        _overlay(commands, _group_commands(layer.commands))
+        # File-scoped annotations do not declare globally available commands.
         _overlay(
             occupied,
             _group_commands(
                 command
                 for command in layer.commands
-                if command.context_name is not None or command.module_name == 'Tcl'
+                if command.context_name is not None or command.module_name is not None
             ),
         )
+        language_extends.update(layer.language_extends)
 
-    for name in registry.environments:
-        if name not in environments:
-            raise RuntimeError(f'Unknown metadata environment `{name}`.')
-        commands: dict[CommandKey, tuple[MetadataCommand, ...]] = {}
-        extends: dict[str, bool] = {}
-        for layer in environments[name]:
-            _overlay(commands, _group_commands(layer.commands))
-            extends.update(layer.language_extends)
+    for name in dict.fromkeys(registry.modules):
+        if name not in modules:
+            raise RuntimeError(f'Unknown metadata module `{name}`.')
+        additions: dict[CommandKey, tuple[MetadataCommand, ...]] = {}
+        for layer in modules[name]:
+            _overlay(additions, _group_commands(layer.commands))
+            language_extends.update(layer.language_extends)
         selected = {
             key: overloads
-            for key, overloads in commands.items()
+            for key, overloads in additions.items()
             if any(command.is_override for command in overloads)
             or (key[0], key[1].split(' ', maxsplit=1)[0]) not in occupied
         }
         _overlay(occupied, selected)
-        layers.append(
-            _MetadataLayer(
-                tuple(command for overloads in selected.values() for command in overloads),
-                tuple(extends.items()),
-            )
-        )
+        _overlay(commands, selected)
 
-    effective: dict[CommandKey, tuple[MetadataCommand, ...]] = {}
-    for layer in layers:
-        _overlay(effective, _group_commands(layer.commands))
     return MetadataView(
-        commands=MappingProxyType(effective),
-        environment_commands=MappingProxyType(
+        commands=MappingProxyType(commands),
+        module_commands=MappingProxyType(
             {
                 name: overloads[0]
                 for (context, name), overloads in occupied.items()
-                if context is None and overloads[0].module_name in environments
+                if context is None
             }
         ),
-        language_extends=MappingProxyType(
-            {name: extends for layer in layers for name, extends in layer.language_extends}
-        ),
+        language_extends=MappingProxyType(language_extends),
     )
 
 
@@ -92,33 +88,33 @@ def metadata_view(registry: MetadataRegistry) -> MetadataView:
 def _metadata_layers(
     registry: MetadataRegistry,
 ) -> tuple[tuple[_MetadataLayer, ...], dict[str, tuple[_MetadataLayer, ...]]]:
-    environment_names = metadata_environment_names(registry)
+    module_names = metadata_module_names(registry)
     base: list[_MetadataLayer] = []
-    environments: dict[str, list[_MetadataLayer]] = {name: [] for name in environment_names}
+    modules: dict[str, list[_MetadataLayer]] = {name: [] for name in module_names}
     for _, paths in registry.metadata_file_layers():
-        commands_by_environment: dict[str | None, list[MetadataCommand]] = {}
-        extends_by_environment: dict[str | None, dict[str, bool]] = {}
+        commands_by_module: dict[str | None, list[MetadataCommand]] = {}
+        extends_by_module: dict[str | None, dict[str, bool]] = {}
         for path in paths:
             for command in load_metadata_commands(
                 path, alias_paths=registry.metadata_files(), revision=registry.revision
             ):
-                environment = (
-                    command.module_name if command.module_name in environment_names else None
+                module = (
+                    command.module_name if command.module_name not in _DEFAULT_MODULES else None
                 )
-                commands_by_environment.setdefault(environment, []).append(command)
+                commands_by_module.setdefault(module, []).append(command)
             for module, name, extends_tcl in metadata_file_summary(
                 path, revision=registry.revision
             ).language_extends:
-                environment = module if module in environment_names else None
-                extends = extends_by_environment.setdefault(environment, {})
+                module = module if module not in _DEFAULT_MODULES else None
+                extends = extends_by_module.setdefault(module, {})
                 extends[name] = extends.get(name, False) or extends_tcl
-        for environment in dict.fromkeys((*commands_by_environment, *extends_by_environment)):
+        for module in dict.fromkeys((*commands_by_module, *extends_by_module)):
             layer = _MetadataLayer(
-                tuple(commands_by_environment.get(environment, ())),
-                tuple(extends_by_environment.get(environment, {}).items()),
+                tuple(commands_by_module.get(module, ())),
+                tuple(extends_by_module.get(module, {}).items()),
             )
-            (base if environment is None else environments[environment]).append(layer)
-    return tuple(base), {name: tuple(layers) for name, layers in environments.items()}
+            (base if module is None else modules[module]).append(layer)
+    return tuple(base), {name: tuple(layers) for name, layers in modules.items()}
 
 
 def _group_commands(

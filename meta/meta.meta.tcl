@@ -9,7 +9,7 @@
 meta module Tcl {
     #
     # Top-level declarations:
-    #   meta module name ?-environment? {body}
+    #   meta module name {body}
     #   meta command name {shape}
     #   meta command name {shape} {
     #       clause ...
@@ -196,10 +196,7 @@ meta module Tcl {
     # and embedded command languages.
     meta command meta {subcommand args} {
         # Declare a module scope. Source includes inherit this scope.
-        command module variants {
-            form {<name> <body>} {enter tcl body last}
-            form {<name> =-environment <body>} {enter tcl body last}
-        }
+        command module {<name> <body>} {enter tcl body last}
 
         # Record a fixed dependency of the associated Tcl file. Resolve the path
         # relative to this metadata file. Only valid without a module declaration.
@@ -212,7 +209,7 @@ meta module Tcl {
             form {<name> <target> =-module <packageName>}
         }
 
-        # Explicitly replace a command from Tcl or a lower environment.
+        # Explicitly replace a command from Tcl or a lower module.
         command override variants {
             form {<name> <shape>}
             form {<name> <groupedShape> <body>} {enter meta-command-body body last}
@@ -321,7 +318,7 @@ meta module Tcl {
             form {=tcl}
         }
 
-        # Replace a command from a lower environment in this language.
+        # Replace a command from a lower module in this language.
         command override variants {
             form {<name> <shape>}
             form {<name> <groupedShape> <body>} {enter meta-command-body body last}

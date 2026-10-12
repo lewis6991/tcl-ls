@@ -39,7 +39,7 @@ Project Settings
 ----------------
 
 The checker reads ``tcllsrc.tcl`` automatically. Use :doc:`configuration` for
-shared metadata, library paths, and tool environment rules.
+shared metadata, library paths, and tool module rules.
 
 For a one-off check with additional metadata:
 

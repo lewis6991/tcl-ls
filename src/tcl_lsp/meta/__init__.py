@@ -33,7 +33,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         '--no-probe', action='store_true', help='Inspect commands without calling them.'
     )
     build_file_parser.add_argument(
-        '--environment', default='Tcl', help='Tool environment name (default: core Tcl).'
+        '--module', default='Tcl', help='Metadata module name (default: Tcl).'
     )
     build_file_parser.add_argument(
         '--new-only', action='store_true', help='Exclude commands already present in plain Tcl.'
@@ -64,8 +64,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             helper_args.append('--no-probe')
         if args.new_only:
             helper_args.append('--new-only')
-        if args.environment != 'Tcl':
-            helper_args.extend(['--environment', args.environment])
+        if args.module != 'Tcl':
+            helper_args.extend(['--module', args.module])
         for command_list in args.include_commands:
             helper_args.extend(['--include-commands', command_list])
         for command_list in args.internal_commands:

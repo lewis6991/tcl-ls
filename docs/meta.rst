@@ -47,9 +47,9 @@ result variable. Selectors count arguments from 1. Leading comments supply
 command documentation.
 
 Use the ``Tcl`` module for commands available throughout the project, a package
-name for package commands, or ``-environment`` for commands that belong to a
-tool. Select tool environments through :ref:`project configuration or source
-comments <tool-environments>`.
+name for package commands, or a tool name such as ``JasperGold``. See
+:ref:`module-selection` for activation through package requirements, project
+rules, and source comments.
 
 For more command models, see the :doc:`reference/meta-syntax`:
 
@@ -77,7 +77,7 @@ Generation requires ``tclsh`` on ``PATH`` to obtain a plain Tcl baseline:
 .. code-block:: tcl
 
    source /path/printed/by/helper-path/tcl_meta.tcl
-   tcl-meta build-file --no-probe --new-only --environment JasperGold jasper.meta.tcl
+   tcl-meta build-file --no-probe --new-only --module JasperGold jasper.meta.tcl
 
 This example inspects definitions without calling tool commands. It keeps
 procedure parameters, uses ``args`` for native commands, and excludes names
@@ -99,7 +99,7 @@ retain metadata for the original Tcl command under its renamed name:
 
 .. code-block:: tcl
 
-   meta module JasperGold -environment {
+   meta module JasperGold {
        meta override clock {args}
        meta alias tcl_clock clock -module Tcl
    }

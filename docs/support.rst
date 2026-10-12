@@ -11,8 +11,8 @@ Editor features are missing
 
 Commands are unresolved
    Check that the source file is below the intended ``tcllsrc.tcl``. Include
-   metadata for custom commands and select the required tool environment;
-   see :ref:`project-metadata` and :ref:`tool-environments`.
+   metadata for custom commands and select the required tool module;
+   see :ref:`project-metadata` and :ref:`module-selection`.
 
 Packages are unresolved
    Check that the library contains a ``pkgIndex.tcl`` and add its directory

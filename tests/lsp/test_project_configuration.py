@@ -14,17 +14,17 @@ def test_config_commands_have_editor_help_and_stay_local_to_config(
 ) -> None:
     metadata = tmp_path / '.tcl-ls'
     metadata.mkdir()
-    (metadata / 'tool.meta.tcl').write_text('meta module ExampleTool -environment {\n}\n')
+    (metadata / 'tool.meta.tcl').write_text('meta module ExampleTool {\n}\n')
     config = tmp_path / 'tcllsrc.tcl'
     config.write_text(
         'source .tcl-ls/tool.meta.tcl\n'
         'lib-path libs\n'
         'library-path other-libs\n'
-        'environment ExampleTool when {$::tool eq "example"}\n'
+        'module ExampleTool when {$::tool eq "example"}\n'
         'diagnostic unresolved-variable hint -path vendor\n'
     )
     source = tmp_path / 'main.tcl'
-    source.write_text('lib-path somewhere\nenvironment ExampleTool when {1}\n')
+    source.write_text('lib-path somewhere\nmodule ExampleTool when {1}\n')
     service = LanguageService()
     try:
         assert service.open_document(config.as_uri(), config.read_text(), 1) == ()
@@ -33,7 +33,7 @@ def test_config_commands_have_editor_help_and_stay_local_to_config(
             (0, 'source'),
             (1, 'lib-path'),
             (2, 'library-path'),
-            (3, 'environment'),
+            (3, 'module'),
             (4, 'diagnostic'),
         ]:
             hover = service.hover(config.as_uri(), line, 2)
@@ -45,7 +45,7 @@ def test_config_commands_have_editor_help_and_stay_local_to_config(
             snapshot, uri=config.as_uri(), line=3, character=24
         )
         assert signature is not None
-        assert signature.signatures[0].label == 'environment {name when condition}'
+        assert signature.signatures[0].label == 'module {name when condition}'
         completions = completion_items(
             snapshot.documents,
             workspace_index=snapshot.workspace_index,
@@ -76,7 +76,7 @@ def test_invalid_config_can_be_opened_checked_and_corrected(tmp_path: Path) -> N
     config = tmp_path / 'tcllsrc.tcl'
     config.write_text(
         'source $path\n'
-        'environment Tool when {$value eq}\n'
+        'module Tool when {$value eq}\n'
         'diagnostic unresolved-command quiet\n'
         'unknown-setting value\n'
         'set path libs\n'

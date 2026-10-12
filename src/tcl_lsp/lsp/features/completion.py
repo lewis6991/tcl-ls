@@ -12,13 +12,15 @@ from tcl_lsp.analysis.builtins import (
     BuiltinCommand,
     BuiltinOverload,
     builtin_command_for_packages,
+    builtin_commands,
     builtin_commands_by_package,
     canonical_builtin_package_name,
+    registry_for_packages,
 )
-from tcl_lsp.analysis.environments import registry_at_offset
 from tcl_lsp.analysis.metadata_commands import MetadataOption, scan_command_options
 from tcl_lsp.analysis.metadata_effects import dependency_required_packages
 from tcl_lsp.analysis.model import CommandCall, ProcDecl
+from tcl_lsp.analysis.modules import registry_at_offset
 from tcl_lsp.lsp.features.cursor_context import (
     CursorContext,
     cursor_context,
@@ -80,7 +82,7 @@ def completion_items(
     live_document = live_text is not None and live_text != document.text
     if live_document:
         # Use the same extraction as diagnostics. Mixing live cursor positions
-        # with old scopes can select the wrong environment, namespace, or body.
+        # with old scopes can select the wrong module, namespace, or body.
         assert live_text is not None
         live_parser = parser or Parser()
         extractor = FactExtractor(live_parser, metadata_registry=metadata_registry)
@@ -89,7 +91,7 @@ def completion_items(
             facts = extractor.extract(
                 parse_result,
                 include_lexical_spans=False,
-                environment_rules=document.facts.environment_rules,
+                module_rules=document.facts.module_rules,
             )
         finally:
             extractor.close()
@@ -108,14 +110,14 @@ def completion_items(
     context = cursor_context(document, line=line, character=character)
     if context is None:
         return CompletionResults(items=())
-    # A call uses its entry environment, even with the cursor at its end.
+    # A call uses its entry module, even with the cursor at its end.
     metadata_offset = (
         context.attached_command_call.name_span.start.offset
         if context.attached_command_call is not None
         else context.offset
     )
     metadata_registry = registry_at_offset(
-        metadata_registry, document.facts.environment_scopes, metadata_offset
+        metadata_registry, document.facts.module_scopes, metadata_offset
     )
     context = _completion_context(
         document=document,
@@ -295,28 +297,24 @@ def _command_completion_items(
         workspace_index=workspace_index,
         metadata_registry=metadata_registry,
     )
-    for package_name in builtin_packages:
-        for builtin in (
-            builtin_commands_by_package(metadata_registry=metadata_registry)
-            .get(package_name, {})
-            .values()
-        ):
-            label = _builtin_completion_label(builtin.name, absolute_prefix=absolute_prefix)
-            if ' ' in builtin.name or not _matches_prefix(label, prefix):
-                continue
-            key = (label, builtin.package)
-            if key in seen:
-                continue
-            seen.add(key)
-            candidates.append(
-                _CommandCandidate(
-                    label=label,
-                    sort_text=_command_sort_text(label, rank=2),
-                    builtin_name=builtin.name,
-                    builtin_package_name=package_name,
-                    builtin_overloads=builtin.overloads,
-                )
+    registry = registry_for_packages(metadata_registry, frozenset(builtin_packages))
+    for builtin in builtin_commands(metadata_registry=registry).values():
+        label = _builtin_completion_label(builtin.name, absolute_prefix=absolute_prefix)
+        if ' ' in builtin.name or not _matches_prefix(label, prefix):
+            continue
+        key = (label, builtin.package)
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(
+            _CommandCandidate(
+                label=label,
+                sort_text=_command_sort_text(label, rank=2),
+                builtin_name=builtin.name,
+                builtin_package_name=builtin.package,
+                builtin_overloads=builtin.overloads,
             )
+        )
 
     incomplete = len(candidates) > _MAX_COMMAND_COMPLETION_ITEMS
     if incomplete:

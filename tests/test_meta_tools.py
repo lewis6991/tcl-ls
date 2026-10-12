@@ -66,7 +66,7 @@ def test_helper_path_prints_existing_bundled_script(capsys: pytest.CaptureFixtur
     [
         [],
         ['--no-probe'],
-        ['--no-probe', '--new-only', '--environment', 'Tool'],
+        ['--no-probe', '--new-only', '--module', 'Tool'],
         ['--include-commands', '::tool::hidden', '--include-commands', '{::tool::two words}'],
         ['--internal-commands', '::tool::hidden', '--internal-commands', '::other'],
     ],
@@ -152,10 +152,10 @@ def test_tool_inventory_excludes_replaced_tcl_commands(tmp_path: Path) -> None:
     metadata = _build_metadata_with_tcl(
         tmp_path,
         'rename clock {}\nproc clock {args} {exit 9}\nproc prove {args} {exit 9}\n',
-        options='--no-probe --new-only --environment ExampleTool',
+        options='--no-probe --new-only --module ExampleTool',
     )
     assert metadata == (
-        _METADATA_HEADER.replace('meta module Tcl', 'meta module ExampleTool -environment')
+        _METADATA_HEADER.replace('meta module Tcl', 'meta module ExampleTool')
         + '    meta command prove args\n'
         + '}\n'
     )

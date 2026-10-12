@@ -285,12 +285,11 @@ def metadata_declaration_diagnostics(
 
 
 @metadata_lru_cache(maxsize=128)
-def metadata_environment_names(metadata_registry: MetadataRegistry) -> frozenset[str]:
+def metadata_module_names(metadata_registry: MetadataRegistry) -> frozenset[str]:
     return frozenset(
         module.name
         for path in metadata_registry.metadata_files()
         for module in metadata_modules(path)
-        if module.is_environment
     )
 
 
@@ -374,7 +373,7 @@ def _summarize_block(block: DeclarationBlock, *, config: bool) -> MetadataFileSu
             if (
                 config
                 and module_name is None
-                and command_name in {'lib-path', 'library-path', 'environment', 'diagnostic'}
+                and command_name in {'lib-path', 'library-path', 'module', 'diagnostic'}
             ):
                 continue
             if command_name != 'meta' or len(command.words) < 2:

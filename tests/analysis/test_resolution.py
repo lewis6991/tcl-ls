@@ -374,6 +374,7 @@ def test_analysis_resolves_workspace_package_helper_metadata_bindings(parser: Pa
     snapshot = _analyze(
         parser,
         'file:///tmp/fileutil.tcl',
+        '# tcl-ls: module fileutil\n'
         'namespace eval fileutil {\n'
         '    proc Spec {check alist ov fv args} {}\n'
         '    proc run {args} {\n'
@@ -409,6 +410,7 @@ def test_analysis_resolves_imported_package_helper_metadata_bindings(parser: Par
             ),
             (
                 'file:///tmp/ldap.tcl',
+                'package require asn\n'
                 'namespace eval ldap {\n'
                 '    namespace import ::asn::*\n'
                 '    proc run {response} {\n'

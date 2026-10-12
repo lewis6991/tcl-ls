@@ -17,29 +17,27 @@ def test_includes_inherit_module_scope_and_keep_definition_locations(
     fragment = parts / 'shared.meta.tcl'
     fragment.write_text(
         'meta command shared {value}\n'
-        'meta module Inner -environment {meta command inner_only {}}\n'
+        'meta module Inner {meta command inner_only {}}\n'
         'meta command restored {}\n'
     )
     (metadata / 'tools.meta.tcl').write_text(
-        'meta module Outer -environment {\n'
+        'meta module Outer {\n'
         '    source parts/shared.meta.tcl\n'
         '    meta command outer_only {}\n'
         '}\n'
-        'meta module Second -environment {source parts/shared.meta.tcl}\n'
+        'meta module Second {source parts/shared.meta.tcl}\n'
         'meta module Tcl {meta command common {}}\n'
     )
     config = tmp_path / 'tcllsrc.tcl'
-    config.write_text(
-        'source .tcl-ls/tools.meta.tcl\nenvironment Outer when {$::tool eq "outer"}\n'
-    )
+    config.write_text('source .tcl-ls/tools.meta.tcl\nmodule Outer when {$::tool eq "outer"}\n')
     source = tmp_path / 'main.tcl'
     source.write_text(
         'common\n'
         'shared value\n'
-        '# tcl-ls: env Outer\n'
+        '# tcl-ls: module Outer\n'
         'shared value\nrestored\nouter_only\ninner_only\n'
         'if {1} {\n'
-        '    # tcl-ls: env Inner\n'
+        '    # tcl-ls: module Inner\n'
         '    inner_only\n'
         '}\n'
     )
@@ -71,7 +69,7 @@ def test_includes_inherit_module_scope_and_keep_definition_locations(
         assert (
             server.open_document(
                 (tmp_path / 'second.tcl').as_uri(),
-                '# tcl-ls: env Second\nshared value\nrestored\n',
+                '# tcl-ls: module Second\nshared value\nrestored\n',
                 1,
             )
             == ()
@@ -88,7 +86,7 @@ def test_inline_modules_follow_include_order_and_restore_outer_scope(tmp_path: P
     (tmp_path / 'tcllsrc.tcl').write_text(
         'meta module Tcl {\n'
         '    source base.meta.tcl\n'
-        '    meta module Tool -environment {meta command private {}}\n'
+        '    meta module Tool {meta command private {}}\n'
         '    source later.meta.tcl\n'
         '    meta alias selection choose\n'
         '}\n'

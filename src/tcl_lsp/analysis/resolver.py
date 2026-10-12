@@ -6,9 +6,9 @@ from dataclasses import dataclass, replace
 
 from tcl_lsp.analysis.builtins import (
     BuiltinCommand,
-    builtin_commands_any,
     builtin_commands_for_packages,
     canonical_builtin_package_name,
+    registry_for_packages,
 )
 from tcl_lsp.analysis.diagnostics import (
     DiagnosticContext,
@@ -24,7 +24,6 @@ from tcl_lsp.analysis.embedded_languages import (
     contextual_language_allows_tcl_fallback,
     contextual_resolution_reason,
 )
-from tcl_lsp.analysis.environments import registry_at_offset
 from tcl_lsp.analysis.facts.parsing import is_simple_name, split_tcl_list
 from tcl_lsp.analysis.facts.utils import (
     command_lookup_names,
@@ -58,6 +57,7 @@ from tcl_lsp.analysis.model import (
     VarBinding,
     VariableReference,
 )
+from tcl_lsp.analysis.modules import registry_at_offset
 from tcl_lsp.analysis.signature_matching import display_metadata_signature
 from tcl_lsp.common import Diagnostic, HoverInfo, Span, lsp_location
 from tcl_lsp.metadata_paths import (
@@ -184,9 +184,10 @@ class Resolver:
             command_call = _rename_source_call(event) if isinstance(event, CommandRename) else event
             registry = registry_at_offset(
                 self._metadata_registry,
-                facts.environment_scopes,
+                facts.module_scopes,
                 command_call.name_span.start.offset,
             )
+            registry = registry_for_packages(registry, required_packages)
             resolver = (
                 self
                 if registry == self._metadata_registry
@@ -342,7 +343,7 @@ class Resolver:
         definitions: list[DefinitionTarget] = []
         for proc in facts.procedures:
             registry = registry_at_offset(
-                self._metadata_registry, facts.environment_scopes, proc.name_span.start.offset
+                self._metadata_registry, facts.module_scopes, proc.name_span.start.offset
             )
             definitions.append(
                 DefinitionTarget(
@@ -737,55 +738,6 @@ class Resolver:
                 None,
                 None,
             )
-        if '::' in builtin_name and not _command_is_deleted(builtin_name, commands):
-            qualified_builtin_matches = builtin_commands_any(
-                builtin_name,
-                metadata_registry=self._metadata_registry,
-            )
-            if len(qualified_builtin_matches) == 1:
-                builtin = qualified_builtin_matches[0]
-                return _CommandBinding(
-                    ResolutionResult(
-                        reference=reference,
-                        uncertainty=AnalysisUncertainty(
-                            state='resolved',
-                            reason=(
-                                'Resolved to bundled package metadata by fully '
-                                'qualified command name.'
-                            ),
-                        ),
-                        target_symbol_ids=tuple(
-                            overload.symbol_id for overload in builtin.overloads
-                        ),
-                    ),
-                    HoverInfo(
-                        span=command_call.name_span,
-                        contents=_command_hover(_metadata_hover(builtin)),
-                    ),
-                    builtin,
-                    f'::{builtin.name}',
-                )
-            if len(qualified_builtin_matches) > 1:
-                return _CommandBinding(
-                    ResolutionResult(
-                        reference=reference,
-                        uncertainty=AnalysisUncertainty(
-                            state='ambiguous',
-                            reason=(
-                                'Multiple bundled package metadata entries match '
-                                'this fully qualified command name.'
-                            ),
-                        ),
-                        target_symbol_ids=tuple(
-                            overload.symbol_id
-                            for builtin in qualified_builtin_matches
-                            for overload in builtin.overloads
-                        ),
-                    ),
-                    None,
-                    None,
-                )
-
         imported_builtin_match: tuple[CommandImport, BuiltinCommand] | None = None
         imported_builtin_matches = self._resolve_imported_builtins(
             command_call.name,
@@ -1007,8 +959,9 @@ class Resolver:
             if qualify_name(raw_name, command_import.namespace) in commands:
                 continue
             normalized_target_name = _normalize_command_name(target_name)
-            for builtin in builtin_commands_any(
+            for builtin in builtin_commands_for_packages(
                 normalized_target_name,
+                frozenset(),
                 metadata_registry=self._metadata_registry,
             ):
                 matches.setdefault(
@@ -1026,8 +979,9 @@ class Resolver:
         if command_call.name is None or '::' in command_call.name:
             return ()
 
-        return builtin_commands_any(
+        return builtin_commands_for_packages(
             f'tcltest::{_normalize_command_name(command_call.name)}',
+            frozenset({'tcltest'}),
             metadata_registry=self._metadata_registry,
         )
 

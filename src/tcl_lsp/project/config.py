@@ -15,7 +15,7 @@ _LIBRARY_PATH_COMMANDS = frozenset({'lib-path', 'library-path'})
 
 
 @dataclass(frozen=True, slots=True)
-class EnvironmentRule:
+class ModuleRule:
     name: str
     condition: str
 
@@ -24,7 +24,7 @@ class EnvironmentRule:
 class ProjectConfig:
     metadata_paths: tuple[Path, ...]
     library_paths: tuple[Path, ...]
-    environment_rules: tuple[EnvironmentRule, ...] = ()
+    module_rules: tuple[ModuleRule, ...] = ()
     diagnostic_rules: tuple[DiagnosticRule, ...] = ()
     diagnostics: tuple[Diagnostic, ...] = ()
     declarations: DeclarationGroup | None = None
@@ -34,11 +34,11 @@ def is_config_file(path: Path | None) -> bool:
     return path is not None and path.name == _CONFIG_FILE_NAME
 
 
-def configured_environment_rules(path: Path) -> tuple[EnvironmentRule, ...]:
+def configured_module_rules(path: Path) -> tuple[ModuleRule, ...]:
     return tuple(
         rule
         for config_path in config_files(path)
-        for rule in load_config_paths(config_path).environment_rules
+        for rule in load_config_paths(config_path).module_rules
     )
 
 
@@ -119,7 +119,7 @@ def parse_config(parse_result: ParseResult, *, directory: Path) -> ProjectConfig
         )
     has_metadata = False
     library_paths: dict[Path, None] = {}
-    environment_rules: list[EnvironmentRule] = []
+    module_rules: list[ModuleRule] = []
     diagnostic_rules: list[DiagnosticRule] = []
     diagnostics = [
         Diagnostic(
@@ -156,15 +156,15 @@ def parse_config(parse_result: ParseResult, *, directory: Path) -> ProjectConfig
                 continue
             if isinstance(entry, DiagnosticRule):
                 diagnostic_rules.append(entry)
-            elif isinstance(entry, EnvironmentRule):
-                environment_rules.append(entry)
+            elif isinstance(entry, ModuleRule):
+                module_rules.append(entry)
             else:
                 _, path = entry
                 library_paths.setdefault(path, None)
     return ProjectConfig(
         metadata_paths=(config_path,) if has_metadata else (),
         library_paths=tuple(library_paths),
-        environment_rules=tuple(environment_rules),
+        module_rules=tuple(module_rules),
         diagnostic_rules=tuple(diagnostic_rules),
         diagnostics=tuple(sorted(diagnostics, key=lambda diagnostic: diagnostic.span.start.offset)),
         declarations=declarations,
@@ -173,19 +173,19 @@ def parse_config(parse_result: ParseResult, *, directory: Path) -> ProjectConfig
 
 def _parse_config_command(
     command: Command, *, directory: Path
-) -> DiagnosticRule | EnvironmentRule | tuple[str, Path]:
+) -> DiagnosticRule | ModuleRule | tuple[str, Path]:
     words = tuple(None if word.expanded else word_static_text(word) for word in command.words)
     command_name, *values = words
     if command_name is None:
         raise RuntimeError(f'`{_CONFIG_FILE_NAME}` commands must use static command names.')
     if command_name == 'diagnostic':
         return parse_diagnostic_rule(tuple(values), directory=directory)
-    if command_name == 'environment':
+    if command_name == 'module':
         if len(values) != 3 or not values[0] or values[1] != 'when' or not values[2]:
-            raise RuntimeError('Environment rules must be `environment name when {condition}`.')
+            raise RuntimeError('Module rules must be `module name when {condition}`.')
         if parse_expr(values[2]) is None:
-            raise RuntimeError(f'Invalid environment condition for `{values[0]}`.')
-        return EnvironmentRule(values[0], values[2])
+            raise RuntimeError(f'Invalid module condition for `{values[0]}`.')
+        return ModuleRule(values[0], values[2])
     if command_name not in _LIBRARY_PATH_COMMANDS:
         raise RuntimeError(f'Unsupported `{_CONFIG_FILE_NAME}` command `{command_name}`.')
     if len(values) != 1:
@@ -202,9 +202,9 @@ def _parse_config_command(
 __all__ = [
     'config_files',
     'configured_diagnostic_rules',
-    'configured_environment_rules',
     'configured_library_paths',
     'configured_metadata_paths',
+    'configured_module_rules',
     'is_config_file',
     'load_config_paths',
     'load_library_paths',

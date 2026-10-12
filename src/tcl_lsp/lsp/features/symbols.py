@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 
-from tcl_lsp.analysis.builtins import builtin_definition_targets
-from tcl_lsp.analysis.environments import registry_at_offset
+from tcl_lsp.analysis.builtins import builtin_definition_targets, registry_for_packages
+from tcl_lsp.analysis.index import WorkspaceIndex
+from tcl_lsp.analysis.metadata_effects import dependency_required_packages
 from tcl_lsp.analysis.model import CommandImport, DefinitionTarget
+from tcl_lsp.analysis.modules import registry_at_offset
 from tcl_lsp.lsp.state import ManagedDocument
 from tcl_lsp.metadata_paths import MetadataRegistry
+from tcl_lsp.project.paths import source_id_to_path
 
 
 def symbol_ids_at_position(
@@ -47,6 +50,7 @@ def symbol_kind(documents: Iterable[ManagedDocument], symbol_id: str) -> str | N
 def definitions_for_command_import(
     documents: Iterable[ManagedDocument],
     *,
+    workspace_index: WorkspaceIndex,
     metadata_registry: MetadataRegistry,
     command_import: CommandImport,
 ) -> tuple[DefinitionTarget, ...]:
@@ -66,9 +70,21 @@ def definitions_for_command_import(
         if document.facts.uri == command_import.uri:
             metadata_registry = registry_at_offset(
                 metadata_registry,
-                document.facts.environment_scopes,
+                document.facts.module_scopes,
                 command_import.span.start.offset,
             )
+            source_path = source_id_to_path(document.uri)
+            required = (
+                dependency_required_packages(
+                    source_path,
+                    document.facts,
+                    workspace_index,
+                    metadata_registry=metadata_registry,
+                )
+                if source_path is not None
+                else frozenset(require.name for require in document.facts.package_requires)
+            )
+            metadata_registry = registry_for_packages(metadata_registry, required)
         for definition in document.analysis.definitions:
             qualified_name = _qualified_command_name(definition.name)
             if command_import.kind == 'exact':
@@ -104,10 +120,10 @@ def definitions_for_symbols(
                 continue
             seen.add(definition.symbol_id)
             definitions.append(definition)
-    # Resolution has already selected the environment at each reference. Lookup
+    # Resolution has already selected the module at each reference. Lookup
     # by symbol ID must retain those targets even outside the selected scope.
     for definition in builtin_definition_targets(
-        metadata_registry=metadata_registry, all_environments=True
+        metadata_registry=metadata_registry, all_modules=True
     ):
         if definition.symbol_id not in symbol_ids or definition.symbol_id in seen:
             continue

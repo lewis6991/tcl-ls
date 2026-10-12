@@ -7,11 +7,11 @@ from lsprotocol import types
 
 from tcl_lsp.analysis.arity import proc_parameter_arity
 from tcl_lsp.analysis.builtins import (
-    annotated_metadata_commands_by_package,
     annotated_metadata_commands_for_packages,
     builtin_commands_for_packages,
     canonical_builtin_package_name,
     is_builtin_package,
+    registry_for_packages,
 )
 from tcl_lsp.analysis.control_flow import build_control_flow_script
 from tcl_lsp.analysis.embedded_languages import (
@@ -23,7 +23,6 @@ from tcl_lsp.analysis.embedded_languages import (
     match_embedded_language_entries,
     resolve_embedded_language_entries,
 )
-from tcl_lsp.analysis.environments import EnvironmentScope, active_environments
 from tcl_lsp.analysis.facts.lowering import (
     LoweredCatchCommand,
     LoweredCommand,
@@ -86,7 +85,7 @@ from tcl_lsp.analysis.metadata_commands import (
     MetadataSelector,
     MetadataSource,
     metadata_declaration_diagnostics,
-    metadata_environment_names,
+    metadata_module_names,
     select_argument_indices,
 )
 from tcl_lsp.analysis.model import (
@@ -106,6 +105,7 @@ from tcl_lsp.analysis.model import (
     VarBinding,
     VariableReference,
 )
+from tcl_lsp.analysis.modules import ModuleSelection, active_modules
 from tcl_lsp.common import Diagnostic, Position, Span, lsp_range
 from tcl_lsp.metadata_paths import DEFAULT_METADATA_REGISTRY, MetadataRegistry
 from tcl_lsp.parser import Parser, word_static_text
@@ -123,8 +123,8 @@ from tcl_lsp.parser.model import (
 )
 from tcl_lsp.plugins.host import PluginProcedureEffect, TclPluginHost
 from tcl_lsp.project.config import (
-    EnvironmentRule,
-    configured_environment_rules,
+    ModuleRule,
+    configured_module_rules,
     is_config_file,
     parse_config,
 )
@@ -152,7 +152,9 @@ class _ExtractionContext:
     command_renames_enabled: bool
     flow_state: VariableFlowState
     metadata_registry: MetadataRegistry
-    explicit_environments: tuple[str, ...]
+    explicit_modules: tuple[str, ...]
+    # Scoped selections exclude file-wide package requirements.
+    selected_modules: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,7 +192,7 @@ class FactExtractor:
         *,
         include_parse_result: bool = True,
         include_lexical_spans: bool | None = None,
-        environment_rules: tuple[EnvironmentRule, ...] | None = None,
+        module_rules: tuple[ModuleRule, ...] | None = None,
     ) -> DocumentFacts:
         if include_lexical_spans is None:
             include_lexical_spans = include_parse_result
@@ -198,11 +200,9 @@ class FactExtractor:
         source_path = source_id_to_path(parse_result.source_id)
         configuration = is_config_file(source_path)
         if is_declaration_file(source_path):
-            environment_rules = ()
-        elif environment_rules is None:
-            environment_rules = (
-                configured_environment_rules(source_path) if source_path is not None else ()
-            )
+            module_rules = ()
+        elif module_rules is None:
+            module_rules = configured_module_rules(source_path) if source_path is not None else ()
 
         lowering_result = lower_parse_result(
             parse_result,
@@ -220,7 +220,7 @@ class FactExtractor:
                 )
         collector = _FactCollector(
             metadata_registry=self._metadata_registry,
-            environment_rules=environment_rules,
+            module_rules=module_rules,
             parser=self._parser,
             plugin_host=self._plugin_host,
             parse_result=parse_result,
@@ -244,13 +244,13 @@ class _FactCollector:
         '_comment_spans',
         '_diagnostic_directives',
         '_diagnostics',
-        '_environment_rules',
-        '_environment_scopes',
         '_include_lexical_spans',
         '_include_parse_result',
         '_linked_variables_by_scope',
         '_lowered_script',
         '_metadata_registry',
+        '_module_rules',
+        '_module_scopes',
         '_namespaces',
         '_operator_spans',
         '_package_index_entries',
@@ -273,7 +273,7 @@ class _FactCollector:
         plugin_host: TclPluginHost,
         parse_result: ParseResult,
         *,
-        environment_rules: tuple[EnvironmentRule, ...],
+        module_rules: tuple[ModuleRule, ...],
         comment_spans: tuple[Span, ...],
         operator_spans: tuple[Span, ...],
         string_spans: tuple[Span, ...],
@@ -283,14 +283,14 @@ class _FactCollector:
         include_parse_result: bool,
     ) -> None:
         self._metadata_registry = metadata_registry
-        self._environment_rules = environment_rules
+        self._module_rules = module_rules
         for name in (
-            *metadata_registry.environments,
-            *(rule.name for rule in self._environment_rules),
+            *metadata_registry.modules,
+            *(rule.name for rule in self._module_rules),
         ):
-            if name not in metadata_environment_names(metadata_registry):
-                raise RuntimeError(f'Unknown metadata environment `{name}`.')
-        self._environment_scopes: list[EnvironmentScope] = []
+            if name not in metadata_module_names(metadata_registry):
+                raise RuntimeError(f'Unknown metadata module `{name}`.')
+        self._module_scopes: list[ModuleSelection] = []
         self._parser = parser
         self._plugin_host = plugin_host
         self._parse_result = parse_result
@@ -323,7 +323,7 @@ class _FactCollector:
         if is_config_file(source_id_to_path(self._parse_result.source_id)):
             root_context = replace(
                 root_context,
-                explicit_environments=('TclLSConfig',),
+                explicit_modules=('TclLSConfig',),
                 command_renames_enabled=False,
             )
         self._collect_lowered_script(self._lowered_script, root_context)
@@ -347,8 +347,8 @@ class _FactCollector:
             variable_references=tuple(self._variable_references),
             document_symbols=tuple(self._build_document_symbols()),
             diagnostics=tuple(self._diagnostics),
-            environment_scopes=tuple(self._environment_scopes),
-            environment_rules=self._environment_rules,
+            module_scopes=tuple(self._module_scopes),
+            module_rules=self._module_rules,
             diagnostic_rules=tuple(
                 rule
                 for _, rule in sorted(
@@ -363,8 +363,8 @@ class _FactCollector:
         script: LoweredScript,
         context: _ExtractionContext,
     ) -> _ExtractionContext:
-        current_context = self._select_environment(context, script.span)
-        script_registry = current_context.metadata_registry
+        current_context = self._select_module(context, script.span)
+        script_modules = current_context.selected_modules
         events = sorted(
             (*script.commands, *script.comments),
             key=lambda event: (
@@ -393,35 +393,33 @@ class _FactCollector:
                 end = event.command.span.end
             # A substitution may already have changed the command's registry.
             # Compare with this script's selection, not that temporary scope.
-            current_context = self._select_environment(
-                current_context, Span(end, script.span.end), previous_registry=script_registry
+            current_context = self._select_module(
+                current_context, Span(end, script.span.end), previous_modules=script_modules
             )
-            script_registry = current_context.metadata_registry
+            script_modules = current_context.selected_modules
         for comment, _ in pending_diagnostics:
             self._invalid_diagnostic_directive(
                 comment, 'Statement diagnostic directive has no following statement.'
             )
-        # Environment directives have lexical scope; only variable effects leave a body.
+        # Module directives have lexical scope; only variable effects leave a body.
         return replace(context, flow_state=current_context.flow_state)
 
-    def _select_environment(
+    def _select_module(
         self,
         context: _ExtractionContext,
         span: Span,
         *,
-        previous_registry: MetadataRegistry | None = None,
+        previous_modules: tuple[str, ...] | None = None,
     ) -> _ExtractionContext:
-        environments = active_environments(
-            context.explicit_environments, self._environment_rules, context.flow_state
+        modules = active_modules(context.explicit_modules, self._module_rules, context.flow_state)
+        registry = registry_for_packages(
+            context.metadata_registry.with_modules(modules),
+            frozenset(self._active_builtin_packages),
         )
-        previous = previous_registry or context.metadata_registry
-        if environments != previous.environments:
-            self._environment_scopes.append(EnvironmentScope(span, environments))
-        if environments == context.metadata_registry.environments:
-            return context
-        return replace(
-            context, metadata_registry=context.metadata_registry.with_environments(environments)
-        )
+        previous = context.selected_modules if previous_modules is None else previous_modules
+        if modules != previous:
+            self._module_scopes.append(ModuleSelection(span, modules))
+        return replace(context, metadata_registry=registry, selected_modules=modules)
 
     def _collect_directive(
         self,
@@ -449,21 +447,19 @@ class _FactCollector:
                 else:
                     self._diagnostic_directives.append((comment.span.start.offset, rule))
             return context
-        if len(words) != 3 or words[:2] != ['tcl-ls:', 'env']:
-            message = 'Environment directives must be `# tcl-ls: env name`.'
-        elif words[2] not in metadata_environment_names(context.metadata_registry):
-            message = f'Unknown metadata environment `{words[2]}`.'
+        if len(words) != 3 or words[:2] != ['tcl-ls:', 'module']:
+            message = 'Module directives must be `# tcl-ls: module name`.'
+        elif words[2] not in metadata_module_names(context.metadata_registry):
+            message = f'Unknown metadata module `{words[2]}`.'
         else:
-            return replace(
-                context, explicit_environments=(*context.explicit_environments, words[2])
-            )
+            return replace(context, explicit_modules=(*context.explicit_modules, words[2]))
         self._diagnostics.append(
             Diagnostic(
                 span=comment.span,
                 severity='error',
                 message=message,
                 source='tcl-ls',
-                code='invalid-environment',
+                code='invalid-module',
             )
         )
         return context
@@ -776,7 +772,7 @@ class _FactCollector:
         for word_references in command.word_references:
             context = self._collect_lowered_word_references(word_references, context)
 
-        context = self._select_environment(context, syntax_command.span)
+        context = self._select_module(context, syntax_command.span)
         self._collect_builtin_subcommands(syntax_command, context)
         self._collect_contextual_subcommands(syntax_command, context)
         metadata_context_entries = self._collect_metadata_command_annotations(
@@ -1577,9 +1573,19 @@ class _FactCollector:
         *,
         additional_entries: tuple[EmbeddedLanguageEntry, ...] = (),
     ) -> tuple[EmbeddedLanguageEntry, ...] | None:
+        root_name = word_static_text(command.words[0]) if command.words else None
+        imported_names = (
+            tuple(
+                normalize_command_name(name)
+                for name in self._imported_command_candidates(root_name, context.namespace)
+            )
+            if root_name is not None
+            else ()
+        )
         entries = match_embedded_language_entries(
             command,
             current_namespace=context.namespace,
+            imported_names=imported_names,
             metadata_registry=context.metadata_registry,
         )
         if entries is None:
@@ -2006,16 +2012,6 @@ class _FactCollector:
                 static_prefix_parts.append(static_text)
                 prefix = ' '.join(static_prefix_parts)
                 candidates = available_commands.get(prefix, ())
-                if not candidates and '::' in root_name:
-                    # Match the resolver's support for qualified package commands
-                    # even when the file has no explicit package require.
-                    candidates = tuple(
-                        commands[prefix]
-                        for commands in annotated_metadata_commands_by_package(
-                            metadata_registry=context.metadata_registry
-                        ).values()
-                        if prefix in commands
-                    )
                 metadata_command = self._unique_metadata_command(candidates)
                 if metadata_command is not None:
                     matched = metadata_command, index + 1
@@ -2935,9 +2931,12 @@ class _FactCollector:
             metadata_registry=self._metadata_registry
             if parent is None
             else parent.metadata_registry,
-            explicit_environments=self._metadata_registry.environments
+            selected_modules=self._metadata_registry.modules
             if parent is None
-            else parent.explicit_environments,
+            else parent.selected_modules,
+            explicit_modules=self._metadata_registry.modules
+            if parent is None
+            else parent.explicit_modules,
         )
 
     def _procedure_context(
@@ -3089,7 +3088,7 @@ class _FactCollector:
         context = self._context_with_flow_state(context, context.flow_state.cleared())
         effects = VariableEffects()
         for comment in script.comments:
-            if comment.text[1:].split()[:2] == ['tcl-ls:', 'env']:
+            if comment.text[1:].split()[:2] == ['tcl-ls:', 'module']:
                 return VariableEffects.unknown()
         for command in script.commands:
             if isinstance(command, LoweredNamespaceEvalCommand):

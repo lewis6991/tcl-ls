@@ -306,7 +306,7 @@ def test_project_metadata_same_root_rejects_conflicting_annotations(tmp_path: Pa
 
     with pytest.raises(
         RuntimeError,
-        match='Conflicting metadata annotations',
+        match='Conflicting builtin metadata',
     ):
         annotated_metadata_commands_for_packages(
             frozenset(),
@@ -386,7 +386,7 @@ def test_builtin_metadata_ignores_context_commands() -> None:
     assert 'tepam::procedure' in tepam_commands
 
 
-def test_builtin_command_core_lookup_only_loads_tcl_package(
+def test_builtin_command_core_lookup_only_loads_native_modules(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     loaded_packages: list[str] = []
@@ -413,7 +413,7 @@ def test_builtin_command_core_lookup_only_loads_tcl_package(
     try:
         builtin = builtin_command('set')
         assert builtin is not None
-        assert loaded_packages == ['Tcl']
+        assert loaded_packages == ['Tcl', 'TclOO']
     finally:
         clear_cache_group('metadata')
 

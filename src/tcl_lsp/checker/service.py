@@ -107,14 +107,14 @@ def check_project(
     threads: int = DEFAULT_WORKER_COUNT,
     metadata_paths: Sequence[Path | str] = (),
     reporter: StreamReporter | None = None,
-    environment: str | None = None,
+    module: str | None = None,
 ) -> CheckReport:
     return _run_check(
         path,
         reporter=reporter,
         threads=threads,
         metadata_paths=metadata_paths,
-        environment=environment,
+        module=module,
     )
 
 
@@ -124,12 +124,12 @@ def _run_check(
     *,
     threads: int = 1,
     metadata_paths: Sequence[Path | str] = (),
-    environment: str | None = None,
+    module: str | None = None,
 ) -> CheckReport:
     target = path.expanduser().resolve(strict=False)
     active_metadata_paths = (*configured_metadata_paths(target), *metadata_paths)
     active_library_paths = configured_library_paths(target)
-    metadata_registry = create_metadata_registry(active_metadata_paths, environment=environment)
+    metadata_registry = create_metadata_registry(active_metadata_paths, module=module)
     worker_count = _worker_count(threads)
     started = time.monotonic()
     units = _discover_analysis_units(target)
@@ -160,7 +160,7 @@ def _run_check(
         worker_count,
         package_index_catalog,
         active_metadata_paths,
-        environment,
+        module,
     )
     executor_context = executor if executor is not None else nullcontext(None)
     with executor_context as executor:
@@ -502,10 +502,10 @@ def _analyze_source_document(
 def _initialize_unit_worker(
     package_index_catalog: PackageIndexCatalog,
     metadata_paths: tuple[str, ...],
-    environment: str | None = None,
+    module: str | None = None,
 ) -> None:
     global _worker_document_cache, _worker_package_index_catalog, _worker_resolver
-    metadata_registry = create_metadata_registry(metadata_paths, environment=environment)
+    metadata_registry = create_metadata_registry(metadata_paths, module=module)
     parser = Parser()
     extractor = FactExtractor(parser, metadata_registry=metadata_registry)
     _worker_document_cache = _DocumentCache(parser=parser, extractor=extractor)
@@ -540,7 +540,7 @@ def _create_unit_executor(
     worker_count: int,
     package_index_catalog: PackageIndexCatalog,
     metadata_paths: Sequence[Path | str],
-    environment: str | None = None,
+    module: str | None = None,
 ) -> ProcessPoolExecutor | None:
     if worker_count <= 1:
         return None
@@ -551,7 +551,7 @@ def _create_unit_executor(
             initargs=(
                 package_index_catalog,
                 tuple(str(path) for path in metadata_paths),
-                environment,
+                module,
             ),
         )
     except NotImplementedError:

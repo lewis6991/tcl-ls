@@ -31,7 +31,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             reporter=reporter,
             threads=args.threads,
             metadata_paths=args.metadata_paths,
-            environment=args.environment,
+            module=args.module,
         )
     except KeyboardInterrupt:
         reporter.abort()
@@ -53,9 +53,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         description='Analyze Tcl sources under a file or directory and print diagnostics.',
     )
     parser.add_argument('path', help='Tcl source file or project directory to analyze')
-    parser.add_argument(
-        '--environment', help='Use this metadata module as the tool environment for the check.'
-    )
+    parser.add_argument('--module', help='Select this metadata module for the check.')
     parser.add_argument(
         '--color',
         choices=('auto', 'always', 'never'),

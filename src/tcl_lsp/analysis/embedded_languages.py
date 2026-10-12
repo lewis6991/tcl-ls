@@ -198,12 +198,14 @@ def match_embedded_language_entries(
     command: Command,
     *,
     current_namespace: str,
+    imported_names: tuple[str, ...] = (),
     metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
 ) -> tuple[EmbeddedLanguageEntry, ...] | None:
     matched = _match_metadata_command(
         command,
         _context_entry_command_index(metadata_registry),
         current_namespace=current_namespace,
+        imported_names=imported_names,
     )
     if matched is None:
         return ()
@@ -273,13 +275,15 @@ def _match_metadata_command(
     commands_by_name: dict[str, tuple[MetadataCommand, ...]],
     *,
     current_namespace: str = '::',
+    imported_names: tuple[str, ...] = (),
 ) -> MatchedEmbeddedCommand | None:
     if not command.words:
         return None
     root_text = word_static_text(command.words[0])
     if root_text is None:
         return None
-    for root_name in command_lookup_names(root_text, current_namespace):
+    lookup_names = command_lookup_names(root_text, current_namespace)
+    for root_name in dict.fromkeys((*lookup_names[:-1], *imported_names, lookup_names[-1])):
         static_prefix_parts: list[str] = []
         matched: MatchedEmbeddedCommand | None = None
         for index, word in enumerate(command.words):

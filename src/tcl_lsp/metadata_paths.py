@@ -24,11 +24,11 @@ def bundled_metadata_dir() -> Path:
 @dataclass(frozen=True, slots=True)
 class MetadataRegistry:
     extra_metadata_paths: tuple[Path, ...] = ()
-    environments: tuple[str, ...] = ()
+    modules: tuple[str, ...] = ()
     revision: MetadataRevision = ()
 
-    def with_environments(self, environments: tuple[str, ...]) -> MetadataRegistry:
-        return replace(self, environments=environments)
+    def with_modules(self, modules: tuple[str, ...]) -> MetadataRegistry:
+        return replace(self, modules=modules)
 
     def metadata_paths(self) -> tuple[Path, ...]:
         return (bundled_metadata_dir(), *self.extra_metadata_paths)
@@ -59,7 +59,7 @@ DEFAULT_METADATA_REGISTRY = MetadataRegistry()
 
 
 def create_metadata_registry(
-    paths: Iterable[Path | str] = (), *, environment: str | None = None
+    paths: Iterable[Path | str] = (), *, module: str | None = None
 ) -> MetadataRegistry:
     normalized = _normalize_metadata_paths(paths)
     files = dict.fromkeys(
@@ -75,7 +75,7 @@ def create_metadata_registry(
     return MetadataRegistry(
         extra_metadata_paths=normalized,
         revision=tuple(revision),
-        environments=(environment,) if environment and environment != 'Tcl' else (),
+        modules=(module,) if module and module != 'Tcl' else (),
     )
 
 

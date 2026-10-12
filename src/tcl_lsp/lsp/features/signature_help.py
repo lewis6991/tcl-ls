@@ -6,13 +6,13 @@ from dataclasses import dataclass
 from lsprotocol import types
 
 from tcl_lsp.analysis.builtins import BuiltinOverload, builtin_commands_by_package
-from tcl_lsp.analysis.environments import registry_at_offset
 from tcl_lsp.analysis.model import (
     CommandArity,
     CommandCall,
     ProcDecl,
     ResolutionResult,
 )
+from tcl_lsp.analysis.modules import registry_at_offset
 from tcl_lsp.lsp.features.cursor_context import cursor_context
 from tcl_lsp.lsp.state import ManagedDocument
 from tcl_lsp.metadata_paths import MetadataRegistry
@@ -49,7 +49,7 @@ def signature_help(
         return None
 
     metadata_registry = registry_at_offset(
-        metadata_registry, document.facts.environment_scopes, command_call.name_span.start.offset
+        metadata_registry, document.facts.module_scopes, command_call.name_span.start.offset
     )
 
     resolution = _resolution_for_call(document, command_call)

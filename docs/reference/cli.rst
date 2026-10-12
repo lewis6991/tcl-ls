@@ -28,9 +28,9 @@ automatically; see :doc:`../user-guide/configuration`.
 ``--fail-on-diagnostics``
    Exit with status 1 if any enabled diagnostic is reported, at any severity.
 
-``--environment NAME``
-   Select an initial tool environment. Source directives and project rules
-   can add environments within a file; see :ref:`tool-environments`.
+``--module NAME``
+   Select an initial metadata module. Source directives and project rules
+   can add modules within a file; see :ref:`module-selection`.
 
 ``-j, --threads N``
    Use ``N`` worker processes. Default: 8. ``N`` must be at least 1.
@@ -74,9 +74,8 @@ follow :doc:`../meta`.
    By default, the inventory also includes Tcl commands whose introspected
    shape differs from the plain interpreter.
 
-``--environment NAME``
-   Write a tool module declared with ``-environment``. Default: ``Tcl``, which
-   writes ordinary Tcl module metadata.
+``--module NAME``
+   Write declarations inside ``meta module NAME {body}``. Default: ``Tcl``.
 
 ``--include-commands LIST``
    Add command names from a Tcl list to the discovered inventory. Each name

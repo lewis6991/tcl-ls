@@ -11,7 +11,7 @@ from tcl_lsp.analysis.metadata_commands import (
     MetadataOption,
     discard_overridden_command_trees,
     load_metadata_commands,
-    metadata_environment_names,
+    metadata_module_names,
     metadata_modules,
 )
 from tcl_lsp.analysis.metadata_view import metadata_view
@@ -21,7 +21,6 @@ from tcl_lsp.cache import metadata_lru_cache
 from tcl_lsp.common import Span, lsp_location
 from tcl_lsp.metadata_paths import DEFAULT_METADATA_REGISTRY, MetadataRegistry, MetadataRevision
 
-_CORE_PACKAGE = 'Tcl'
 _PACKAGE_ALIASES = {
     # Some bundled tcllib metadata is shipped for specific subpackages even when
     # callers commonly `package require` the umbrella package.
@@ -62,69 +61,48 @@ def builtin_commands(
 
 @metadata_lru_cache(maxsize=128)
 def _builtin_commands(metadata_registry: MetadataRegistry) -> dict[str, BuiltinCommand]:
-    commands = dict(_builtin_commands_for_package(_CORE_PACKAGE, metadata_registry))
-    overrides = _environment_commands(metadata_registry)
-    discard_overridden_command_trees(commands, overrides)
-    commands.update(overrides)
-    return commands
-
-
-@metadata_lru_cache(maxsize=128)
-def _environment_commands(metadata_registry: MetadataRegistry) -> dict[str, BuiltinCommand]:
     return {
         name: _builtin_commands_for_package(command.module_name, metadata_registry)[name]
-        for name, command in metadata_view(metadata_registry).environment_commands.items()
+        for name, command in metadata_view(metadata_registry).module_commands.items()
         if command.module_name is not None
     }
 
 
-def core_annotated_metadata_commands(
-    *,
-    metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
-) -> dict[str, MetadataCommand]:
-    return _core_annotated_metadata_commands(metadata_registry)
+@metadata_lru_cache(maxsize=128)
+def registry_for_packages(
+    metadata_registry: MetadataRegistry, required_packages: frozenset[str]
+) -> MetadataRegistry:
+    """Activate known package modules below explicitly selected modules."""
+    available = metadata_module_names(metadata_registry)
+    packages = tuple(
+        dict.fromkeys(canonical_builtin_package_name(name) for name in sorted(required_packages))
+    )
+    modules = (
+        tuple(
+            name for name in packages if name in available and name not in metadata_registry.modules
+        )
+        + metadata_registry.modules
+    )
+    return metadata_registry.with_modules(modules)
 
 
 @metadata_lru_cache(maxsize=128)
-def _core_annotated_metadata_commands(
+def _active_annotated_metadata_commands(
     metadata_registry: MetadataRegistry,
 ) -> dict[str, MetadataCommand]:
-    commands = dict(_annotated_metadata_commands_for_package(_CORE_PACKAGE, metadata_registry))
-    overrides = _environment_commands(metadata_registry)
-    discard_overridden_command_trees(commands, overrides)
-    for environment in metadata_registry.environments:
-        commands.update(
+    commands = _builtin_commands(metadata_registry)
+    annotated: dict[str, MetadataCommand] = {}
+    for package in dict.fromkeys(command.package for command in commands.values()):
+        annotated.update(
             {
                 name: command
                 for name, command in _annotated_metadata_commands_for_package(
-                    environment, metadata_registry
+                    package, metadata_registry
                 ).items()
-                if name in overrides and overrides[name].package == environment
+                if name in commands and commands[name].package == package
             }
         )
-    return commands
-
-
-def annotated_metadata_commands_by_package(
-    *,
-    metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
-) -> dict[str, dict[str, MetadataCommand]]:
-    return _annotated_metadata_commands_by_package(metadata_registry)
-
-
-@metadata_lru_cache(maxsize=128)
-def _annotated_metadata_commands_by_package(
-    metadata_registry: MetadataRegistry,
-) -> dict[str, dict[str, MetadataCommand]]:
-    return {
-        package_name: (
-            _core_annotated_metadata_commands(metadata_registry)
-            if package_name == _CORE_PACKAGE
-            else _annotated_metadata_commands_for_package(package_name, metadata_registry)
-        )
-        for package_name in _builtin_metadata_path_layers_by_package(metadata_registry)
-        if package_name not in metadata_environment_names(metadata_registry)
-    }
+    return annotated
 
 
 @metadata_lru_cache(maxsize=128)
@@ -158,28 +136,10 @@ def _annotated_metadata_commands_for_packages(
     required_packages: frozenset[str],
     metadata_registry: MetadataRegistry,
 ) -> dict[str, tuple[MetadataCommand, ...]]:
-    matches_by_name: dict[str, list[MetadataCommand]] = {}
-    seen_packages: set[str] = set()
-
-    def add_package(package_name: str) -> None:
-        if package_name in seen_packages or package_name in metadata_environment_names(
-            metadata_registry
-        ):
-            return
-        seen_packages.add(package_name)
-        commands = (
-            _core_annotated_metadata_commands(metadata_registry)
-            if package_name == _CORE_PACKAGE
-            else _annotated_metadata_commands_for_package(package_name, metadata_registry)
-        )
-        for name, metadata_command in commands.items():
-            matches_by_name.setdefault(name, []).append(metadata_command)
-
-    add_package(_CORE_PACKAGE)
-    for package_name in sorted(required_packages):
-        add_package(canonical_builtin_package_name(package_name))
-
-    return {name: tuple(matches) for name, matches in matches_by_name.items()}
+    registry = registry_for_packages(metadata_registry, required_packages)
+    return {
+        name: (command,) for name, command in _active_annotated_metadata_commands(registry).items()
+    }
 
 
 def builtin_commands_by_package(
@@ -194,13 +154,8 @@ def _builtin_commands_by_package(
     metadata_registry: MetadataRegistry,
 ) -> dict[str, dict[str, BuiltinCommand]]:
     return {
-        package_name: (
-            _builtin_commands(metadata_registry)
-            if package_name == _CORE_PACKAGE
-            else _builtin_commands_for_package(package_name, metadata_registry)
-        )
+        package_name: _builtin_commands_for_package(package_name, metadata_registry)
         for package_name in _builtin_metadata_path_layers_by_package(metadata_registry)
-        if package_name not in metadata_environment_names(metadata_registry)
     }
 
 
@@ -252,45 +207,10 @@ def builtin_commands_for_packages(
     *,
     metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
 ) -> tuple[BuiltinCommand, ...]:
-    matches: list[BuiltinCommand] = []
-    seen_packages: set[str] = set()
-    core_command = builtin_command(name, metadata_registry=metadata_registry)
-    if core_command is not None:
-        seen_packages.add(core_command.package)
-        matches.append(core_command)
-
-    for package_name in sorted(required_packages):
-        if package_name in metadata_environment_names(metadata_registry):
-            continue
-        package_commands = _builtin_commands_for_package(
-            _canonical_package_name(package_name),
-            metadata_registry,
-        )
-        if not package_commands:
-            continue
-        package_command = package_commands.get(name)
-        if package_command is None or package_command.package in seen_packages:
-            continue
-        seen_packages.add(package_command.package)
-        matches.append(package_command)
-
-    return tuple(matches)
-
-
-def builtin_commands_any(
-    name: str,
-    *,
-    metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
-) -> tuple[BuiltinCommand, ...]:
-    matches: list[BuiltinCommand] = []
-    for package_commands in builtin_commands_by_package(
-        metadata_registry=metadata_registry
-    ).values():
-        command = package_commands.get(name)
-        if command is None:
-            continue
-        matches.append(command)
-    return tuple(matches)
+    command = builtin_command(
+        name, metadata_registry=registry_for_packages(metadata_registry, required_packages)
+    )
+    return (command,) if command is not None else ()
 
 
 def is_builtin_package(
@@ -298,11 +218,7 @@ def is_builtin_package(
     *,
     metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
 ) -> bool:
-    return package_name not in metadata_environment_names(
-        metadata_registry
-    ) and canonical_builtin_package_name(package_name) in _builtin_metadata_path_layers_by_package(
-        metadata_registry
-    )
+    return canonical_builtin_package_name(package_name) in metadata_module_names(metadata_registry)
 
 
 def canonical_builtin_package_name(package_name: str) -> str:
@@ -312,26 +228,23 @@ def canonical_builtin_package_name(package_name: str) -> str:
 def builtin_definition_targets(
     *,
     metadata_registry: MetadataRegistry = DEFAULT_METADATA_REGISTRY,
-    all_environments: bool = False,
+    all_modules: bool = False,
 ) -> tuple[DefinitionTarget, ...]:
-    return _builtin_definition_targets(metadata_registry, all_environments)
+    return _builtin_definition_targets(metadata_registry, all_modules)
 
 
 @metadata_lru_cache(maxsize=1)
 def _builtin_definition_targets(
     metadata_registry: MetadataRegistry,
-    all_environments: bool,
+    all_modules: bool,
 ) -> tuple[DefinitionTarget, ...]:
     definitions: list[DefinitionTarget] = []
     packages = (
-        {
-            name: _builtin_commands_for_package(name, metadata_registry)
-            for name in _builtin_metadata_path_layers_by_package(metadata_registry)
-        }
-        if all_environments
-        else builtin_commands_by_package(metadata_registry=metadata_registry)
+        builtin_commands_by_package(metadata_registry=metadata_registry).values()
+        if all_modules
+        else (builtin_commands(metadata_registry=metadata_registry),)
     )
-    for package_commands in packages.values():
+    for package_commands in packages:
         for builtin in package_commands.values():
             for overload in builtin.overloads:
                 definitions.append(

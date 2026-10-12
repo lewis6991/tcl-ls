@@ -14,9 +14,8 @@ Modules And Includes
 
    source path
    meta module name {body}
-   meta module name -environment {body}
 
-``meta module`` groups declarations for Tcl, a package, or a tool environment.
+``meta module`` groups declarations under a name.
 The body must be a braced command block. A file can contain several modules.
 Nested module blocks select their own module and restore the outer module
 when they end.
@@ -32,16 +31,15 @@ between modules. Missing files, dynamic paths, and include cycles are errors.
        source common.meta.tcl
        meta command project_command {value}
    }
-   meta module JasperGold -environment {
+   meta module JasperGold {
        source jasper.meta.tcl
        meta override clock {args}
    }
 
-The ``Tcl`` module supplies commands available by default. Package modules
-describe package commands. A module with ``-environment`` contributes commands
-only where that environment is selected; neither ``package require`` nor a
-qualified command name activates it. See :ref:`tool-environments` for
-environment selection.
+The ``Tcl`` and built-in ``TclOO`` modules are active by default. Other modules
+become active through ``package require name``, a source directive, or a project
+rule. A qualified command name does not activate a module. See
+:ref:`module-selection` for selection and scope rules.
 
 Declarations outside a module are file-scoped. ``foo.meta.tcl`` is associated
 with ``foo.tcl`` or ``foo.tm`` when that match is unambiguous. If neither
@@ -72,7 +70,7 @@ later blocks replace earlier command trees.
   replaces the language's ``extends tcl`` policy.
 
 These rules govern metadata for the same module. Replacing a command from Tcl
-or a lower active environment is a separate operation: use ``meta override``
+or a lower active module is a separate operation: use ``meta override``
 as described below.
 
 Aliases And Overrides
@@ -93,13 +91,13 @@ missing targets and cycles are errors. The declaration describes an alias or
 renamed command provided by the program; it leaves the target metadata in place.
 
 ``meta override`` accepts the same shapes, annotations, and variants as
-``meta command``. In an environment, it replaces a command tree from Tcl or a
-lower environment. Ordinary environment commands only add names that are not
+``meta command``. In a module, it replaces a command tree from Tcl or a
+lower module. Ordinary commands only add names that are not
 already present.
 
 .. code-block:: tcl
 
-   meta module JasperGold -environment {
+   meta module JasperGold {
        meta override clock {args}
        meta alias tcl_clock clock -module Tcl
    }
@@ -246,8 +244,8 @@ it: an :ref:`enter <metadata-enter>` annotation or a
 Languages are closed by default: only their declared commands are valid.
 Add ``extends tcl`` once in the language body to allow ordinary Tcl commands
 after its explicit entries are checked. ``tcl`` is the only supported target.
-In an environment module, use ``override`` instead of ``command`` to replace
-an embedded-language command from a lower environment.
+In a module module, use ``override`` instead of ``command`` to replace
+an embedded-language command from a lower module.
 
 This example models both a braced class definition and an inline method
 declaration:
