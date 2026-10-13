@@ -223,7 +223,7 @@ def test_analysis_applies_unqualified_sibling_metadata_effects_to_local_procedur
         encoding='utf-8',
     )
     (tmp_path / 'main.meta.tcl').write_text(
-        'meta command wrapper {pkg} {\n    package select 1\n}\n',
+        'meta command wrapper {pkg} {\n    package {select 1}\n}\n',
         encoding='utf-8',
     )
 

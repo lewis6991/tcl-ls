@@ -68,6 +68,95 @@ def test_analysis_reports_no_diagnostics_for_metadata_files(parser: Parser) -> N
     assert diagnostics_by_uri == {}
 
 
+@pytest.mark.parametrize(
+    ('params', 'codes'),
+    [
+        ('{select 2}', ()),
+        ('{select {after-options 2}}', ()),
+        ('{select 2 plugin {header.tcl ::project::parameters}}', ()),
+        ('{plugin {header.tcl ::project::parameters} select 2}', ()),
+        ('{literal {} plugin {header.tcl parse}}', ('invalid-arguments',)),
+        ('{plugin {header.tcl parse}}', ('invalid-arguments',)),
+        ('{select 2 plugin {header.tcl}}', ('invalid-arguments',)),
+        ('{select 2 plugin {}}', ('invalid-arguments',)),
+        ('{select 2 plugin {a b c}}', ('invalid-arguments',)),
+        ('{format shared_header select 2}', ('invalid-arguments',)),
+        ('{literal {target {mode auto} args}}', ()),
+        ('{}', ()),
+        ('-', ('invalid-arguments',)),
+        ('select 2 format shared_header', ('wrong-argument-count',)),
+        ('{select 2 subst variables}', ('invalid-arguments',)),
+        ('select 2 subst variables', ('wrong-argument-count',)),
+        ('select 2 format unknown', ('wrong-argument-count',)),
+        ('select 2 subst commands', ('wrong-argument-count',)),
+        ('select 2 format tcl format tepam', ('wrong-argument-count',)),
+        ('{select 2 select 3}', ('invalid-arguments',)),
+        ('{select 2 format}', ('invalid-arguments',)),
+        ('{format tepam}', ('invalid-arguments',)),
+        ('{select 2 unknown value}', ('invalid-arguments',)),
+    ],
+)
+def test_metadata_editor_checks_grouped_parameter_settings(
+    parser: Parser, params: str, codes: tuple[str, ...]
+) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///custom.meta.tcl',
+        'meta command declare {name header body} {\n'
+        f'    procedure {{name {{select 1}}; params {params}; body {{select 3}}}}\n'
+        '}\n',
+    )
+
+    assert tuple(d.code for d in snapshot.analysis.diagnostics) == codes
+
+
+@pytest.mark.parametrize(
+    ('field', 'settings', 'codes'),
+    [
+        ('name', 'select 1', ('wrong-argument-count',)),
+        ('name', 'literal declared', ('wrong-argument-count',)),
+        ('name', '-', ('invalid-arguments',)),
+        ('body', 'select 3', ('wrong-argument-count',)),
+        ('package', 'literal TclOO', ('wrong-argument-count',)),
+        ('package', 'select 1', ('wrong-argument-count',)),
+        ('name', '{literal declared}', ()),
+        ('name', '{}', ()),
+        ('name', '{select 1 literal declared}', ('invalid-arguments',)),
+        ('name', '{select 1 select 2}', ('invalid-arguments',)),
+        ('name', '{select}', ('invalid-arguments',)),
+        ('name', '{unknown value}', ('invalid-arguments',)),
+        ('body', '{literal script}', ('invalid-arguments',)),
+        ('body', '{}', ('invalid-arguments',)),
+        ('body', '{select {1..2}}', ('invalid-arguments',)),
+        ('package', '{literal TclOO}', ()),
+        ('package', '{select {after-options 1}}', ()),
+        ('package', '{}', ('invalid-arguments',)),
+        ('package', '{select 1 literal TclOO}', ('invalid-arguments',)),
+        ('package', '{select {list 1}}', ('invalid-arguments',)),
+    ],
+)
+def test_metadata_editor_checks_grouped_source_descriptions(
+    parser: Parser, field: str, settings: str, codes: tuple[str, ...]
+) -> None:
+    if field == 'package':
+        annotation = f'package {settings}'
+    else:
+        fields = {'name': '{select 1}', 'params': '{}', 'body': '{select 3}'}
+        fields[field] = settings
+        annotation = 'procedure {\n'
+        for key, value in fields.items():
+            annotation += f'    {key} {value}\n'
+        annotation += '}'
+
+    snapshot = _analyze(
+        parser,
+        'file:///custom.meta.tcl',
+        'meta command declare {name header body} {\n' + annotation + '\n}\n',
+    )
+
+    assert tuple(d.code for d in snapshot.analysis.diagnostics) == codes
+
+
 def test_analysis_resolves_tcllib_metadata_from_umbrella_packages(parser: Parser) -> None:
     snapshot = _analyze(
         parser,
@@ -757,8 +846,8 @@ def test_analysis_treats_meta_command_as_builtin() -> None:
         command_call for command_call in facts.command_calls if command_call.name == 'meta command'
     )
     hover = hover_by_offset[meta_command_call.name_span.start.offset]
-    assert hover.startswith('builtin command meta command\n\n`meta command {name shape}`')
-    assert '`meta command {name shape body}`' in hover
-    assert '`meta command {name variants body}`' in hover
-    assert 'command or command prefix' in hover.replace('\n', ' ').lower()
+    assert hover.startswith('builtin command meta command\n\n`meta command name {shape}`')
+    assert '`meta command name {shape} {body}`' in hover
+    assert '`meta command name variants {body}`' in hover
+    assert 'Use nested `command` declarations for subcommands.' in hover
     assert analysis.diagnostics == ()

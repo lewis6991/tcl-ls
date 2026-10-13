@@ -5,6 +5,41 @@ Metadata uses Tcl syntax with a static declaration language. Names, paths,
 shapes, and annotation words must be static; metadata loading does not execute
 Tcl commands. For an authoring workflow, see :doc:`../meta`.
 
+Writing Conventions
+-------------------
+
+Use the same form for the same kind of declaration throughout a metadata file:
+
+* Declarations use positional names followed by braced lists or command blocks,
+  such as ``meta command name {shape} {clauses}``.
+* Annotations with fixed positional arguments stay short, such as ``bind 3 set``,
+  ``ref 1``, and ``enter tcl body 2``. Scalar fields also use one value, such as
+  ``language tcloo-method``.
+* Source descriptions use one braced list of key/value pairs. The procedure
+  fields ``name``, ``params``, and ``body``, and the ``package`` annotation,
+  share ``select`` and ``literal`` where each field permits them.
+
+For example::
+
+   procedure {
+       name {select 1}
+       params {select 2}
+       body {select 3}
+   }
+   package {literal TclOO}
+
+The outer ``procedure`` braces contain metadata commands. The field braces
+contain data lists; they are not nested command blocks. Settings may span
+multiple lines and appear in any order. Unknown keys, duplicate keys, and
+missing values are errors. Group a value that contains several words, as in
+``name {select {after-options 1}}`` or ``params {literal {left right}}``.
+
+Source descriptions require one braced key/value list, in both metadata files
+and Tcl plugin effects.
+
+Hover over an annotation or procedure field name in the editor to see its syntax,
+an example, and the settings or positional arguments it accepts.
+
 .. _metadata-composition:
 
 Modules And Includes
@@ -244,7 +279,7 @@ it: an :ref:`enter <metadata-enter>` annotation or a
 Languages are closed by default: only their declared commands are valid.
 Add ``extends tcl`` once in the language body to allow ordinary Tcl commands
 after its explicit entries are checked. ``tcl`` is the only supported target.
-In a module module, use ``override`` instead of ``command`` to replace
+In a module, use ``override`` instead of ``command`` to replace
 an embedded-language command from a lower module.
 
 This example models both a braced class definition and an inline method
@@ -264,9 +299,9 @@ declaration:
    meta language tcloo-definition {
        command method {name args body} {
            procedure {
-               name select 1
-               params select 2
-               body select 3
+               name {select 1}
+               params {select 2}
+               body {select 3}
                language tcloo-method
            }
        }
@@ -347,9 +382,9 @@ Tcl list. Analysis may ignore selections that depend on an unknown argument
 expansion.
 
 Use selectors directly in ``bind``, ``ref``, ``source``, and ``enter``. In
-fields that also accept a literal value, such as ``package`` and ``procedure``,
-introduce the selector with ``select``. Each annotation can impose further
-restrictions.
+source descriptions, introduce the selector with the ``select`` key, as in
+``package {select 1}`` and ``body {select 3}``. Each annotation can impose
+further restrictions.
 
 Annotations
 -----------
@@ -478,21 +513,22 @@ Plugin source effects also support list selectors and use a different
 
 .. code-block:: tcl
 
-   package literal packageName
-   package select selector
+   package {literal packageName}
+   package {select selector}
 
 Records a package-name dependency. ``literal`` supplies a fixed name;
 ``select`` reads one argument. Package selectors must select exactly one
-non-list argument.
+non-list argument. The settings must contain exactly one of ``select`` or
+``literal``. Empty settings are not allowed.
 
 .. code-block:: tcl
 
    meta command package::ifneeded-wrapper {name version script} {
-       package select 1
+       package {select 1}
        enter tcl body 3
    }
    meta command use-tcloo {args} {
-       package literal TclOO
+       package {literal TclOO}
    }
 
 .. _metadata-procedures:
@@ -503,9 +539,9 @@ non-list argument.
 .. code-block:: tcl
 
    procedure {
-       name select selector
-       params select selector
-       body select selector
+       name {select selector}
+       params {select selector}
+       body {select selector}
        language body-language
    }
 
@@ -521,71 +557,72 @@ may appear only once, and ``language`` requires ``body``.
      - Accepted forms
      - Meaning
    * - ``name``
-     - ``select selector``, ``literal name``, ``-``
-     - Declared name; ``-`` uses the enclosing command name tail
+     - ``{select selector}``, ``{literal name}``, ``{}``
+     - Declared name; ``{}`` uses the enclosing command name tail
    * - ``params``
-     - ``select selector``, ``select selector format formatName``,
-       ``literal parameterList``, ``-``
-     - Parameter definitions; ``-`` means no parameters
+     - ``{select selector}``,
+       ``{literal parameterList}``, ``{}``
+     - Parameter definitions; ``{}`` means no parameters
    * - ``body``
-     - ``select selector``
+     - ``{select selector}``
      - Procedure body
    * - ``language``
      - Language name
      - Embedded language for the body
 
-Each selector must identify exactly one non-list argument. Parameter lists
-use Tcl procedure syntax: names, ``{name default}`` entries, and optional
-trailing ``args``. ``params literal`` uses this syntax directly, not command
-shape syntax.
+``name``, ``params``, and ``body`` each take one Tcl list of key/value pairs.
+Non-empty settings contain exactly one source key: ``select`` or ``literal``.
+``body`` permits only ``select``. Empty ``name`` settings use the enclosing
+command name tail; empty ``params`` settings declare no parameters. Omit
+``body`` when the declaration has no body.
 
-``params select ... format`` supports:
+Each selector must identify exactly one non-list argument. Group a selector
+containing multiple words, as in ``params {select {after-options 2}}``.
+Literal parameter lists use Tcl procedure syntax: names, ``{name default}``
+entries, and optional trailing ``args``. For example,
+``params {literal {target {mode auto} args}}`` declares fixed parameters
+directly, rather than reading them from an argument.
 
-* ``tcl``: ordinary Tcl parameter lists (the default).
-* ``tepam``: a Tepam attribute list containing ``-args``.
-* ``tepam-args``: the argument definitions from ``-args``, or a list of names.
+Selected parameter words follow normal Tcl substitution rules. A known literal
+variable value, as in ``proc prove $common_args { ... }``, supplies the parameter
+list. Braced words keep variable references literal.
 
-The Tepam formats bind body variables and preserve each name's source location.
-They remove a leading ``-`` from option names and read static lists without
-evaluating defaults. They leave call arity unknown because body variables do
-not describe Tepam's option-based call syntax.
+Use :ref:`Tcl plugins <metadata-plugins>` for custom parameter declarations.
+Add a parser to the selected parameter input with
+``params {select 2 plugin {header.tcl ::project::metadata::parameters}}``.
+The procedure metadata still selects the name and body. The parser interprets
+only the parameter input and returns source-backed body parameters.
+The bundled Tepam metadata uses this interface; the language server does not
+contain a Tepam parameter parser.
 
 The :ref:`embedded-language example <metadata-languages>` shows a method
 declaration. These forms cover constructors, destructors, declarations without
-bodies, and Tepam procedures:
+bodies:
 
 .. code-block:: tcl
 
    command constructor {args body} {
        procedure {
-           name -
-           params select 1
-           body select 2
+           name {}
+           params {select 1}
+           body {select 2}
            language tcloo-method
        }
    }
    command destructor {body} {
        procedure {
-           name -
-           params -
-           body select 1
+           name {}
+           params {}
+           body {select 1}
            language tcloo-method
        }
    }
    command declare {name params} {
        procedure {
-           name select 1
-           params select 2
+           name {select 1}
+           params {select 2}
        }
    }
-   command tepam::procedure {name attributes body} {
-       procedure {
-           name select 1
-           params select 2 format tepam
-           body select 3
-       }
-   }
-
 .. _metadata-plugins:
 
 Tcl Plugins
@@ -637,6 +674,91 @@ contain their text; dynamic words contain an empty string. Check
 The dictionary also carries opaque ``scope-id`` and ``procedure-symbol-id``
 values. The procedure ID is empty outside a procedure.
 
+Source Queries
+~~~~~~~~~~~~~~
+
+Use ``# tcl-ls: module TclLSPlugin`` in the plugin script for editor hover help.
+The safe interpreter provides these commands. Queries read source data on demand;
+they do not run project Tcl or evaluate expressions.
+
+* ``::tcl_lsp::word index``: resolve a literal source word or a whole-variable
+  word with a known literal value. Indices start at 1, including the command name.
+* ``::tcl_lsp::variable name``: read a known literal value in the caller's scope.
+  Unknown, changed, or ambiguous values return an empty string.
+* ``::tcl_lsp::source_list_items value``: split a source item into a Tcl list of
+  source-item dictionaries. Invalid Tcl lists raise a Tcl error.
+* ``::tcl_lsp::slice value start end``: take a substring with its source location.
+  Indices start at 0; the end is exclusive. ``end`` means the end of the string.
+
+Each known value is a read-only source item: a dictionary with ``id``, ``text``,
+and ``grouped``.
+``id`` is an opaque source token valid only in this invocation. ``text`` is the
+raw source content, without outer list braces or quotes. ``grouped`` is 1 for an
+item enclosed in list braces or quotes, otherwise 0. Escapes remain source text
+so locations stay exact. These items describe source spelling; they do not hold
+the decoded values returned by ordinary Tcl list operations. Words with decoded
+escapes that need a source map are unknown.
+
+Treat source-item dictionaries as read-only. The server uses the ID to identify
+the stored source; editing ``text`` or ``grouped`` does not update that source.
+Use ``source_list_items`` to derive child items and ``slice`` to derive a
+substring. Changing a dictionary or inventing an ID does not create a new source
+location.
+
+Use standard Tcl commands such as ``regexp`` and ``string`` to inspect text.
+A plugin chooses whether to query a referenced variable. For example, a wrapper
+can splice known variable fragments once, while a base parser keeps them literal.
+Neither plugin may execute source command substitutions through this interface.
+
+Parameter Parsers
+~~~~~~~~~~~~~~~~~
+
+For a custom parameter list, keep the procedure structure in metadata:
+
+.. code-block:: tcl
+
+   meta command project::declare {name options body} {
+       procedure {
+           name {select 1}
+           params {select 2 plugin {options.tcl ::project::metadata::parameters}}
+           body {select 3}
+       }
+   }
+
+The ``plugin`` setting requires ``select``. Its path resolves from the metadata
+file and must exist when metadata is loaded. The hook is called as
+``procName value info``. ``value`` is the source dictionary for the selected
+argument, resolved using known caller values. Unknown inputs skip the hook.
+``info`` and the source queries use the same contracts as command plugins.
+
+For an input such as ``{-target -mode}``, ``options.tcl`` can contain:
+
+.. code-block:: tcl
+
+   # tcl-ls: module TclLSPlugin
+   namespace eval ::project::metadata {
+       proc parameters {value info} {
+           set parameters {}
+           foreach item [::tcl_lsp::source_list_items $value] {
+               set name [::tcl_lsp::slice $item 1 end]
+               lappend parameters [dict get $name id]
+           }
+           return [list items $parameters]
+       }
+   }
+
+Return one key/value list, ``items {sourceId ...}``. Each ID must refer to a
+value supplied by source queries in this invocation. ``items {}`` declares no
+parameters. An empty result, ``{}``, means the parser could not resolve the
+input, so analysis does not invent a procedure declaration. Malformed results
+and Tcl errors are plugin errors. Parsers can catch unsupported input and
+return ``{}``.
+
+The returned IDs preserve definition and rename locations. They bind body
+variables but leave call argument counts unknown, since these names do not
+describe a custom command's call syntax. Standard Tcl parameter lists should
+use ``params {select selector}`` to retain argument-count checks.
+
 Plugin Effects
 ~~~~~~~~~~~~~~
 
@@ -647,8 +769,11 @@ above. It may return ``bind``, ``ref``, ``enter``, ``package``, ``source``, and
 
 Plugin selectors are 1-based over the full ``words`` list: selector 1 is the
 command name. They do not support ``after-options``. Plugin ``bind`` effects
-require an explicit kind. Procedure parameter formats and field restrictions
-are the same as for declarative annotations.
+require an explicit kind. Procedure fields use the same grouped syntax as
+declarative annotations. For custom parameter syntaxes, a plugin can return
+``params {items {sourceId ...}}`` using the source queries above.
+The ``plugin`` parameter setting is available only in metadata declarations;
+effect results cannot register another hook.
 
 For plugin ``source`` effects, ``caller`` resolves paths from the calling
 file, while ``definition`` resolves them from the metadata file. List selectors
@@ -660,15 +785,15 @@ For a call shaped as ``declare name attributes body``, a plugin can return:
 
    return {
        {procedure {
-           name select 2
-           params select 3 format tepam
-           body select 4
+           name {select 2}
+           params {select 3}
+           body {select 4}
        }}
    }
 
 The optional plugin field ``_params-source select selector`` anchors literal
-parameters to one source word. Prefer ``params select`` with a parameter format
-when possible to preserve individual parameter locations.
+parameters to one source word. Use source-backed ``items`` to preserve individual
+parameter locations for custom declarations.
 
 Each call runs in a fresh safe Tcl interpreter. Plugins do not share state
 between calls and cannot perform unrestricted I/O or package loading.

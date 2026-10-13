@@ -24,10 +24,10 @@ def test_tcl_plugin_host_returns_procedure_effect(tmp_path: Path) -> None:
         'namespace eval ::test {}\n'
         'proc ::test::emit {words info} {\n'
         '    return [list [list procedure [format {\n'
-        '        name select 2\n'
-        '        params literal %s\n'
+        '        name {select 2}\n'
+        '        params {literal %s}\n'
         '        _params-source select 3\n'
-        '        body select 4\n'
+        '        body {select 4}\n'
         '        language sample\n'
         '    } [list {left right}]]]]\n'
         '}\n',
@@ -59,16 +59,19 @@ def test_tcl_plugin_host_returns_procedure_effect(tmp_path: Path) -> None:
 
 
 def test_tcl_plugin_host_returns_structured_procedure_effect(tmp_path: Path) -> None:
+    name = '{select 2}'
+    params = '{literal {left right}}'
+    body = '{select 4}'
     plugin = _plugin(
         tmp_path,
         'structured.tcl',
         'namespace eval ::test {}\n'
         'proc ::test::emit {words info} {\n'
         '    return [list [list procedure {\n'
-        '        name select 2\n'
-        '        params literal {left right}\n'
+        f'        name {name}\n'
+        f'        params {params}\n'
         '        _params-source select 3\n'
-        '        body select 4\n'
+        f'        body {body}\n'
         '        language sample\n'
         '    }]]\n'
         '}\n',
@@ -106,8 +109,8 @@ def test_tcl_plugin_host_returns_declaration_effect(tmp_path: Path) -> None:
         'namespace eval ::test {}\n'
         'proc ::test::emit {words info} {\n'
         '    return [list [list procedure [format {\n'
-        '        name select 2\n'
-        '        params literal %s\n'
+        '        name {select 2}\n'
+        '        params {literal %s}\n'
         '        _params-source select 3\n'
         '    } [list {left right}]]]]\n'
         '}\n',
@@ -139,6 +142,8 @@ def test_tcl_plugin_host_returns_declaration_effect(tmp_path: Path) -> None:
 
 
 def test_tcl_plugin_host_returns_dynamic_clause_effects(tmp_path: Path) -> None:
+    literal_package = '[list package [list literal TclOO]]'
+    selected_package = '[list package [list select 3]]'
     plugin = _plugin(
         tmp_path,
         'dynamic.tcl',
@@ -147,8 +152,8 @@ def test_tcl_plugin_host_returns_dynamic_clause_effects(tmp_path: Path) -> None:
         '    return [list \\\n'
         '        [list bind 2 set] \\\n'
         '        [list ref list 3] \\\n'
-        '        [list package literal TclOO] \\\n'
-        '        [list package select 3] \\\n'
+        f'        {literal_package} \\\n'
+        f'        {selected_package} \\\n'
         '        [list source 4 caller] \\\n'
         '        [list enter sample body 5 owner 2] \\\n'
         '    ]\n'
@@ -197,13 +202,49 @@ def test_tcl_plugin_host_rejects_static_declarations_in_effects(tmp_path: Path) 
         host.close()
 
 
-def test_tcl_plugin_host_rejects_after_options_selectors(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    'effect',
+    [
+        '[list package literal TclOO]',
+        '[list package select 2]',
+        '[list procedure {name select 2; params {}}]',
+        '[list procedure {name {select 2}; params select 3}]',
+        '[list procedure {name {select 2}; params select 3 format tepam}]',
+        '[list procedure {name {select 2}; params -}]',
+        '[list procedure {name {select 2}; params {}; body select 4}]',
+    ],
+)
+def test_tcl_plugin_host_rejects_ungrouped_source_descriptions(tmp_path: Path, effect: str) -> None:
+    plugin = _plugin(
+        tmp_path,
+        'ungrouped.tcl',
+        'namespace eval ::test {}\n'
+        f'proc ::test::emit {{words info}} {{\n    return [list {effect}]\n}}\n',
+    )
+    host = TclPluginHost()
+
+    try:
+        with pytest.raises(RuntimeError, match=r'braced key/value list|key/value pairs'):
+            host.call_plugin(plugin, words=('declare', 'demo', 'params', 'body'), info={})
+    finally:
+        host.close()
+
+
+@pytest.mark.parametrize(
+    'effect',
+    [
+        '[list package [list select [list after-options 2]]]',
+        '[list procedure {name {select {after-options 2}}; params {}}]',
+        '[list procedure {name {select 2}; params {}; body {select {after-options 3}}}]',
+    ],
+)
+def test_tcl_plugin_host_rejects_after_options_selectors(tmp_path: Path, effect: str) -> None:
     plugin = _plugin(
         tmp_path,
         'after_options.tcl',
         'namespace eval ::test {}\n'
         'proc ::test::emit {words info} {\n'
-        '    return [list [list package select after-options 2]]\n'
+        f'    return [list {effect}]\n'
         '}\n',
     )
     host = TclPluginHost()
@@ -259,10 +300,10 @@ def test_tcl_plugin_host_resets_state_between_calls(tmp_path: Path) -> None:
         '    variable ::test::count\n'
         '    incr count\n'
         '    return [list [list procedure [format {\n'
-        '        name select 2\n'
-        '        params literal %s\n'
+        '        name {select 2}\n'
+        '        params {literal %s}\n'
         '        _params-source select 3\n'
-        '        body select 4\n'
+        '        body {select 4}\n'
         '    } [list [list $count]]]]]\n'
         '}\n',
     )

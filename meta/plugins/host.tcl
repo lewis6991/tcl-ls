@@ -20,11 +20,11 @@ namespace eval ::tcl_lsp::plugin_host {
     variable interp_counter 0
 
     proc decode {line} {
-        return [binary decode base64 $line]
+        return [encoding convertfrom utf-8 [binary decode base64 $line]]
     }
 
     proc encode {text} {
-        return [binary encode base64 -maxlen 0 $text]
+        return [binary encode base64 -maxlen 0 [encoding convertto utf-8 $text]]
     }
 
     proc read_line {} {
@@ -44,15 +44,6 @@ namespace eval ::tcl_lsp::plugin_host {
 
     proc read_b64 {} {
         return [decode [read_line]]
-    }
-
-    proc read_list {} {
-        set count [read_int]
-        set values {}
-        for {set index 0} {$index < $count} {incr index} {
-            lappend values [read_b64]
-        }
-        return $values
     }
 
     proc read_dict {} {
@@ -86,10 +77,36 @@ namespace eval ::tcl_lsp::plugin_host {
             set auto_path {}
             catch {unset auto_index}
             array set auto_index {}
+            namespace eval ::tcl_lsp {}
+        }
+
+        foreach {name operation} {
+            word word
+            variable variable
+            source_list_items source-list-items
+            slice slice
+        } {
+            interp alias $safe_interp ::tcl_lsp::$name {} \
+                ::tcl_lsp::plugin_host::query $operation
         }
     }
 
-    proc with_plugin_interp {script_label script_source proc_name words info} {
+    proc query {operation args} {
+        puts stdout query
+        puts stdout [expr {1 + [llength $args]}]
+        foreach value [list $operation {*}$args] {
+            puts stdout [encode $value]
+        }
+        flush stdout
+        set status [read_line]
+        set payload [read_b64]
+        if {$status ne "ok"} {
+            error $payload
+        }
+        return $payload
+    }
+
+    proc with_plugin_interp {script_label script_source proc_name argument info} {
         variable interp_counter
 
         set safe_interp [format "::tcl_lsp::plugin_host::safe_%d" [incr interp_counter]]
@@ -100,7 +117,7 @@ namespace eval ::tcl_lsp::plugin_host {
             if {[llength [interp eval $safe_interp [list info procs $proc_name]]] == 0} {
                 error "Plugin proc `$proc_name` was not defined by `$script_label`."
             }
-            return [interp eval $safe_interp [list $proc_name $words $info]]
+            return [interp eval $safe_interp [list $proc_name $argument $info]]
         } finally {
             catch {interp delete $safe_interp}
         }
@@ -110,10 +127,10 @@ namespace eval ::tcl_lsp::plugin_host {
         set script_label [read_b64]
         set script_source [read_b64]
         set proc_name [read_b64]
-        set words [read_list]
+        set argument [read_b64]
         set info [read_dict]
 
-        return [with_plugin_interp $script_label $script_source $proc_name $words $info]
+        return [with_plugin_interp $script_label $script_source $proc_name $argument $info]
     }
 
     proc run {} {

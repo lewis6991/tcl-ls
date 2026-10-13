@@ -13,6 +13,7 @@ from tcl_lsp.lsp import LanguageServer
 from tcl_lsp.lsp import workspace_rebuild as lsp_workspace_rebuild
 from tcl_lsp.parser import Parser, ParseResult
 from tests.lsp.helpers import (
+    MAIN_URI,
     as_dict,
     change_server_document,
     completion_items,
@@ -959,13 +960,232 @@ def test_language_server_hover_formats_meta_builtin_command(server: LanguageServ
 
     hover_value = hover_markdown_value(server, line=0, character=1)
     assert hover_value.startswith('```tcl\nmeta {subcommand args}\n```\n\n')
-    assert 'Top-level declarations:' in hover_value
-    assert 'meta language languageName {' in hover_value
-    assert '`extends tcl` is an optional ordinary clause inside a `meta language` body.' in (
-        hover_value
+    assert 'Syntax: a subcommand followed by positional arguments and braced blocks.' in hover_value
+    assert '**Declarations**' in hover_value
+    for name in ('module', 'command', 'language', 'alias', 'override', 'source'):
+        assert f'- `{name}`:' in hover_value
+    assert 'meta command run {script}' in hover_value
+    assert 'enter tcl body 1' in hover_value
+    assert len(hover_value.splitlines()) < 40
+
+
+@pytest.mark.parametrize(
+    ('annotation', 'signature', 'syntax', 'example'),
+    [
+        (
+            'enter tcl body 4',
+            'enter language body selector',
+            'positional arguments',
+            'enter tcl body 4',
+        ),
+        ('bind 3 set', 'bind selector kind', 'positional arguments', 'bind 3 set'),
+        ('ref 3', 'ref selector', 'positional arguments', 'ref 3'),
+        ('option -start value', 'option name value', 'positional arguments', 'option -start value'),
+        ('source 1 caller', 'source selector caller', 'positional arguments', 'source 1 caller'),
+        (
+            'package {literal TclOO}',
+            'package {settings}',
+            'key/value list',
+            'package {literal TclOO}',
+        ),
+    ],
+)
+def test_metadata_annotation_hover_explains_its_syntax(
+    server: LanguageServer, annotation: str, signature: str, syntax: str, example: str
+) -> None:
+    open_server_document(server, f'meta command wrapper {{a b c d}} {{\n    {annotation}\n}}\n')
+
+    hover = hover_markdown_value(server, line=1, character=5)
+
+    assert f'`{signature}`' in hover or f'\n{signature}\n' in hover
+    assert f'Syntax: {syntax}.' in hover
+    assert example in hover
+    assert hover.count(f'Syntax: {syntax}.') == 1
+    if syntax == 'positional arguments':
+        assert f'{annotation.split()[0]} {{selector' not in hover
+        assert 'enter {language' not in hover
+
+
+@pytest.mark.parametrize(
+    ('field', 'example'),
+    [
+        ('name {select 1}', 'name {select 1}'),
+        (
+            'params {select 2}',
+            'params {select 2}',
+        ),
+        ('body {select 3}', 'body {select 3}'),
+    ],
+)
+def test_metadata_procedure_field_hover_explains_grouped_settings(
+    server: LanguageServer, field: str, example: str
+) -> None:
+    fields = ['name {select 1}', 'params {select 2}', 'body {select 3}']
+    field_name = field.split()[0]
+    field_index = next(i for i, value in enumerate(fields) if value.split()[0] == field_name)
+    fields[field_index] = field
+    field_text = '\n'.join(f'        {value}' for value in fields)
+    open_server_document(
+        server,
+        'meta command declare {name header body} {\n'
+        '    procedure {\n'
+        f'{field_text}\n'
+        '    }\n'
+        '}\n',
     )
-    assert 'plugin script procName' in hover_value
-    assert 'structured documentation instead of executable behavior' in hover_value.replace(
-        '\n', ' '
+
+    hover = hover_markdown_value(server, line=2 + field_index, character=9)
+
+    assert 'Syntax: key/value list.' in hover
+    assert example in hover
+    assert 'select' in hover
+    assert hover.count('Syntax: key/value list.') == 1
+    assert f'`{field_name} {{settings}}`' in hover or f'\n{field_name} {{settings}}\n' in hover
+    assert f'{field_name} select selector' not in hover
+    assert f'{field_name} literal value' not in hover
+    assert f'{field_name} -' not in hover
+    if field_name == 'params':
+        assert '**Source (choose one)**' in hover
+        assert '- `select selector`: read one runtime argument.' in hover
+        assert '- `literal parameterList`: use a fixed Tcl parameter list.' in hover
+        assert 'Use a Tcl plugin for other parameter syntaxes.' in hover
+        assert '**Optional parser**' in hover
+        assert '- `plugin {script procName}`:' in hover
+        assert 'procName value info' in hover
+        assert '`items {}` declares no parameters.' in hover
+        assert '| Key |' not in hover
+
+
+@pytest.mark.parametrize(
+    ('text', 'token', 'signature', 'details'),
+    [
+        (
+            'meta module Tcl {}',
+            'module',
+            'meta module name {body}',
+            ('Included files inherit the module.', '`Tcl` and `TclOO` are active by default.'),
+        ),
+        (
+            'meta source ../src/common.tcl',
+            'source',
+            'meta source path',
+            ('Allowed only outside module blocks.', 'include metadata declarations instead.'),
+        ),
+        (
+            'meta module Tcl {meta alias tcl_clock clock -module Tcl}',
+            'alias',
+            'meta alias name target -module moduleName',
+            ('- `-module moduleName`:', 'Default: the enclosing module.'),
+        ),
+        (
+            'meta module Tcl {meta override clock {args}}',
+            'override',
+            'meta override name {shape}',
+            ('Requires a module block.', 'Default: `public`.'),
+        ),
+        (
+            'meta command run {script} {enter tcl body 1}',
+            'command',
+            'meta command name {shape} {body}',
+            ('**Forms**', '**Shape items**', '- `-visibility public|internal`:'),
+        ),
+        (
+            'meta language tool-script {extends tcl; command prove {property}}',
+            'language',
+            'meta language name {body}',
+            ('**Body commands**', 'Default: closed; only declared commands are valid.'),
+        ),
+        (
+            'meta command tool {args} {command prove {property}}',
+            'command prove',
+            'command name {shape}',
+            ('Describe a subcommand of the enclosing command.', 'Default: `public`.'),
+        ),
+        (
+            'meta command run variants {form {script} {enter tcl body 1}}',
+            'form',
+            'form {shape} {body}',
+            ('inside a `variants` block.', '`args` consumes the remaining arguments'),
+        ),
+        (
+            'meta command declare {name params body} {procedure {name {select 1}; params {select 2}; body {select 3}}}',
+            'procedure',
+            'procedure {body}',
+            ('**Fields**', '- `name`: required;', '- `params`: required;', 'Requires `body`.'),
+        ),
+        (
+            'meta command declare {args} {plugin declare.tcl ::project::metadata::declare}',
+            'plugin',
+            'plugin script procName',
+            ('**Arguments**', 'Plugin selectors count from 1 including the command name'),
+        ),
+        (
+            'meta language tool-script {extends tcl}',
+            'extends',
+            'extends tcl',
+            ('`tcl` is the only supported base language.', 'Default: closed;'),
+        ),
+        (
+            'meta language tool-script {command prove {property}}',
+            'command',
+            'command name {shape}',
+            ('Describe a command available in this embedded language.', '**Shape items**'),
+        ),
+        (
+            'meta module Tcl {meta language tool-script {override prove {property}}}',
+            'override',
+            'override name {shape}',
+            (
+                'Replace a command from a lower module in this embedded language.',
+                'Default: `public`.',
+            ),
+        ),
+        (
+            'meta command declare {name params body} {procedure {name {select 1}; params {select 2}; body {select 3}; language tcloo-method}}',
+            'language',
+            'language name',
+            ('Requires a `body` field.', 'Default: `tcl`.'),
+        ),
+    ],
+)
+def test_metadata_declaration_hover_shows_syntax_options_and_example(
+    server: LanguageServer, text: str, token: str, signature: str, details: tuple[str, ...]
+) -> None:
+    open_server_document(server, text + '\n')
+
+    hover = hover_markdown_value(server, line=0, character=text.index(token) + 1)
+
+    assert f'`{signature}`' in hover or f'\n{signature}\n' in hover
+    assert hover.count('Syntax:') == 1
+    assert '**Example**' in hover
+    assert '```tcl' in hover
+    for detail in details:
+        assert detail in hover
+
+
+@pytest.mark.parametrize(
+    ('command', 'arguments', 'details'),
+    [
+        ('word', '3', 'The source ID is valid only in this plugin invocation.'),
+        ('variable', 'common', 'Unknown, changed, or ambiguous values return an empty string.'),
+        ('source_list_items', '$value', 'Invalid lists raise a Tcl error.'),
+        ('slice', '$value 1 end', 'exclusive end index; `end` means the end of the string.'),
+    ],
+)
+def test_plugin_source_query_hover_describes_its_contract(
+    server: LanguageServer, command: str, arguments: str, details: str
+) -> None:
+    open_server_document(
+        server,
+        f'# tcl-ls: module TclLSPlugin\nset value {{}}\n::tcl_lsp::{command} {arguments}\n',
     )
-    assert 'option name value' in hover_value
+
+    hover = hover_markdown_value(server, line=2, character=12)
+
+    assert server.documents[MAIN_URI].analysis.diagnostics == ()
+    assert details in hover
+    assert '| Key |' not in hover
+    assert 'read-only source item' in hover
+    assert 'raw source content' in hover
+    assert 'escapes stay literal' in hover.lower()
+    assert 'editing fields does not change the source' in hover.lower()

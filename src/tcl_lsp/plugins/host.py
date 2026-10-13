@@ -6,14 +6,14 @@ import queue
 import shutil
 import subprocess
 import threading
+import time
 from _thread import LockType
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, cast
 
-from tcl_lsp.analysis.facts.parameters import ParameterFormat
-from tcl_lsp.analysis.facts.parsing import split_tcl_list
+from tcl_lsp.analysis.facts.parsing import ListItem, split_tcl_list
 from tcl_lsp.analysis.metadata_commands import (
     MetadataBind,
     MetadataContext,
@@ -23,17 +23,20 @@ from tcl_lsp.analysis.metadata_commands import (
     MetadataRef,
     MetadataSelector,
     MetadataSource,
+    parse_metadata_settings,
+    parse_package_value,
     parse_procedure_parameters,
+    parse_procedure_value,
     parse_selector_tokens,
     validate_context_body_selector,
     validate_context_owner_selector,
-    validate_procedure_selector,
 )
 from tcl_lsp.analysis.model import BINDING_KINDS, BindingKind
 from tcl_lsp.common import Position
 from tcl_lsp.metadata_paths import bundled_metadata_dir
 from tcl_lsp.parser import Parser, word_static_text
 from tcl_lsp.parser.model import BracedWord, Command, Word
+from tcl_lsp.plugins.sources import PluginSources, list_words, tcl_list
 
 try:
     import resource
@@ -54,6 +57,7 @@ _MISSING = object()
 class PluginProcedureEffect:
     procedure: MetadataProcedure
     parameter_source_selector: MetadataSelector | None = None
+    parameter_items: tuple[ListItem, ...] | None = None
 
 
 type PluginEffect = (
@@ -109,28 +113,60 @@ class TclPluginHost:
         *,
         words: tuple[str, ...],
         info: dict[str, str],
+        sources: PluginSources | None = None,
     ) -> tuple[PluginEffect, ...]:
-        response_text = self._call_raw(plugin, words=words, info=info)
-        return parse_plugin_effects(response_text)
+        response_text = self._call_raw(plugin, argument=tcl_list(words), info=info, sources=sources)
+        return parse_plugin_effects(response_text, sources=sources)
+
+    def call_parameter_parser(
+        self,
+        plugin: MetadataPlugin,
+        *,
+        value: ListItem,
+        info: dict[str, str],
+        sources: PluginSources,
+    ) -> tuple[ListItem, ...] | None:
+        response = self._call_raw(plugin, argument=sources.value(value), info=info, sources=sources)
+        try:
+            fields = list_words(response)
+            if not fields:
+                return None
+            if len(fields) != 2 or fields[0] != 'items':
+                raise ValueError('Parameter parsers must return `items {sourceId ...}` or `{}`.')
+            return tuple(sources.item(token) for token in list_words(fields[1]))
+        except ValueError as error:
+            raise RuntimeError(str(error)) from error
 
     def _call_raw(
         self,
         plugin: MetadataPlugin,
         *,
-        words: tuple[str, ...],
+        argument: str,
         info: dict[str, str],
+        sources: PluginSources | None = None,
     ) -> str:
-        request = self._request_text(plugin, words=words, info=info)
+        request = self._request_text(plugin, argument=argument, info=info)
         with self._lock:
-            return self._call_raw_locked(plugin, request)
+            return self._call_raw_locked(plugin, request, sources=sources)
 
-    def _call_raw_locked(self, plugin: MetadataPlugin, request: str) -> str:
+    def _call_raw_locked(
+        self, plugin: MetadataPlugin, request: str, *, sources: PluginSources | None
+    ) -> str:
         for attempt in range(2):
             process = self._ensure_process_locked()
+            deadline = time.monotonic() + _PLUGIN_TIMEOUT_SECONDS
             try:
                 self._send_request_locked(process, request)
-                status = self._read_stdout_line_locked(timeout=_PLUGIN_TIMEOUT_SECONDS)
-                payload = self._read_stdout_line_locked(timeout=_PLUGIN_TIMEOUT_SECONDS)
+                while True:
+                    remaining = max(0, deadline - time.monotonic())
+                    status = self._read_stdout_line_locked(timeout=remaining)
+                    if status == 'query':
+                        query = self._read_query_locked(deadline)
+                        self._answer_query_locked(process, query, sources=sources)
+                        continue
+                    remaining = max(0, deadline - time.monotonic())
+                    payload = self._read_stdout_line_locked(timeout=remaining)
+                    break
             except _PluginHostTimeoutError as error:
                 self._stop_process_locked(force=True)
                 raise RuntimeError(
@@ -153,6 +189,30 @@ class TclPluginHost:
             return decoded_payload
 
         raise RuntimeError(self._host_failure_message())
+
+    def _read_query_locked(self, deadline: float) -> tuple[str, ...]:
+        count = int(self._read_stdout_line_locked(timeout=max(0, deadline - time.monotonic())))
+        return tuple(
+            _decode_line(self._read_stdout_line_locked(timeout=max(0, deadline - time.monotonic())))
+            for _ in range(count)
+        )
+
+    def _answer_query_locked(
+        self,
+        process: subprocess.Popen[str],
+        request: tuple[str, ...],
+        *,
+        sources: PluginSources | None,
+    ) -> None:
+        try:
+            if sources is None:
+                raise ValueError('Source queries are unavailable for this plugin call.')
+            response = sources.query(request)
+            status = 'ok'
+        except ValueError as error:
+            response = str(error)
+            status = 'error'
+        self._send_request_locked(process, f'{status}\n{_encode_line(response)}\n')
 
     def _ensure_process_locked(self) -> subprocess.Popen[str]:
         if self._process is not None and self._process.poll() is None:
@@ -223,7 +283,7 @@ class TclPluginHost:
         self,
         plugin: MetadataPlugin,
         *,
-        words: tuple[str, ...],
+        argument: str,
         info: dict[str, str],
     ) -> str:
         try:
@@ -238,9 +298,8 @@ class TclPluginHost:
             _encode_line(str(plugin.script_path)),
             _encode_line(script_text),
             _encode_line(plugin.proc_name),
+            _encode_line(argument),
         ]
-        lines.append(str(len(words)))
-        lines.extend(_encode_line(word) for word in words)
         lines.append(str(len(info)))
         for key, value in sorted(info.items()):
             lines.append(_encode_line(key))
@@ -286,7 +345,9 @@ class TclPluginHost:
             process.wait()
 
 
-def parse_plugin_effects(text: str) -> tuple[PluginEffect, ...]:
+def parse_plugin_effects(
+    text: str, *, sources: PluginSources | None = None
+) -> tuple[PluginEffect, ...]:
     if not text.strip():
         return ()
 
@@ -318,7 +379,7 @@ def parse_plugin_effects(text: str) -> tuple[PluginEffect, ...]:
             effects.append(_parse_plugin_enter_effect(command))
             continue
         if effect_name == 'procedure':
-            effects.append(_parse_plugin_procedure_effect(command))
+            effects.append(_parse_plugin_procedure_effect(command, sources=sources))
             continue
         raise RuntimeError(
             f'Unknown Tcl plugin effect `{effect_name}`. '
@@ -372,23 +433,11 @@ def _parse_plugin_source_effect(command: Command) -> MetadataSource:
 
 
 def _parse_plugin_package_effect(command: Command) -> MetadataPackage:
-    command_name = 'plugin effect'
     words = _plugin_command_words(command)
-    if len(words) == 3 and words[1] == 'literal':
-        return MetadataPackage(selector=None, literal_package=words[2])
-    if len(words) >= 3 and words[1] == 'select':
-        selector, consumed = parse_selector_tokens(words[2:], command_name=command_name)
-        _validate_plugin_selector(selector, key='package')
-        if consumed != len(words) - 2:
-            raise RuntimeError(
-                'Package plugin effects must be `package literal name` or `package select selector`.'
-            )
-        if selector.list_mode or not selector.selects_single_argument:
-            raise RuntimeError('Package plugin effects must select a single argument.')
-        return MetadataPackage(selector=selector, literal_package=None)
-    raise RuntimeError(
-        'Package plugin effects must be `package literal name` or `package select selector`.'
-    )
+    package = parse_package_value(words[1:], command_name='plugin effect')
+    if package.selector is not None:
+        _validate_plugin_selector(package.selector, key='package')
+    return package
 
 
 def _parse_plugin_enter_effect(command: Command) -> MetadataContext:
@@ -430,11 +479,13 @@ def _parse_plugin_enter_effect(command: Command) -> MetadataContext:
     )
 
 
-def _parse_plugin_procedure_effect(command: Command) -> PluginProcedureEffect:
+def _parse_plugin_procedure_effect(
+    command: Command, *, sources: PluginSources | None
+) -> PluginProcedureEffect:
     if len(command.words) != 2:
         raise RuntimeError(
             'Procedure plugin effects must be a `procedure { ... }` block with '
-            '`name ...` and `params ...`, plus optional `body select selector`, '
+            '`name ...` and `params ...`, plus optional `body {select selector}`, '
             '`language body-language`, and `_params-source select selector`.'
         )
 
@@ -448,7 +499,7 @@ def _parse_plugin_procedure_effect(command: Command) -> PluginProcedureEffect:
     member_name_literal: str | None | object = _MISSING
     parameter_selector: MetadataSelector | None | object = _MISSING
     parameter_literal: str | None | object = _MISSING
-    parameter_format: ParameterFormat = 'tcl'
+    parameter_items: tuple[ListItem, ...] | None = None
     parameter_source_selector: MetadataSelector | None = None
     body_selector: MetadataSelector | None = None
     body_context: str | None = None
@@ -471,10 +522,31 @@ def _parse_plugin_procedure_effect(command: Command) -> PluginProcedureEffect:
                 raise RuntimeError(
                     'Procedure plugin effects may only declare one `params` setting.'
                 )
-            parameter_selector, parameter_literal, parameter_format = parse_procedure_parameters(
+            settings = parse_metadata_settings(
                 command_words[1:],
                 command_name='plugin effect',
+                role='procedure parameter',
+                keys={'select', 'literal', 'items'},
             )
+            if 'items' in settings:
+                if len(settings) != 1:
+                    raise RuntimeError(
+                        'Plugin parameter `items` cannot be combined with other keys.'
+                    )
+                tokens = list_words(settings['items'])
+                if sources is None and tokens:
+                    raise RuntimeError('Plugin parameter items require source queries.')
+                try:
+                    parameter_items = (
+                        tuple(sources.item(token) for token in tokens) if sources else ()
+                    )
+                except ValueError as error:
+                    raise RuntimeError(str(error)) from error
+                parameter_selector, parameter_literal = None, None
+            else:
+                parameter_selector, parameter_literal = parse_procedure_parameters(
+                    command_words[1:], command_name='plugin effect'
+                )
             if parameter_selector is not None:
                 _validate_plugin_selector(parameter_selector, key='params')
             continue
@@ -514,7 +586,7 @@ def _parse_plugin_procedure_effect(command: Command) -> PluginProcedureEffect:
                 allow_none=False,
             )
             if body_literal is not None:
-                raise RuntimeError('Procedure plugin effects must use `body select selector`.')
+                raise RuntimeError('Procedure plugin effects must use `body {select selector}`.')
             continue
         if nested_name == 'language':
             if body_context is not None:
@@ -542,9 +614,9 @@ def _parse_plugin_procedure_effect(command: Command) -> PluginProcedureEffect:
             parameter_literal=cast(str | None, parameter_literal),
             body_selector=body_selector,
             body_context=body_context,
-            parameter_format=parameter_format,
         ),
         parameter_source_selector=parameter_source_selector,
+        parameter_items=parameter_items,
     )
 
 
@@ -565,28 +637,16 @@ def _parse_plugin_procedure_value(
     allow_literal: bool,
     allow_none: bool,
 ) -> tuple[MetadataSelector | None, str | None]:
-    if len(words) == 1 and words[0] == '-':
-        if not allow_none:
-            raise RuntimeError(f'Procedure plugin effects do not support `{key} -`.')
-        return None, None
-
-    if len(words) >= 2 and words[0] == 'select':
-        selector, consumed = parse_selector_tokens(words[1:], command_name='plugin effect')
-        _validate_plugin_selector(selector, key=key)
-        if consumed != len(words) - 1:
-            raise RuntimeError(f'Procedure plugin effects must use `{key} select selector`.')
-        validate_procedure_selector(selector, command_name='plugin effect', role=key)
-        return selector, None
-
-    if allow_literal and len(words) == 2 and words[0] == 'literal':
-        return None, words[1]
-
-    literal_fragment = '|literal value' if allow_literal else ''
-    none_fragment = '|-' if allow_none else ''
-    raise RuntimeError(
-        f'Procedure plugin effects must use '
-        f'`{key} select selector{literal_fragment}{none_fragment}`.'
+    selector, literal = parse_procedure_value(
+        words,
+        command_name='plugin effect',
+        role=key,
+        allow_literal=allow_literal,
+        allow_none=allow_none,
     )
+    if selector is not None:
+        _validate_plugin_selector(selector, key=key)
+    return selector, literal
 
 
 def _parse_plugin_binding_kind(text: str, *, command_name: str) -> BindingKind:

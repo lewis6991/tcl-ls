@@ -3,8 +3,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 
-from tcl_lsp.analysis.facts.parsing import is_simple_name, split_tcl_list
+from tcl_lsp.analysis.facts.parsing import ListItem, is_simple_name, split_tcl_list
 from tcl_lsp.analysis.facts.utils import qualify_name
+from tcl_lsp.analysis.facts.values import resolve_word_source
 from tcl_lsp.analysis.flow.exprs import eval_expr_text, expr_branch_flow_states
 from tcl_lsp.analysis.types import CallType, TypeInfo
 from tcl_lsp.common import Diagnostic, Position
@@ -38,6 +39,7 @@ class VariableFlowState:
     links: tuple[tuple[str, str | None], ...] = ()
     unknown_links: bool = False
     types_by_name: dict[str, TypeInfo] = field(default_factory=dict)
+    literal_sources_by_name: dict[str, ListItem] = field(default_factory=dict)
 
     @classmethod
     def empty(cls, *, namespace: str = '::', procedure: bool = True) -> VariableFlowState:
@@ -45,8 +47,8 @@ class VariableFlowState:
 
     def cleared(self) -> VariableFlowState:
         return (
-            replace(self, exact_values_by_name={}, types_by_name={})
-            if self.exact_values_by_name or self.types_by_name
+            replace(self, exact_values_by_name={}, types_by_name={}, literal_sources_by_name={})
+            if self.exact_values_by_name or self.types_by_name or self.literal_sources_by_name
             else self
         )
 
@@ -91,6 +93,11 @@ class VariableFlowState:
                 for name, info in first.types_by_name.items()
                 if all(state.types_by_name.get(name) == info for state in states)
             },
+            literal_sources_by_name={
+                name: source
+                for name, source in first.literal_sources_by_name.items()
+                if all(state.literal_sources_by_name.get(name) == source for state in states)
+            },
         )
 
     def _variable_key(self, name: str) -> str | None:
@@ -118,6 +125,10 @@ class VariableFlowState:
         key = self._variable_key(name)
         return None if key is None else self.types_by_name.get(key)
 
+    def literal_source(self, name: str) -> ListItem | None:
+        key = self._variable_key(name)
+        return None if key is None else self.literal_sources_by_name.get(key)
+
     def with_type(self, name: str, info: TypeInfo | None) -> VariableFlowState:
         key = self._variable_key(name)
         if key is None:
@@ -129,7 +140,9 @@ class VariableFlowState:
             types[key] = info
         return replace(self, types_by_name=types)
 
-    def with_exact_values(self, name: str, values: tuple[str, ...]) -> VariableFlowState:
+    def with_exact_values(
+        self, name: str, values: tuple[str, ...], *, source: ListItem | None = None
+    ) -> VariableFlowState:
         key = self._variable_key(name)
         if key is None:
             return self.cleared()
@@ -138,7 +151,14 @@ class VariableFlowState:
             next_values_by_name[key] = values
         else:
             next_values_by_name.pop(key, None)
-        return replace(self, exact_values_by_name=next_values_by_name)
+        sources = dict(self.literal_sources_by_name)
+        if values and source is not None:
+            sources[key] = source
+        else:
+            sources.pop(key, None)
+        return replace(
+            self, exact_values_by_name=next_values_by_name, literal_sources_by_name=sources
+        )
 
     def without_names(self, names: tuple[str, ...]) -> VariableFlowState:
         if not names:
@@ -155,6 +175,11 @@ class VariableFlowState:
             },
             types_by_name={
                 name: info for name, info in self.types_by_name.items() if name not in keys
+            },
+            literal_sources_by_name={
+                name: source
+                for name, source in self.literal_sources_by_name.items()
+                if name not in keys
             },
         )
 
@@ -317,7 +342,9 @@ def state_with_set_command(
         if len(command.words) < 3:
             return state
         return state.with_exact_values(
-            target_name, exact_word_values(command.words[2], state)
+            target_name,
+            exact_word_values(command.words[2], state),
+            source=resolve_word_source(command.words[2], state.literal_source),
         ).with_type(target_name, word_type_info(command.words[2], state))
 
     dynamic_names = dynamic_variable_target_names(command.words[1], state)
@@ -330,7 +357,9 @@ def state_with_set_command(
         # One target is written at runtime, not every possible target.
         return state.without_names(dynamic_names)
     return state.with_exact_values(
-        dynamic_names[0], exact_word_values(command.words[2], state)
+        dynamic_names[0],
+        exact_word_values(command.words[2], state),
+        source=resolve_word_source(command.words[2], state.literal_source),
     ).with_type(dynamic_names[0], word_type_info(command.words[2], state))
 
 

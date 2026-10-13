@@ -5,11 +5,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, cast
 
-from tcl_lsp.analysis.facts.parameters import ParameterFormat
+from tcl_lsp.analysis.facts.parsing import split_tcl_list
 from tcl_lsp.analysis.facts.utils import normalize_command_name
 from tcl_lsp.analysis.model import BINDING_KINDS, BindingKind, CommandVisibility
 from tcl_lsp.cache import metadata_lru_cache
-from tcl_lsp.common import Diagnostic, Span
+from tcl_lsp.common import Diagnostic, Position, Span
 from tcl_lsp.metadata_paths import (
     DEFAULT_METADATA_REGISTRY,
     MetadataCatalog,
@@ -107,7 +107,7 @@ class MetadataProcedure:
     parameter_literal: str | None
     body_selector: MetadataSelector | None
     body_context: str | None
-    parameter_format: ParameterFormat = 'tcl'
+    parameter_plugin: MetadataPlugin | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -986,7 +986,9 @@ def _parse_annotation_body(
             annotations.append(_parse_package_annotation(command, command_name))
             continue
         if annotation_name == 'procedure':
-            annotations.append(_parse_procedure_annotation(command, command_name))
+            annotations.append(
+                _parse_procedure_annotation(command, command_name, metadata_path=metadata_path)
+            )
             continue
         if annotation_name == 'plugin':
             annotations.append(
@@ -1057,21 +1059,32 @@ def _parse_source_annotation(command: Command, command_name: str) -> MetadataSou
 
 
 def _parse_package_annotation(command: Command, command_name: str) -> MetadataPackage:
-    words = _annotation_words(command, command_name)
-    if len(words) == 3 and words[1] == 'literal':
-        return MetadataPackage(selector=None, literal_package=words[2])
-    if len(words) >= 3 and words[1] == 'select':
-        selector, consumed = _parse_selector_tokens(words[2:], command_name=command_name)
-        if consumed != len(words) - 2:
+    return parse_package_value(
+        _annotation_words(command, command_name)[1:], command_name=command_name
+    )
+
+
+def parse_package_value(
+    words: list[str] | tuple[str, ...], *, command_name: str
+) -> MetadataPackage:
+    settings = parse_metadata_settings(
+        words, command_name=command_name, role='package', keys={'select', 'literal'}
+    )
+    words = _source_setting_words(settings, command_name=command_name, role='package')
+    if len(words) == 2 and words[0] == 'literal':
+        return MetadataPackage(selector=None, literal_package=words[1])
+    if len(words) >= 2 and words[0] == 'select':
+        selector, consumed = _parse_selector_tokens(words[1:], command_name=command_name)
+        if consumed != len(words) - 1:
             raise RuntimeError(
-                f'Package annotations for `{command_name}` must be `package literal name` '
-                'or `package select selector`.'
+                f'Package annotations for `{command_name}` must be `package {{literal name}}` '
+                'or `package {select selector}`.'
             )
         _validate_package_selector(selector, command_name)
         return MetadataPackage(selector=selector, literal_package=None)
     raise RuntimeError(
-        f'Package annotations for `{command_name}` must be `package literal name` '
-        'or `package select selector`.'
+        f'Package annotations for `{command_name}` must be `package {{literal name}}` '
+        'or `package {select selector}`.'
     )
 
 
@@ -1114,12 +1127,14 @@ def _parse_enter_annotation(command: Command, command_name: str) -> MetadataCont
     )
 
 
-def _parse_procedure_annotation(command: Command, command_name: str) -> MetadataProcedure:
+def _parse_procedure_annotation(
+    command: Command, command_name: str, *, metadata_path: Path
+) -> MetadataProcedure:
     if len(command.words) != 2:
         raise RuntimeError(
             f'Procedure annotations for `{command_name}` must be '
             'a `procedure { ... }` block with `name ...` and `params ...`, '
-            'plus optional `body select selector` and `language body-language`.'
+            'plus optional `body {select selector}` and `language body-language`.'
         )
 
     config_text = _metadata_body_text(command.words[1])
@@ -1133,9 +1148,9 @@ def _parse_procedure_annotation(command: Command, command_name: str) -> Metadata
     member_name_literal: str | None | object = _MISSING
     parameter_selector: MetadataSelector | None | object = _MISSING
     parameter_literal: str | None | object = _MISSING
-    parameter_format: ParameterFormat = 'tcl'
     body_selector: MetadataSelector | None = None
     body_context: str | None = None
+    parameter_plugin: MetadataPlugin | None = None
 
     for nested_command in parse_result.script.commands:
         nested_words = _annotation_words(nested_command, command_name)
@@ -1145,7 +1160,7 @@ def _parse_procedure_annotation(command: Command, command_name: str) -> Metadata
                 raise RuntimeError(
                     f'Procedure annotations for `{command_name}` may only declare one `name`.'
                 )
-            member_name_selector, member_name_literal = _parse_procedure_value(
+            member_name_selector, member_name_literal = parse_procedure_value(
                 nested_words[1:],
                 command_name=command_name,
                 role='name',
@@ -1158,9 +1173,14 @@ def _parse_procedure_annotation(command: Command, command_name: str) -> Metadata
                 raise RuntimeError(
                     f'Procedure annotations for `{command_name}` may only declare one `params`.'
                 )
-            parameter_selector, parameter_literal, parameter_format = parse_procedure_parameters(
+            (
+                parameter_selector,
+                parameter_literal,
+                parameter_plugin,
+            ) = _parse_procedure_parameter_annotation(
                 nested_words[1:],
                 command_name=command_name,
+                metadata_path=metadata_path,
             )
             continue
         if nested_name == 'body':
@@ -1168,7 +1188,7 @@ def _parse_procedure_annotation(command: Command, command_name: str) -> Metadata
                 raise RuntimeError(
                     f'Procedure annotations for `{command_name}` may only declare one `body`.'
                 )
-            body_selector, body_literal = _parse_procedure_value(
+            body_selector, body_literal = parse_procedure_value(
                 nested_words[1:],
                 command_name=command_name,
                 role='body',
@@ -1177,7 +1197,7 @@ def _parse_procedure_annotation(command: Command, command_name: str) -> Metadata
             )
             if body_literal is not None:
                 raise RuntimeError(
-                    f'Procedure body selectors for `{command_name}` must use `body select selector`.'
+                    f'Procedure body selectors for `{command_name}` must use `body {{select selector}}`.'
                 )
             continue
         if nested_name == 'language':
@@ -1210,23 +1230,115 @@ def _parse_procedure_annotation(command: Command, command_name: str) -> Metadata
         parameter_literal=cast(str | None, parameter_literal),
         body_selector=body_selector,
         body_context=body_context,
-        parameter_format=parameter_format,
+        parameter_plugin=parameter_plugin,
     )
+
+
+def _parse_procedure_parameter_annotation(
+    words: list[str], *, command_name: str, metadata_path: Path
+) -> tuple[MetadataSelector | None, str | None, MetadataPlugin | None]:
+    selector, literal, plugin_words = parse_procedure_parameter_settings(
+        words, command_name=command_name
+    )
+    if plugin_words is None:
+        return selector, literal, None
+    plugin = _metadata_plugin(
+        plugin_words[0],
+        plugin_words[1],
+        command_name=command_name,
+        metadata_path=metadata_path,
+    )
+    return selector, literal, plugin
+
+
+def parse_procedure_parameter_settings(
+    words: list[str] | tuple[str, ...], *, command_name: str, allow_plugin: bool = True
+) -> tuple[MetadataSelector | None, str | None, tuple[str, str] | None]:
+    keys = {'select', 'literal'}
+    if allow_plugin:
+        keys.add('plugin')
+    settings = parse_metadata_settings(
+        words,
+        command_name=command_name,
+        role='procedure parameter',
+        keys=keys,
+    )
+    plugin_value = settings.pop('plugin', None)
+    selector, literal = _parse_procedure_settings(
+        settings, command_name=command_name, role='params', allow_literal=True, allow_none=True
+    )
+    if plugin_value is None:
+        return selector, literal, None
+    if selector is None:
+        raise RuntimeError(f'Parameter plugins for `{command_name}` require `select`.')
+    try:
+        plugin_words = split_tcl_list(
+            plugin_value, Position(offset=0, line=0, character=0), strict=True
+        )
+    except ValueError as error:
+        raise RuntimeError(f'Invalid parameter plugin for `{command_name}`: {error}') from error
+    if len(plugin_words) != 2:
+        raise RuntimeError(
+            f'Parameter plugins for `{command_name}` must use `plugin {{scriptPath procName}}`.'
+        )
+    return selector, literal, (plugin_words[0].text, plugin_words[1].text)
 
 
 def parse_procedure_parameters(
     words: list[str] | tuple[str, ...], *, command_name: str
-) -> tuple[MetadataSelector | None, str | None, ParameterFormat]:
-    parameter_format: ParameterFormat = 'tcl'
-    if len(words) >= 4 and words[0] == 'select' and words[-2] == 'format':
-        if words[-1] not in {'tcl', 'tepam', 'tepam-args'}:
-            raise RuntimeError(f'Unknown procedure parameter format `{words[-1]}`.')
-        parameter_format = cast(ParameterFormat, words[-1])
-        words = words[:-2]
-    selector, literal = _parse_procedure_value(
-        words, command_name=command_name, role='params', allow_literal=True, allow_none=True
+) -> tuple[MetadataSelector | None, str | None]:
+    selector, literal, _ = parse_procedure_parameter_settings(
+        words, command_name=command_name, allow_plugin=False
     )
-    return selector, literal, parameter_format
+    return selector, literal
+
+
+def parse_metadata_settings(
+    words: list[str] | tuple[str, ...], *, command_name: str, role: str, keys: set[str]
+) -> dict[str, str]:
+    if len(words) != 1:
+        raise RuntimeError(
+            f'Metadata {role} settings for `{command_name}` must use one braced key/value list.'
+        )
+    try:
+        items = split_tcl_list(words[0], Position(offset=0, line=0, character=0), strict=True)
+    except ValueError as error:
+        raise RuntimeError(f'Invalid {role} list for `{command_name}`: {error}') from error
+
+    if len(items) % 2:
+        raise RuntimeError(
+            f'Metadata {role} settings for `{command_name}` must contain key/value pairs.'
+        )
+
+    settings: dict[str, str] = {}
+    for key, value in zip(items[::2], items[1::2], strict=True):
+        if key.text not in keys:
+            raise RuntimeError(f'Unknown {role} setting `{key.text}`.')
+        if key.text in settings:
+            raise RuntimeError(
+                f'Metadata {role} settings may only declare one `{key.text}` setting.'
+            )
+        settings[key.text] = value.text
+    return settings
+
+
+def _source_setting_words(settings: dict[str, str], *, command_name: str, role: str) -> list[str]:
+    if ('select' in settings) == ('literal' in settings):
+        raise RuntimeError(
+            f'Metadata {role} settings must declare exactly one of `select` or `literal`.'
+        )
+    if 'literal' in settings:
+        return ['literal', settings['literal']]
+
+    try:
+        selector_items = split_tcl_list(
+            settings['select'], Position(offset=0, line=0, character=0), strict=True
+        )
+    except ValueError as error:
+        raise RuntimeError(
+            f'Invalid metadata {role} selector for `{command_name}`: {error}'
+        ) from error
+    return ['select', *(item.text for item in selector_items)]
 
 
 def _parse_plugin_annotation(
@@ -1241,16 +1353,24 @@ def _parse_plugin_annotation(
             f'Plugin annotations for `{command_name}` must be `plugin scriptPath procName`.'
         )
 
-    script_path = Path(words[1])
+    return _metadata_plugin(
+        words[1], words[2], command_name=command_name, metadata_path=metadata_path
+    )
+
+
+def _metadata_plugin(
+    script: str, proc_name: str, *, command_name: str, metadata_path: Path
+) -> MetadataPlugin:
+    script_path = Path(script)
     if not script_path.is_absolute():
         script_path = metadata_path.parent / script_path
     script_path = script_path.resolve(strict=False)
     if not script_path.is_file():
         raise RuntimeError(
-            f'Plugin annotation for `{command_name}` references missing script `{words[1]}`.'
+            f'Plugin annotation for `{command_name}` references missing script `{script}`.'
         )
 
-    return MetadataPlugin(script_path=script_path, proc_name=words[2])
+    return MetadataPlugin(script_path=script_path, proc_name=proc_name)
 
 
 def _validate_package_selector(selector: MetadataSelector, command_name: str) -> None:
@@ -1514,7 +1634,7 @@ def _implicit_binding_kind(command_name: str) -> BindingKind | None:
     return inferred_kind
 
 
-def _parse_procedure_value(
+def parse_procedure_value(
     words: list[str] | tuple[str, ...],
     *,
     command_name: str,
@@ -1522,18 +1642,40 @@ def _parse_procedure_value(
     allow_literal: bool,
     allow_none: bool,
 ) -> tuple[MetadataSelector | None, str | None]:
-    if len(words) == 1 and words[0] == '-':
+    settings = parse_metadata_settings(
+        words, command_name=command_name, role=f'procedure {role}', keys={'select', 'literal'}
+    )
+    return _parse_procedure_settings(
+        settings,
+        command_name=command_name,
+        role=role,
+        allow_literal=allow_literal,
+        allow_none=allow_none,
+    )
+
+
+def _parse_procedure_settings(
+    settings: dict[str, str],
+    *,
+    command_name: str,
+    role: str,
+    allow_literal: bool,
+    allow_none: bool,
+) -> tuple[MetadataSelector | None, str | None]:
+    if not settings:
         if not allow_none:
             raise RuntimeError(
-                f'Procedure {role} settings for `{command_name}` do not support `-`.'
+                f'Procedure {role} settings for `{command_name}` do not support empty settings.'
             )
         return None, None
 
+    words = _source_setting_words(settings, command_name=command_name, role=role)
     if len(words) >= 2 and words[0] == 'select':
         selector, consumed = _parse_selector_tokens(words[1:], command_name=command_name)
         if consumed != len(words) - 1:
             raise RuntimeError(
-                f'Procedure {role} settings for `{command_name}` must use `{role} select selector`.'
+                f'Procedure {role} settings for `{command_name}` must use '
+                f'`{role} {{select selector}}`.'
             )
         _validate_procedure_selector(selector, command_name=command_name, role=role)
         return selector, None
@@ -1541,11 +1683,13 @@ def _parse_procedure_value(
     if allow_literal and len(words) == 2 and words[0] == 'literal':
         return None, words[1]
 
-    literal_fragment = '|literal value' if allow_literal else ''
-    none_fragment = '|-' if allow_none else ''
+    forms = [f'`{role} {{select selector}}`']
+    if allow_literal:
+        forms.append(f'`{role} {{literal value}}`')
+    if allow_none:
+        forms.append(f'`{role} {{}}`')
     raise RuntimeError(
-        f'Procedure {role} settings for `{command_name}` must be '
-        f'`{role} select selector{literal_fragment}{none_fragment}`.'
+        f'Procedure {role} settings for `{command_name}` must be ' + ' or '.join(forms) + '.'
     )
 
 

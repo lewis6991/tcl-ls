@@ -81,7 +81,6 @@ class LoweredProcCommand(LoweredCommandBase):
     name: str | None
     name_span: Span | None
     documentation: str | None
-    parameter_items: tuple[ListItem, ...]
     body_span: Span | None
     body: LoweredScriptBody | None
 
@@ -679,9 +678,6 @@ class _Lowerer:
             name=word_static_text(name_word) if name_word is not None else None,
             name_span=name_word.span if name_word is not None else None,
             documentation=command_documentation(command),
-            parameter_items=self._parse_list_items(
-                command.words[2] if len(command.words) > 2 else None
-            ),
             body_span=body_span(body_word) if body_word is not None else None,
             body=self._lower_script_word(body_word, word_index=3),
         )

@@ -7,8 +7,8 @@ meta module TclOO {
         # Create a new TclOO class, optionally evaluating a definition script.
         command create {className ?definitionScript?} {
             procedure {
-                name select 1
-                params literal {args}
+                name {select 1}
+                params {literal {args}}
             }
             enter tcloo-definition body 2 owner 1
         }
@@ -27,27 +27,27 @@ meta module TclOO {
     meta language tcloo-definition {
         command method {name args body} {
             procedure {
-                name select 1
-                params select 2
-                body select 3
+                name {select 1}
+                params {select 2}
+                body {select 3}
                 language tcloo-method
             }
         }
 
         command constructor {args body} {
             procedure {
-                name -
-                params select 1
-                body select 2
+                name {}
+                params {select 1}
+                body {select 2}
                 language tcloo-method
             }
         }
 
         command destructor {body} {
             procedure {
-                name -
-                params -
-                body select 1
+                name {}
+                params {}
+                body {select 1}
                 language tcloo-method
             }
         }

@@ -51,7 +51,7 @@ def package_project(tmp_path: Path) -> Path:
     (root / 'tcllsrc.tcl').write_text(
         'meta module Sample {\n'
         '    meta command sample::define {name body} {\n'
-        '        procedure {name select 1; params literal {}; body select 2}\n'
+        '        procedure {name {select 1}; params {literal {}}; body {select 2}}\n'
         '    }\n'
         '    meta command sample::run {body} {enter sample body 1}\n'
         '    meta language sample {extends tcl; command action {}}\n'
@@ -174,7 +174,7 @@ def test_edits_reuse_dependency_facts_until_inputs_change(
             config = package_project / 'tcllsrc.tcl'
             config.write_text(
                 config.read_text().replace(
-                    'procedure {name select 1; params literal {}; body select 2}', ''
+                    'procedure {name {select 1}; params {literal {}}; body {select 2}}', ''
                 )
             )
             server.change_document(source.as_uri(), text + 'missing\n', 3)

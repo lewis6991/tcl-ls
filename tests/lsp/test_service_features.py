@@ -9,6 +9,7 @@ from tests.lsp.helpers import (
     MAIN_URI,
 )
 from tests.lsp_service import LanguageService
+from tests.plugin_support import write_header_plugin
 
 
 def test_language_service_does_not_resolve_unrelated_open_documents(
@@ -594,6 +595,23 @@ def test_language_service_rename_updates_variable_bindings_and_references(
         (1, 8, 'item'),
         (2, 9, '$item'),
     ]
+
+
+def test_rename_does_not_change_a_parameter_shared_by_other_procedures(
+    service: LanguageService, tmp_path: Path
+) -> None:
+    write_header_plugin(tmp_path)
+    uri = (tmp_path / 'main.tcl').as_uri()
+    text = (
+        'set common {{-props -default .*}}\n'
+        'declare first {-args {$common}} {puts $props}\n'
+        'declare second {-args {$common}} {puts $props}\n'
+    )
+    assert service.open_document(uri, text, 1) == ()
+    character = text.splitlines()[1].index('$props') + 1
+
+    assert service.definition(uri, 1, character)[0].range.start.line == 0
+    assert service.rename(uri, 1, character, 'properties') is None
 
 
 def test_language_service_static_command_rename_creates_alias_symbol(

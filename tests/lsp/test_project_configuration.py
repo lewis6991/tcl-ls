@@ -38,6 +38,16 @@ def test_config_commands_have_editor_help_and_stay_local_to_config(
         ]:
             hover = service.hover(config.as_uri(), line, 2)
             assert hover is not None and name in hover.contents
+            assert 'Syntax:' in hover.contents
+            assert '**Example**' in hover.contents
+            if name == 'diagnostic':
+                assert '**Levels (choose one)**' in hover.contents
+                assert '**Options**' in hover.contents
+                for level in ('error', 'warning', 'information', 'hint', 'off', 'default'):
+                    assert f'`{level}`' in hover.contents
+                assert 'Default: all files in this config' in hover.contents
+            if name == 'module':
+                assert 'An unknown or false result does not activate the module.' in hover.contents
             locations = service.definition(config.as_uri(), line, 2)
             assert locations and locations[0].uri.endswith('/meta/tcllsrc.meta.tcl')
         snapshot = service.server.analysis_snapshot()

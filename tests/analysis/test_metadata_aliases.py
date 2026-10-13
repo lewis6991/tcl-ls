@@ -63,9 +63,9 @@ def test_aliases_reuse_the_original_declaration_plugin(parser: Parser, tmp_path:
         'proc declare {words info} {\n'
         '    if {[dict get $info metadata-command] ne "original"} {return {}}\n'
         '    return {{procedure {\n'
-        '        name select 2\n'
-        '        params select 3 format tepam\n'
-        '        body select 4\n'
+        '        name {select 2}\n'
+        '        params {select 3}\n'
+        '        body {select 4}\n'
         '    }}}\n'
         '}\n',
         encoding='utf-8',
@@ -81,7 +81,7 @@ def test_aliases_reuse_the_original_declaration_plugin(parser: Parser, tmp_path:
     )
     source = tmp_path / 'main.tcl'
     source.write_text(
-        'declare greet {-args {{name}}} {return $name}\ngreet World\n',
+        'declare greet {name} {return $name}\ngreet World\n',
         encoding='utf-8',
     )
 

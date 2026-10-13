@@ -4,8 +4,36 @@ import pytest
 
 from tcl_lsp.checker import check_project
 from tcl_lsp.lsp import LanguageServer
+from tcl_lsp.lsp.features.hover import hover
 from tcl_lsp.lsp.features.navigation import definition
 from tcl_lsp.parser import Parser, ParseResult
+
+
+def test_metadata_include_hover_describes_static_includes(tmp_path: Path) -> None:
+    fragment = tmp_path / 'common.meta.tcl'
+    fragment.write_text('meta command available {}\n')
+    metadata = tmp_path / 'tool.meta.tcl'
+    metadata.write_text('source common.meta.tcl\n')
+    source = tmp_path / 'main.tcl'
+    source.write_text('source common.tcl\n')
+    server = LanguageServer()
+
+    try:
+        assert server.open_document(metadata.as_uri(), metadata.read_text(), 1) == ()
+        metadata_hover = hover(server.documents, uri=metadata.as_uri(), line=0, character=1)
+        assert metadata_hover is not None
+        assert '`source path`' in metadata_hover.contents
+        assert 'Include static metadata declarations' in metadata_hover.contents
+        assert 'Included files inherit the enclosing module' in metadata_hover.contents
+        assert '-encoding' not in metadata_hover.contents
+
+        server.open_document(source.as_uri(), source.read_text(), 1)
+        source_hover = hover(server.documents, uri=source.as_uri(), line=0, character=1)
+        assert source_hover is not None
+        assert 'Evaluate a file or resource as a Tcl script.' in source_hover.contents
+        assert 'Include static metadata declarations' not in source_hover.contents
+    finally:
+        server.shutdown()
 
 
 @pytest.mark.parametrize('threads', [1, 2])

@@ -5,6 +5,9 @@ from typing import Literal
 
 from tcl_lsp.analysis.facts.parsing import split_tcl_list
 from tcl_lsp.analysis.metadata_commands import (
+    parse_package_value,
+    parse_procedure_parameter_settings,
+    parse_procedure_value,
     parse_selector_tokens,
     validate_context_body_selector,
     validate_context_owner_selector,
@@ -18,6 +21,10 @@ type StructuredMatchState = Literal['unstructured', 'exact', 'dynamic', 'reject'
 _ZERO_POSITION = Position(offset=0, line=0, character=0)
 _SLOT_DISPLAY_NAMES = {
     'groupedShape': 'shape',
+    'nameSettings': 'settings',
+    'bodySettings': 'settings',
+    'packageSettings': 'settings',
+    'parameterSettings': 'settings',
 }
 
 
@@ -30,11 +37,37 @@ def display_metadata_signature(signature: str) -> str:
     return ' '.join(_display_token(item) for item in items)
 
 
+def display_metadata_usage(signature: str) -> str:
+    """Show the Tcl argument grouping described by the metadata grammar."""
+    grouped_slots = {
+        'shape',
+        'groupedShape',
+        'body',
+        'nameSettings',
+        'bodySettings',
+        'packageSettings',
+        'parameterSettings',
+    }
+    selector_slots = {'bodySelector', 'ownerSelector', 'procedureSelector'}
+    words: list[str] = []
+    for item in _signature_items(signature):
+        slot = _slot_name(item)
+        text = 'selector' if slot in selector_slots else _display_token(item)
+        if slot in grouped_slots:
+            text = '{' + text + '}'
+        words.append(text)
+    return ' '.join(words)
+
+
 def is_structured_metadata_signature(signature: str) -> bool:
     return any(
         _is_literal_token(item) or _slot_name(item) is not None
         for item in _signature_items(signature)
     )
+
+
+def has_metadata_slots(signature: str) -> bool:
+    return any(_slot_name(item) is not None for item in _signature_items(signature))
 
 
 def metadata_signature_match_state(
@@ -212,8 +245,16 @@ def _match_slot_token(
     if slot_name == 'kind':
         return 'exact' if actual in BINDING_KINDS else 'reject'
     if slot_name in {
+        'nameSettings',
+        'bodySettings',
+        'packageSettings',
+        'parameterSettings',
+    }:
+        return _match_settings_slot(slot_name, actual)
+    if slot_name in {
         'body',
         'commandPrefix',
+        'moduleName',
         'packageName',
         'path',
         'script',
@@ -221,6 +262,26 @@ def _match_slot_token(
     }:
         return 'exact'
     return 'reject'
+
+
+def _match_settings_slot(slot_name: str, text: str) -> StructuredMatchState:
+    try:
+        if slot_name == 'parameterSettings':
+            parse_procedure_parameter_settings((text,), command_name='signature')
+        elif slot_name == 'packageSettings':
+            parse_package_value((text,), command_name='signature')
+        else:
+            role = 'name' if slot_name == 'nameSettings' else 'body'
+            parse_procedure_value(
+                (text,),
+                command_name='signature',
+                role=role,
+                allow_literal=role == 'name',
+                allow_none=role == 'name',
+            )
+    except RuntimeError:
+        return 'reject'
+    return 'exact'
 
 
 def _match_selector_slot(

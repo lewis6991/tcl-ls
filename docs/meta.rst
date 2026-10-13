@@ -35,7 +35,7 @@ Create ``.tcl-ls/project.meta.tcl`` with a module block:
    meta module Tcl {
        # Run a script with a package loaded and store its result.
        meta command project::run {packageName script resultVar} {
-           package select 1
+           package {select 1}
            enter tcl body 2
            bind 3 set
        }

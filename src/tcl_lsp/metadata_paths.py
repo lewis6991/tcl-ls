@@ -10,7 +10,7 @@ from tcl_lsp.project.declarations import (
     metadata_root,
     metadata_roots,
 )
-from tcl_lsp.project.paths import FileRevision
+from tcl_lsp.project.paths import FileRevision, file_revision
 
 _PACKAGE_META_DIR = Path(__file__).resolve().parent / 'meta'
 _REPO_META_DIR = Path(__file__).resolve().parents[2] / 'meta'
@@ -73,13 +73,28 @@ DEFAULT_METADATA_REGISTRY = MetadataRegistry()
 def create_metadata_registry(
     paths: Iterable[Path | str] = (), *, module: str | None = None
 ) -> MetadataRegistry:
-    normalized = _normalize_metadata_paths(paths)
-    revision = dict.fromkeys(
-        entry
-        for root in normalized
-        for path in metadata_roots(root)
-        for entry in load_declaration_snapshot(path).revision
+    from tcl_lsp.analysis.metadata_commands import (
+        MetadataPlugin,
+        MetadataProcedure,
+        metadata_file_summary,
     )
+
+    normalized = _normalize_metadata_paths(paths)
+    roots = tuple(path for root in normalized for path in metadata_roots(root))
+    revision = dict.fromkeys(
+        entry for path in roots for entry in load_declaration_snapshot(path).revision
+    )
+    # Plugin scripts affect extracted facts even when their metadata is unchanged.
+    scripts: list[Path] = []
+    for path in roots:
+        for command in metadata_file_summary(path, revision=tuple(revision)).commands:
+            for annotation in command.annotations:
+                if isinstance(annotation, MetadataPlugin):
+                    scripts.append(annotation.script_path)
+                elif isinstance(annotation, MetadataProcedure):
+                    if annotation.parameter_plugin is not None:
+                        scripts.append(annotation.parameter_plugin.script_path)
+    revision.update(dict.fromkeys(file_revision(scripts)))
     return MetadataRegistry(
         catalog=MetadataCatalog(normalized, tuple(revision)),
         modules=(module,) if module and module != 'Tcl' else (),

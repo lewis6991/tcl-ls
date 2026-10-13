@@ -384,7 +384,7 @@ def test_check_project_reuses_syntax_and_distinct_package_contexts(
     (tmp_path / 'tcllsrc.tcl').write_text(
         'meta module Sample {meta command run {body} {enter tcl body 1}}\n'
         'meta module Extra {meta command define {name body} {\n'
-        '    procedure {name select 1; params literal {}; body select 2}\n'
+        '    procedure {name {select 1}; params {literal {}}; body {select 2}}\n'
         '}}\n'
     )
     package = tmp_path / 'pkg'

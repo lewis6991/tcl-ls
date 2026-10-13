@@ -360,7 +360,7 @@ def test_tcloo_metadata_parses_embedded_context_annotations() -> None:
     assert method_body_command.context_extends == 'tcl'
 
 
-def test_tepam_metadata_uses_the_shared_parameter_format() -> None:
+def test_tepam_metadata_uses_a_tcl_plugin() -> None:
     metadata_path = bundled_metadata_dir() / Path('tcllib/tepam.meta.tcl')
     commands = load_metadata_commands(metadata_path)
 
@@ -374,7 +374,9 @@ def test_tepam_metadata_uses_the_shared_parameter_format() -> None:
         for annotation in procedure_command.annotations
         if isinstance(annotation, MetadataProcedure)
     )
-    assert procedure_annotation.parameter_format == 'tepam'
+    assert procedure_annotation.parameter_plugin is not None
+    assert procedure_annotation.parameter_plugin.script_path.name == 'tepam-plugin.tcl'
+    assert procedure_annotation.parameter_plugin.proc_name == '::tepam::metadata::header_parameters'
 
 
 def test_builtin_metadata_ignores_context_commands() -> None:
@@ -811,12 +813,14 @@ def test_metadata_rejects_legacy_subcommand_declarations(tmp_path: Path) -> None
 
 def test_metadata_parses_new_package_and_source_syntax(tmp_path: Path) -> None:
     metadata_path = tmp_path / 'deps.meta.tcl'
+    literal = '{literal TclOO}'
+    selected = '{select 1}'
     metadata_path.write_text(
         'meta command use-tcloo {args} {\n'
-        '    package literal TclOO\n'
+        f'    package {literal}\n'
         '}\n'
         'meta command use-dynamic {name} {\n'
-        '    package select 1\n'
+        f'    package {selected}\n'
         '}\n'
         'meta command load-local {path} {\n'
         '    source 1 caller\n'
@@ -874,12 +878,15 @@ def test_metadata_rejects_non_contiguous_enter_body_selectors(tmp_path: Path) ->
 
 def test_metadata_parses_tagged_procedure_fields(tmp_path: Path) -> None:
     metadata_path = tmp_path / 'procedure.meta.tcl'
+    name = '{select 1}'
+    params = '{literal {left right}}'
+    body = '{select 3}'
     metadata_path.write_text(
         'meta command demo {name params body} {\n'
         '    procedure {\n'
-        '        name select 1\n'
-        '        params literal {left right}\n'
-        '        body select 3\n'
+        f'        name {name}\n'
+        f'        params {params}\n'
+        f'        body {body}\n'
         '        language sample\n'
         '    }\n'
         '}\n',
@@ -908,8 +915,8 @@ def test_metadata_rejects_procedure_language_without_body(tmp_path: Path) -> Non
     metadata_path.write_text(
         'meta command demo {name params} {\n'
         '    procedure {\n'
-        '        name select 1\n'
-        '        params select 2\n'
+        '        name {select 1}\n'
+        '        params {select 2}\n'
         '        language sample\n'
         '    }\n'
         '}\n',
@@ -920,6 +927,93 @@ def test_metadata_rejects_procedure_language_without_body(tmp_path: Path) -> Non
         RuntimeError,
         match='may only declare `language` when `body` is present',
     ):
+        load_metadata_commands(metadata_path)
+
+
+@pytest.mark.parametrize('params', ['{}', '{literal {}}'])
+def test_metadata_can_declare_a_procedure_without_parameters(tmp_path: Path, params: str) -> None:
+    metadata_path = tmp_path / 'procedure.meta.tcl'
+    metadata_path.write_text(
+        'meta command declare {name body} {\n'
+        f'    procedure {{name {{select 1}}; params {params}; body {{select 2}}}}\n'
+        '}\n'
+    )
+
+    (command,) = load_metadata_commands(metadata_path)
+    procedure = next(a for a in command.annotations if isinstance(a, MetadataProcedure))
+    assert procedure.parameter_selector is None
+    assert not procedure.parameter_literal
+
+
+@pytest.mark.parametrize(
+    ('settings', 'message'),
+    [
+        ('select', 'key/value pairs'),
+        ('select 2 format', 'key/value pairs'),
+        ('select 2 unknown value', 'Unknown procedure parameter setting'),
+        ('select 2 select 3', 'may only declare one `select`'),
+        ('select 2 literal {}', 'exactly one of `select` or `literal`'),
+        ('format tepam', 'Unknown procedure parameter setting'),
+        ('items {s0}', 'Unknown procedure parameter setting'),
+        ('select 2 subst commands', 'Unknown procedure parameter setting'),
+        ('select 2 subst variables', 'Unknown procedure parameter setting'),
+        ('select 2 format tcl format tepam', 'Unknown procedure parameter setting'),
+        ('select 2 format tepam-subst', 'Unknown procedure parameter setting'),
+        ('literal {bg} format tepam', 'Unknown procedure parameter setting'),
+        ('select {2..3}', 'must select exactly one argument'),
+        ('select {2}suffix', 'Invalid procedure parameter list'),
+        ('plugin {parser.tcl parse}', 'require `select`'),
+        ('literal {} plugin {parser.tcl parse}', 'require `select`'),
+        ('select 2 plugin {}', 'must use `plugin'),
+        ('select 2 plugin {parser.tcl}', 'must use `plugin'),
+        ('select 2 plugin {parser.tcl parse extra}', 'must use `plugin'),
+        ('select 2 plugin {missing.tcl parse}', 'references missing script'),
+        ('select 2 plugin {} plugin {}', 'may only declare one `plugin`'),
+    ],
+)
+def test_metadata_rejects_invalid_grouped_parameter_settings(
+    tmp_path: Path, settings: str, message: str
+) -> None:
+    metadata_path = tmp_path / 'procedure.meta.tcl'
+    # Tcl quotes keep malformed list contents inside a valid script.
+    metadata_path.write_text(
+        'meta command declare {name header body} {\n'
+        f'    procedure {{name {{select 1}}; params "{settings}"; body {{select 3}}}}\n'
+        '}\n'
+    )
+
+    with pytest.raises(RuntimeError, match=message):
+        load_metadata_commands(metadata_path)
+
+
+@pytest.mark.parametrize(
+    ('field', 'value'),
+    [
+        ('name', 'select 1'),
+        ('name', 'literal declared'),
+        ('name', '-'),
+        ('params', 'select 2'),
+        ('params', 'select 2 format shared_header'),
+        ('params', 'literal {}'),
+        ('params', '-'),
+        ('body', 'select 3'),
+        ('package', 'select 1'),
+        ('package', 'literal TclOO'),
+    ],
+)
+def test_metadata_rejects_ungrouped_source_descriptions(
+    tmp_path: Path, field: str, value: str
+) -> None:
+    metadata_path = tmp_path / 'procedure.meta.tcl'
+    fields = {'name': '{select 1}', 'params': '{select 2}', 'body': '{select 3}'}
+    if field == 'package':
+        annotation = f'package {value}'
+    else:
+        fields[field] = value
+        annotation = 'procedure {' + '; '.join(f'{k} {v}' for k, v in fields.items()) + '}'
+    metadata_path.write_text(f'meta command declare {{name header body}} {{\n{annotation}\n}}\n')
+
+    with pytest.raises(RuntimeError, match=r'braced key/value list|key/value pairs'):
         load_metadata_commands(metadata_path)
 
 

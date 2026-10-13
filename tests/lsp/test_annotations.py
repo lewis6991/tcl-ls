@@ -86,7 +86,7 @@ def test_annotations_apply_to_metadata_procedures(server: LanguageServer, tmp_pa
     (tmp_path / 'tcllsrc.tcl').write_text(
         """meta module Tcl {
 meta command define {name params body} {
-    procedure {name select 1; params select 2; body select 3}
+    procedure {name {select 1}; params {select 2}; body {select 3}}
 }
 }
 """,

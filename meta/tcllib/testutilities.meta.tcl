@@ -27,8 +27,8 @@ meta command ::useAccel {acc fname pname args} {
 
 # Treat helper package gates as effective package requirements.
 meta command ::testsNeed {name {version {}}} {
-    package select 1
+    package {select 1}
 }
 meta command ::testsNeedTcltest {version} {
-    package literal tcltest
+    package {literal tcltest}
 }

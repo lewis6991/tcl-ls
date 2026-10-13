@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from tcl_lsp.analysis import FactExtractor, Resolver, WorkspaceIndex
 from tcl_lsp.metadata_paths import create_metadata_registry
 from tcl_lsp.parser import Parser
@@ -249,21 +251,44 @@ def test_analysis_reports_wrong_argument_count_in_meta_command_body(
     )
 
 
-def test_analysis_reports_wrong_argument_count_for_structured_helper_selector_clauses(
-    parser: Parser,
+def test_metadata_option_value_marker_must_be_literal(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///demo.meta.tcl',
+        'meta command demo {args} {option -start arbitrary}\n',
+    )
+
+    assert [diagnostic.code for diagnostic in snapshot.analysis.diagnostics] == [
+        'invalid-arguments'
+    ]
+
+
+@pytest.mark.parametrize(
+    ('clause', 'code', 'message'),
+    [
+        (
+            'package',
+            'wrong-argument-count',
+            'Wrong number of arguments for command `package`; expected 1, got 0.',
+        ),
+        (
+            'package select',
+            'invalid-arguments',
+            'Invalid arguments for command `package`; expected `package {settings}`.',
+        ),
+    ],
+)
+def test_analysis_reports_missing_package_settings(
+    parser: Parser, clause: str, code: str, message: str
 ) -> None:
     snapshot = _analyze(
         parser,
         'file:///demo.meta.tcl',
-        'meta command demo {args} {\n    package select\n}\n',
+        f'meta command demo {{args}} {{\n    {clause}\n}}\n',
     )
 
-    assert [diagnostic.code for diagnostic in snapshot.analysis.diagnostics] == [
-        'wrong-argument-count'
-    ]
-    assert snapshot.analysis.diagnostics[0].message == (
-        'Wrong number of arguments for command `package`; expected 2 or 2..6, got 1.'
-    )
+    assert [diagnostic.code for diagnostic in snapshot.analysis.diagnostics] == [code]
+    assert snapshot.analysis.diagnostics[0].message == message
 
 
 def test_analysis_reports_invalid_arguments_for_meta_command_shell(

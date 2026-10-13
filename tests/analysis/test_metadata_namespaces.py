@@ -20,7 +20,7 @@ def test_metadata_declarations_resolve_relative_to_the_current_namespace(
         (
             'meta module Tcl {\n'
             '    meta command sample::declare {name params body} {\n'
-            '        procedure {name select 1; params select 2; body select 3}\n'
+            '        procedure {name {select 1}; params {select 2}; body {select 3}}\n'
             '    }\n'
             '}\n'
         ),

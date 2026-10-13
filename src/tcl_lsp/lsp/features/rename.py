@@ -180,6 +180,19 @@ def rename_symbol_id_at_position(
     symbol_id = symbol_ids[0]
     if symbol_id.startswith('builtin::'):
         return None
+    for document in documents_by_uri.values():
+        declaration_spans = {
+            binding.span
+            for binding in document.facts.variable_bindings
+            if binding.symbol_id == symbol_id
+        }
+        if any(
+            binding.span in declaration_spans and binding.symbol_id != symbol_id
+            for binding in document.facts.variable_bindings
+        ):
+            # A shared header defines separate locals in several procedures.
+            # Renaming one local would also change the others' declaration.
+            return None
     return symbol_id
 
 

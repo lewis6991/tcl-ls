@@ -59,7 +59,12 @@ from tcl_lsp.analysis.model import (
     VariableReference,
 )
 from tcl_lsp.analysis.modules import registry_at_offset
-from tcl_lsp.analysis.signature_matching import display_metadata_signature
+from tcl_lsp.analysis.signature_matching import (
+    display_metadata_signature,
+    display_metadata_usage,
+    has_metadata_slots,
+    is_structured_metadata_signature,
+)
 from tcl_lsp.analysis.types import CallType, CallTypes, TypeInfo, literal_values
 from tcl_lsp.common import Diagnostic, HoverInfo, Span, lsp_location
 from tcl_lsp.metadata_paths import (
@@ -1266,33 +1271,54 @@ def _hover_with_visibility(contents: str, visibility: CommandVisibility) -> str:
 
 
 def _metadata_hover(command: BuiltinCommand | ContextualCommand) -> str:
+    structured_usage = False
     if isinstance(command, BuiltinCommand):
         kind = 'builtin command'
-        forms = tuple(
-            (overload.signature, overload.documentation) for overload in command.overloads
+        structured_usage = all(
+            has_metadata_slots(overload.match_signature) for overload in command.overloads
         )
-    else:
-        kind = 'command'
         forms = tuple(
             (
-                f'{command.name} {{{display_metadata_signature(overload.signature)}}}',
+                f'{command.name} {display_metadata_usage(overload.match_signature)}'.rstrip()
+                if structured_usage
+                else overload.signature,
                 overload.documentation,
             )
             for overload in command.overloads
         )
-    if len(forms) == 1:
+    else:
+        kind = 'command'
+        structured_usage = all(
+            is_structured_metadata_signature(overload.signature) for overload in command.overloads
+        )
+        forms = tuple(
+            (
+                f'{command.name} {display_metadata_usage(overload.signature)}'.rstrip()
+                if structured_usage
+                else f'{command.name} {{{display_metadata_signature(overload.signature)}}}',
+                overload.documentation,
+            )
+            for overload in command.overloads
+        )
+    if len(forms) == 1 and not structured_usage:
         signature, documentation = forms[0]
         heading = f'{kind} {signature.removesuffix(" {}")}'
         if not documentation:
             return heading
         return f'{heading}\n\n{documentation}'
 
+    shared_documentation = forms[0][1]
+    if any(documentation != shared_documentation for _, documentation in forms):
+        shared_documentation = None
+
     sections: list[str] = []
     for signature, documentation in forms:
         section = f'`{signature}`'
-        if documentation:
+        if documentation and documentation != shared_documentation:
             section = f'{section}\n{documentation}'
         sections.append(section)
+    if shared_documentation:
+        sections.append(shared_documentation)
     return f'{kind} {command.name}\n\n' + '\n\n'.join(sections)
 
 

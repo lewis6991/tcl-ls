@@ -47,7 +47,6 @@ from tcl_lsp.analysis.facts.lowering import (
     LoweredWordReferences,
     command_scripts,
 )
-from tcl_lsp.analysis.facts.parameters import procedure_parameter_items
 from tcl_lsp.analysis.facts.parsing import ListItem, is_simple_name, split_tcl_list
 from tcl_lsp.analysis.facts.utils import (
     body_span,
@@ -65,6 +64,7 @@ from tcl_lsp.analysis.facts.utils import (
     qualify_namespace,
     variable_symbol_id,
 )
+from tcl_lsp.analysis.facts.values import resolve_word_source
 from tcl_lsp.analysis.flow import (
     VariableEffects,
     VariableFlowState,
@@ -136,6 +136,7 @@ from tcl_lsp.parser.model import (
     Word,
 )
 from tcl_lsp.plugins.host import PluginProcedureEffect, TclPluginHost
+from tcl_lsp.plugins.sources import PluginSources
 from tcl_lsp.project.config import (
     ModuleRule,
     configured_module_rules,
@@ -296,6 +297,7 @@ class _FactCollector:
         '_plugin_generation',
         '_plugin_host',
         '_previous_module_selection',
+        '_procedure_plugin_calls',
         '_required_packages',
         '_syntax',
         '_type_aliases',
@@ -340,6 +342,7 @@ class _FactCollector:
         self._body_cache = body_cache
         self._imports: list[CommandImport] = []
         self._plugin_generation = 0
+        self._procedure_plugin_calls: set[tuple[int, MetadataPlugin]] = set()
         self._syntax = syntax
         self._parser = syntax.parser
         self._plugin_host = plugin_host
@@ -358,10 +361,17 @@ class _FactCollector:
         root_context = self._namespace_context(
             self._parse_result.source_id, '::', command_renames_enabled=True
         )
-        if is_config_file(source_id_to_path(self._parse_result.source_id)):
+        source_path = source_id_to_path(self._parse_result.source_id)
+        if is_config_file(source_path):
             root_context = replace(
                 root_context,
                 explicit_modules=('TclLSConfig',),
+                command_renames_enabled=False,
+            )
+        elif is_declaration_file(source_path):
+            root_context = replace(
+                root_context,
+                explicit_modules=('TclLSMetadata',),
                 command_renames_enabled=False,
             )
         self._collect_lowered_script(self._lowered_script, root_context)
@@ -1185,26 +1195,21 @@ class _FactCollector:
         prefix_word_count: int,
         plugin: MetadataPlugin,
     ) -> tuple[EmbeddedLanguageEntry, ...]:
-        word_texts, static_flags = self._plugin_word_texts(command.words)
+        word_texts, _ = self._plugin_word_texts(command.words)
         self._plugin_generation += 1
         effects = self._plugin_host.call_plugin(
             plugin,
             words=word_texts,
-            info={
-                'embedded-language': context.embedded_language or '',
-                'embedded-owner-name': context.embedded_owner_name or '',
-                'metadata-command': metadata_command.alias_target or metadata_command.name,
-                'namespace': context.namespace,
-                'prefix-word-count': str(prefix_word_count),
-                'procedure-symbol-id': context.procedure_symbol_id or '',
-                'scope-id': context.scope_id,
-                'static-flags': self._plugin_flag_list(static_flags),
-                'expanded-flags': self._plugin_flag_list(
-                    tuple(word.expanded for word in command.words)
-                ),
-                'uri': context.uri,
-            },
+            info=self._plugin_info(
+                command,
+                context,
+                metadata_command=metadata_command,
+                prefix_word_count=prefix_word_count,
+            ),
+            sources=self._plugin_sources(command, context),
         )
+        if effects and all(isinstance(effect, PluginProcedureEffect) for effect in effects):
+            self._procedure_plugin_calls.add((id(command), plugin))
         embedded_entries: list[EmbeddedLanguageEntry] = []
         for effect in effects:
             if isinstance(effect, PluginProcedureEffect):
@@ -1234,6 +1239,30 @@ class _FactCollector:
             self._collect_plugin_selected_effect(command, context, effect)
         return tuple(embedded_entries)
 
+    def _plugin_info(
+        self,
+        command: Command,
+        context: _ExtractionContext,
+        *,
+        metadata_command: MetadataCommand,
+        prefix_word_count: int,
+    ) -> dict[str, str]:
+        _, static_flags = self._plugin_word_texts(command.words)
+        return {
+            'embedded-language': context.embedded_language or '',
+            'embedded-owner-name': context.embedded_owner_name or '',
+            'metadata-command': metadata_command.alias_target or metadata_command.name,
+            'namespace': context.namespace,
+            'prefix-word-count': str(prefix_word_count),
+            'procedure-symbol-id': context.procedure_symbol_id or '',
+            'scope-id': context.scope_id,
+            'static-flags': self._plugin_flag_list(static_flags),
+            'expanded-flags': self._plugin_flag_list(
+                tuple(word.expanded for word in command.words)
+            ),
+            'uri': context.uri,
+        }
+
     def _collect_metadata_procedure(
         self,
         command: Command,
@@ -1257,7 +1286,9 @@ class _FactCollector:
             return
 
         parameter_items = self._procedure_parameter_items(
+            command,
             argument_words,
+            context,
             metadata_command=metadata_command,
             procedure=procedure,
             fallback_start=selection_span.start,
@@ -1293,11 +1324,9 @@ class _FactCollector:
                 uri=context.uri,
                 proc_symbol_id=proc_id,
             ),
-            arity=(
-                proc_parameter_arity(parameter_items)
-                if procedure.parameter_format == 'tcl'
-                else None
-            ),
+            arity=None
+            if procedure.parameter_plugin is not None
+            else proc_parameter_arity(parameter_items),
             documentation=command_documentation(command),
             body_span=body_span(body_word) if body_word is not None else None,
         )
@@ -1348,7 +1377,12 @@ class _FactCollector:
 
         qualified_name = qualify_name(procedure_name, context.namespace)
         proc_id = proc_symbol_id(context.uri, qualified_name, name_span.start.offset)
-        if procedure.parameter_literal is not None:
+        if effect.parameter_items is not None:
+            parameters = self._parameter_decls_from_items(
+                effect.parameter_items, uri=context.uri, proc_symbol_id=proc_id
+            )
+            arity = None
+        elif procedure.parameter_literal is not None:
             source_word = (
                 self._selected_plugin_single_word(command, effect.parameter_source_selector)
                 if effect.parameter_source_selector is not None
@@ -1377,24 +1411,16 @@ class _FactCollector:
             )
             if parameter_word is None:
                 return
-            static_text = self._static_list_text(parameter_word)
-            if static_text is None:
+            source = self._procedure_parameter_source(parameter_word, context)
+            if source is None:
                 return
-            parameter_items = procedure_parameter_items(
-                static_text, parameter_word.content_span.start, procedure.parameter_format
-            )
-            if parameter_items is None:
-                return
+            parameter_items = tuple(split_tcl_list(source.text, source.content_start))
             parameters = self._parameter_decls_from_items(
                 parameter_items,
                 uri=context.uri,
                 proc_symbol_id=proc_id,
             )
-            arity = (
-                proc_parameter_arity(parameter_items)
-                if procedure.parameter_format == 'tcl'
-                else None
-            )
+            arity = proc_parameter_arity(parameter_items)
         else:
             parameters = ()
             arity = None
@@ -1846,7 +1872,9 @@ class _FactCollector:
             return
 
         parameter_items = self._procedure_parameter_items(
+            command,
             argument_words,
+            context,
             metadata_command=metadata_command,
             procedure=procedure,
             fallback_start=selection_span.start,
@@ -1887,11 +1915,9 @@ class _FactCollector:
                 uri=context.uri,
                 proc_symbol_id=proc_id,
             ),
-            arity=(
-                proc_parameter_arity(parameter_items)
-                if procedure.parameter_format == 'tcl'
-                else None
-            ),
+            arity=None
+            if procedure.parameter_plugin is not None
+            else proc_parameter_arity(parameter_items),
             documentation=command_documentation(command),
             body_span=body_span(body_word) if body_word is not None else None,
         )
@@ -1986,12 +2012,17 @@ class _FactCollector:
 
     def _procedure_parameter_items(
         self,
+        command: Command,
         argument_words: tuple[Word, ...],
+        context: _ExtractionContext,
         *,
         metadata_command: MetadataCommand,
         procedure: MetadataProcedure,
         fallback_start: Position,
     ) -> tuple[ListItem, ...] | None:
+        if procedure.parameter_plugin is not None:
+            # Caller values and parser code can change independently of the body.
+            self._plugin_generation += 1
         if procedure.parameter_literal is not None:
             return tuple(split_tcl_list(procedure.parameter_literal, fallback_start))
 
@@ -2007,12 +2038,39 @@ class _FactCollector:
             return None
 
         parameter_word = argument_words[parameter_index]
-        static_text = self._static_list_text(parameter_word)
-        if static_text is None:
-            return None
-        return procedure_parameter_items(
-            static_text, parameter_word.content_span.start, procedure.parameter_format
+        source = (
+            resolve_word_source(parameter_word, context.flow_state.literal_source)
+            if procedure.parameter_plugin is not None
+            else self._procedure_parameter_source(parameter_word, context)
         )
+        if source is None:
+            return None
+        if procedure.parameter_plugin is not None:
+            return self._plugin_host.call_parameter_parser(
+                procedure.parameter_plugin,
+                value=source,
+                info=self._plugin_info(
+                    command,
+                    context,
+                    metadata_command=metadata_command,
+                    prefix_word_count=len(command.words) - len(argument_words),
+                ),
+                sources=self._plugin_sources(command, context),
+            )
+        return tuple(split_tcl_list(source.text, source.content_start))
+
+    def _procedure_parameter_source(
+        self, word: Word, context: _ExtractionContext
+    ) -> ListItem | None:
+        source = resolve_word_source(word, context.flow_state.literal_source)
+        if source is not None:
+            return source
+        # Keep the existing handling of static words with decoded escapes.
+        # Flow sources remain restricted to literals with exact locations.
+        text = self._static_list_text(word)
+        if text is None:
+            return None
+        return ListItem(text=text, span=word.content_span, content_start=word.content_span.start)
 
     def _procedure_selected_argument_index(
         self,
@@ -2422,6 +2480,14 @@ class _FactCollector:
         if command.name is None or command.name_span is None or command.body_span is None:
             return context
 
+        parameter_word = command.command.words[2] if len(command.command.words) > 2 else None
+        if parameter_word is None:
+            return context
+        source = self._procedure_parameter_source(parameter_word, context)
+        if source is None:
+            return context
+        parameter_items = tuple(split_tcl_list(source.text, source.content_start))
+
         qualified_name = qualify_name(command.name, context.namespace)
         proc_id = proc_symbol_id(context.uri, qualified_name, command.name_span.start.offset)
         proc_decl = ProcDecl(
@@ -2433,11 +2499,11 @@ class _FactCollector:
             span=command.command.span,
             name_span=command.name_span,
             parameters=self._parameter_decls_from_items(
-                command.parameter_items,
+                parameter_items,
                 uri=context.uri,
                 proc_symbol_id=proc_id,
             ),
-            arity=proc_parameter_arity(command.parameter_items),
+            arity=proc_parameter_arity(parameter_items),
             documentation=command.documentation,
             body_span=command.body_span,
         )
@@ -3239,7 +3305,11 @@ class _FactCollector:
         return self._context_with_flow_state(context, effects.invalidate(context.flow_state))
 
     def _command_effects(
-        self, command: LoweredCommand, context: _ExtractionContext
+        self,
+        command: LoweredCommand,
+        context: _ExtractionContext,
+        *,
+        use_plugin_results: bool = True,
     ) -> VariableEffects:
         """Use the same output bindings for collection and body summaries."""
         syntax = command.command
@@ -3283,6 +3353,13 @@ class _FactCollector:
             metadata, prefix_count = matched
             arguments = words[prefix_count:]
             for annotation in metadata.annotations:
+                if (
+                    use_plugin_results
+                    and isinstance(annotation, MetadataPlugin)
+                    and (id(syntax), annotation) in self._procedure_plugin_calls
+                ):
+                    # A procedure effect declares a body; it does not run it.
+                    continue
                 if isinstance(annotation, (MetadataPlugin, MetadataSource)):
                     return VariableEffects.unknown()
                 if not isinstance(annotation, MetadataBind):
@@ -3330,7 +3407,9 @@ class _FactCollector:
                 if index < len(command.command.words)
             ):
                 return VariableEffects.unknown()
-            effects = effects.combined(self._command_effects(command, context))
+            effects = effects.combined(
+                self._command_effects(command, context, use_plugin_results=False)
+            )
             scripts = list(command_scripts(command))
             if isinstance(command, LoweredGenericCommand):
                 entries = self._resolved_command_embedded_entries(command.command, context)
@@ -3817,6 +3896,16 @@ class _FactCollector:
             texts.append(static_text or '')
             static_flags.append(static_text is not None)
         return tuple(texts), tuple(static_flags)
+
+    def _plugin_sources(self, command: Command, context: _ExtractionContext) -> PluginSources:
+        def word_source(index: int) -> ListItem | None:
+            if index >= len(command.words):
+                return None
+            return resolve_word_source(command.words[index], context.flow_state.literal_source)
+
+        return PluginSources(
+            word_source=word_source, variable_source=context.flow_state.literal_source
+        )
 
     def _plugin_flag_list(self, flags: tuple[bool, ...]) -> str:
         return ' '.join('1' if flag else '0' for flag in flags)
