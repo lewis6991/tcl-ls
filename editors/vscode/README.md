@@ -8,6 +8,7 @@ recognizes `.tcl`, `.tm`, and `.test` files and starts the server over stdio.
 Download the `.vsix` for your platform from
 [GitHub Releases](https://github.com/lewis6991/tcl-ls/releases). Release
 extensions include the server, so no separate Python installation is needed.
+The server still requires `tclsh` on VS Code's `PATH`.
 
 Use **Extensions: Install from VSIX...** in VS Code, or run:
 
@@ -48,6 +49,10 @@ path setting with an empty string.
 
 Use **tcl-ls: Restart Language Server** to restart manually. Startup errors
 and restart details appear in the **tcl-ls** output channel.
+
+Ordinary Tcl plugin scripts, such as `.tcl-ls/options.tcl`, are not watched
+by the restart setting. After saving a plugin, edit or reopen a source file
+to trigger analysis, or restart the server manually.
 
 ## Use a checkout
 

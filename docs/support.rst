@@ -9,6 +9,11 @@ Editor features are missing
    configured server. Check the editor's LSP log for startup errors. See
    :doc:`user-guide/language-server` or the editor-specific setup guide.
 
+The server reports that ``tclsh`` is missing
+   Install Tcl and make ``tclsh`` available on the editor's ``PATH``. The
+   server and checker require it even when no project plugin is configured.
+   Prebuilt servers remove the Python requirement but still need ``tclsh``.
+
 Commands are unresolved
    Check that the source file is below the intended ``tcllsrc.tcl``. Include
    metadata for custom commands and select the required tool module;
@@ -19,10 +24,11 @@ Packages are unresolved
    with ``lib-path``. Package indexes and dependencies must be statically
    resolvable; see :doc:`user-guide/configuration`.
 
-Saved settings appear unchanged
-   Reopen or edit the source file to trigger analysis, or restart the language
-   server. The VS Code extension can restart automatically when project files
-   change; see :doc:`user-guide/vscode`.
+Saved settings or plugin changes appear unchanged
+   Save the config, metadata, or Tcl plugin file, then reopen or edit a source
+   file to trigger analysis, or restart the language server. VS Code watches
+   config files, package indexes, and ``*.meta.tcl`` for automatic restarts.
+   Ordinary Tcl plugin scripts are not watched; see :doc:`user-guide/vscode`.
 
 For diagnostic meanings and analysis limits, see :doc:`reference/diagnostics`.
 

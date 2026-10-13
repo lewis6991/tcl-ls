@@ -7,7 +7,8 @@ additional metadata.
 
 ## Install
 
-The Python package requires Python 3.12 or newer:
+The server and checker require `tclsh` on `PATH`, including when using a
+prebuilt server. The Python package also requires Python 3.12 or newer:
 
 ```sh
 python3 -m pip install tcl-ls
@@ -31,7 +32,9 @@ tcl-check path/to/project
 ```
 
 Use `tcllsrc.tcl` to load project metadata, locate libraries, and configure
-diagnostics. The [documentation](https://lewis6991.github.io/tcl-ls/) covers:
+diagnostics. Metadata can describe custom procedure declarations and use Tcl
+parameter parser hooks to retain the original parameter locations.
+The [documentation](https://lewis6991.github.io/tcl-ls/) covers:
 
 * [Project configuration](https://lewis6991.github.io/tcl-ls/user-guide/configuration.html)
 * [Metadata authoring and generation](https://lewis6991.github.io/tcl-ls/meta.html)

@@ -600,8 +600,8 @@ def test_language_server_marks_large_command_completion_lists_incomplete(
 def test_language_server_completion_uses_live_text_before_reanalysis(
     server: LanguageServer,
 ) -> None:
-    initial_text = 'namespace eval ::fts { proc hello {} {} }\n\n'
-    changed_text = 'namespace eval ::fts { proc hello {} {} }\nfts::\n'
+    initial_text = 'namespace eval ::project { proc hello {} {} }\n\n'
+    changed_text = 'namespace eval ::project { proc hello {} {} }\nproject::\n'
 
     def skip_document_change(uri: str, version: int) -> None:
         del uri, version
@@ -612,11 +612,11 @@ def test_language_server_completion_uses_live_text_before_reanalysis(
     try:
         override_schedule_document_change(server, skip_document_change)
         change_server_document(server, changed_text)
-        items = completion_items(server, line=1, character=len('fts::'))
+        items = completion_items(server, line=1, character=len('project::'))
     finally:
         override_schedule_document_change(server, original_schedule_document_change)
 
-    assert any(item['label'] == 'fts::hello' for item in items)
+    assert any(item['label'] == 'project::hello' for item in items)
 
 
 def test_language_server_returns_builtin_subcommand_completion_items(

@@ -66,8 +66,8 @@ between modules. Missing files, dynamic paths, and include cycles are errors.
        source common.meta.tcl
        meta command project_command {value}
    }
-   meta module JasperGold {
-       source jasper.meta.tcl
+   meta module ExampleTool {
+       source tool.meta.tcl
        meta override clock {args}
    }
 
@@ -132,7 +132,7 @@ already present.
 
 .. code-block:: tcl
 
-   meta module JasperGold {
+   meta module ExampleTool {
        meta override clock {args}
        meta alias tcl_clock clock -module Tcl
    }
@@ -563,6 +563,9 @@ may appear only once, and ``language`` requires ``body``.
      - ``{select selector}``,
        ``{literal parameterList}``, ``{}``
      - Parameter definitions; ``{}`` means no parameters
+   * - ``params`` with a parser
+     - ``{select selector plugin {scriptPath procName}}``
+     - Parse custom parameter definitions from the selected source item
    * - ``body``
      - ``{select selector}``
      - Procedure body
@@ -583,11 +586,12 @@ entries, and optional trailing ``args``. For example,
 ``params {literal {target {mode auto} args}}`` declares fixed parameters
 directly, rather than reading them from an argument.
 
-Selected parameter words follow normal Tcl substitution rules. A known literal
-variable value, as in ``proc prove $common_args { ... }``, supplies the parameter
-list. Braced words keep variable references literal.
+The analyzer resolves literal parameter words and whole-variable words with a
+known literal value. For example, ``proc prove $common_args { ... }`` can use a
+previously assigned literal parameter list. Braced words keep variable references
+literal. Analysis does not evaluate arbitrary command substitutions.
 
-Use :ref:`Tcl plugins <metadata-plugins>` for custom parameter declarations.
+Use :ref:`parameter parsers <metadata-parameter-parsers>` for custom declarations.
 Add a parser to the selected parameter input with
 ``params {select 2 plugin {header.tcl ::project::metadata::parameters}}``.
 The procedure metadata still selects the name and body. The parser interprets
@@ -705,10 +709,31 @@ Use ``source_list_items`` to derive child items and ``slice`` to derive a
 substring. Changing a dictionary or inventing an ID does not create a new source
 location.
 
+For example, a source item for ``{-target {-mode -default auto}}`` may be:
+
+.. code-block:: tcl
+
+   id s0 text {-target {-mode -default auto}} grouped 0
+
+``::tcl_lsp::source_list_items`` returns a Tcl list containing these dictionaries:
+
+.. code-block:: tcl
+
+   {id s1 text -target grouped 0}
+   {id s2 text {-mode -default auto} grouped 1}
+
+The IDs are illustrative. The server stores each item's source range in a
+registry for the current invocation. The query reads the parent ID, splits its
+stored source, and registers child items with their own ranges. Pass the whole
+source-item dictionary to the query. Passing only its ``text`` loses the ID and
+cannot preserve the source location.
+
 Use standard Tcl commands such as ``regexp`` and ``string`` to inspect text.
 A plugin chooses whether to query a referenced variable. For example, a wrapper
 can splice known variable fragments once, while a base parser keeps them literal.
 Neither plugin may execute source command substitutions through this interface.
+
+.. _metadata-parameter-parsers:
 
 Parameter Parsers
 ~~~~~~~~~~~~~~~~~
@@ -717,35 +742,55 @@ For a custom parameter list, keep the procedure structure in metadata:
 
 .. code-block:: tcl
 
-   meta command project::declare {name options body} {
-       procedure {
-           name {select 1}
-           params {select 2 plugin {options.tcl ::project::metadata::parameters}}
-           body {select 3}
+   meta module Tcl {
+       meta command project::declare {name options body} {
+           procedure {
+               name {select 1}
+               params {
+                   select 2
+                   plugin {options.tcl ::project::metadata::parameters}
+               }
+               body {select 3}
+           }
        }
    }
 
 The ``plugin`` setting requires ``select``. Its path resolves from the metadata
 file and must exist when metadata is loaded. The hook is called as
-``procName value info``. ``value`` is the source dictionary for the selected
-argument, resolved using known caller values. Unknown inputs skip the hook.
+``procName argument_source info``. ``argument_source`` is the source dictionary
+for the selected argument, resolved using known caller values. Unknown inputs
+skip the hook.
 ``info`` and the source queries use the same contracts as command plugins.
 
 For an input such as ``{-target -mode}``, ``options.tcl`` can contain:
 
+.. Pygments treats the regexp's end anchor as an incomplete Tcl variable.
+
 .. code-block:: tcl
+   :force:
 
    # tcl-ls: module TclLSPlugin
    namespace eval ::project::metadata {
-       proc parameters {value info} {
-           set parameters {}
-           foreach item [::tcl_lsp::source_list_items $value] {
+       proc parameters {argument_source info} {
+           set parameter_ids {}
+
+           foreach item [::tcl_lsp::source_list_items $argument_source] {
+               if {![regexp {^-[A-Za-z_][A-Za-z0-9_]*$} [dict get $item text]]} {
+                   return {}
+               }
+
                set name [::tcl_lsp::slice $item 1 end]
-               lappend parameters [dict get $name id]
+               lappend parameter_ids [dict get $name id]
            }
-           return [list items $parameters]
+
+           return [list items $parameter_ids]
        }
    }
+
+For example, ``project::declare prove {-target -mode} {puts $target}`` binds
+``target`` and ``mode`` in the body. Definition navigation for ``$target`` points
+to ``target`` inside ``-target``. The parser returns ``{}`` for input outside this
+example's flat option-name syntax.
 
 Return one key/value list, ``items {sourceId ...}``. Each ID must refer to a
 value supplied by source queries in this invocation. ``items {}`` declares no

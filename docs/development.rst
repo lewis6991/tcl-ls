@@ -2,6 +2,7 @@ Development
 ===========
 
 Run commands from the repository root. The Python tools use ``uv``.
+Analysis and metadata plugin tests also require ``tclsh`` on ``PATH``.
 
 Setup And Checks
 ----------------
@@ -53,6 +54,8 @@ Analysis reuse follows these boundaries:
 
 * A metadata catalog shares compiled package data across active module views.
   Declaration snapshots track each included file and refresh after saved edits.
+  Saved project plugin scripts also contribute to the metadata revision, so
+  changing a hook invalidates facts even when its declaration is unchanged.
 * A document version owns its parsed bodies, lowered syntax, and lexical spans.
   Highlighting also reuses lexical spans for unchanged text blocks across
   versions. Semantic facts depend on the active metadata and packages.

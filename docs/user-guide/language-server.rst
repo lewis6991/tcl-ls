@@ -17,7 +17,11 @@ use:
 
 .. code-block:: sh
 
-   uv run --directory /absolute/path/to/tcl-ls tcl-ls
+   uv run --project /absolute/path/to/tcl-ls tcl-ls
+
+``--project`` selects the server checkout without changing the working
+directory supplied by the editor. Both ``uv`` and ``tclsh`` must be available
+in the editor's environment.
 
 Use ``tcllsrc.tcl`` or ``pkgIndex.tcl`` as project root markers if your client
 supports them. Otherwise, select the workspace root in the editor.

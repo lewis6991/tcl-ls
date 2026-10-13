@@ -190,8 +190,8 @@ def test_unreadable_tepam_headers_do_not_invent_procedures(
         '{$common {-flow -default auto}}',
         '$common',
         '${common}',
-        '{$::app::common {-flow -default auto}}',
-        '${::app::common}',
+        '{$::project::common {-flow -default auto}}',
+        '${::project::common}',
     ],
 )
 def test_shared_header_headers_bind_shared_parameters(
@@ -199,7 +199,7 @@ def test_shared_header_headers_bind_shared_parameters(
 ) -> None:
     _write_wrapper_metadata(tmp_path, 'shared_header')
     text = (
-        'namespace eval app {\n'
+        'namespace eval project {\n'
         '    set common {{-props -default .*} {-engines -optional} {-bg -type none}}\n'
         f'    declare prove {{-args {argument_list}}} {{\n'
         '        foreach option {props engines} {\n'
@@ -216,7 +216,7 @@ def test_shared_header_headers_bind_shared_parameters(
     facts, analysis = analyze_path(parser, source, metadata_paths=(tmp_path,))
 
     (procedure,) = facts.procedures
-    assert procedure.qualified_name == '::app::prove'
+    assert procedure.qualified_name == '::project::prove'
     expected = ['props', 'engines', 'bg']
     if 'flow' in argument_list:
         expected.append('flow')
@@ -296,7 +296,7 @@ def test_fragment_expansion_does_not_substitute_a_second_time(
 
 @pytest.mark.parametrize(
     'fragment',
-    ['$common-suffix', '$common${other}', '$common[error]', '${common}suffix', '$app:common'],
+    ['$common-suffix', '$common${other}', '$common[error]', '${common}suffix', '$project:common'],
 )
 def test_wrapper_plugin_does_not_expand_partial_variable_fragments(
     parser: Parser, tmp_path: Path, fragment: str

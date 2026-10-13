@@ -46,7 +46,7 @@ Configuration And Directive Diagnostics
    directive has no following statement in its Tcl body.
 
 ``invalid-module``
-   An module comment has invalid syntax or names an unknown module.
+   A module comment has invalid syntax or names an unknown module.
 
 Structural Diagnostics
 ----------------------

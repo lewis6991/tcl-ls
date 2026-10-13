@@ -4,6 +4,14 @@ Getting Started
 Choose the Python package for all three commands, or a prebuilt server for
 editor use.
 
+Runtime Requirement
+-------------------
+
+The language server and checker require ``tclsh`` on ``PATH``. This also
+applies to prebuilt servers and bundled VS Code extensions. The editor must
+be able to find it in its own environment. Metadata generation also uses
+``tclsh``; see :doc:`meta`.
+
 Python Package
 --------------
 

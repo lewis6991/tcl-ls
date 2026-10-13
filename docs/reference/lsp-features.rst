@@ -51,6 +51,10 @@ Limits
 ------
 
 Code actions, formatting, code lens, and inlay hints are not implemented.
+Renaming a body parameter is refused when its source declaration also defines
+parameters in other procedures. Use definition to find the shared argument list
+and edit it directly if all those procedures should change.
+
 Position conversion does not yet account for the negotiated encoding, so
 positions after non-ASCII characters can be inaccurate.
 See :doc:`../user-guide/language-server` for workspace loading behavior and

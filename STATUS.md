@@ -37,12 +37,7 @@ implemented in typed Python.
   - [x] unmatched command-substitution brackets
   - [x] malformed variable substitutions
 - [ ] Full Tcl 8.6 language coverage is not implemented
-- [ ] No parser support is documented or tested for many advanced Tcl constructs, including:
-  - [ ] array variable syntax like `$name(index)`
-  - [ ] richer escape handling beyond the current simple escape support
-  - [ ] package- or extension-specific syntax
-  - [ ] TclOO and other higher-level ecosystems
-- [ ] The parser is intentionally conservative and currently targeted at the core syntax needed for the MVP server
+- [ ] Escape handling and source mapping do not cover every Tcl form
 
 ### Analysis
 
@@ -87,6 +82,9 @@ implemented in typed Python.
 - [x] Document symbols for namespaces and procedures
 - [x] Conservative local package inference from nearby `pkgIndex.tcl`
 - [x] Lazy loading of package provider files discovered through local `pkgIndex.tcl`
+- [x] Static `source` dependencies and metadata-defined source wrappers
+- [x] Metadata-defined procedures and embedded languages, including TclOO bodies
+- [x] Safe Tcl parameter parser hooks with preserved source locations
 - [x] Bundled Tcl builtin metadata for default command recognition and hover docs
 - [ ] No full control-flow analysis
 - [ ] No runtime evaluation of dynamic Tcl features
@@ -95,12 +93,12 @@ implemented in typed Python.
   - [ ] `eval`
   - [ ] `uplevel`
   - [ ] dynamically constructed command names
-  - [ ] `source`-based project loading
+  - [ ] dynamically computed `source` paths
   - [ ] full package resolution for external/interpreter-installed packages
-  - [ ] TclOO/class systems
+  - [ ] full TclOO runtime semantics
 - [ ] Global and namespace variable resolution is still conservative outside explicit links (`global` / `variable` / `upvar`) and statically qualified names
 - [ ] Workspace indexing is still narrow; beyond procedures and package metadata there is no rich global symbol database
-- [ ] Builtin coverage is limited to default Tcl commands; Tcl/Tk and extension-specific commands may still be reported as unresolved
+- [ ] Commands without active metadata or source declarations may be reported as unresolved
 - [ ] Diagnostics are intentionally limited to high-confidence cases
 
 ### LSP and Editor Integration
@@ -147,9 +145,10 @@ implemented in typed Python.
 - [ ] code lens
 - [ ] inlay hints
 - [ ] LSP position conversions still operate on Python character indices and are not fully validated for UTF-16 edge cases
-- [ ] No incremental parsing or incremental semantic analysis
+- [x] Reuses unchanged procedure-body facts and lexical spans across document versions
 - [ ] No incremental text sync support
-- [ ] No file watching or full automatic workspace discovery; unopened files are only indexed opportunistically through local package inference
+- [x] On-demand reference searches include unopened workspace files and cache their analysis
+- [ ] No server-side file watching or background index of every workspace file
 - [ ] No persistent cache/database on disk
 
 ### Packaging and Release Engineering
@@ -160,7 +159,7 @@ implemented in typed Python.
 - [x] GitHub Actions CI runs tests on pushes and pull requests
 - [x] GitHub Actions release workflows build frozen server archives and bundled VS Code assets for Linux, macOS, and Windows
 - [x] The repository ships a VS Code extension and a Neovim 0.11+ helper config
-- [ ] PyPI publishing automation is not configured yet
+- [x] Stable release workflow publishes Python distributions to PyPI
 
 ### Tests
 
@@ -181,12 +180,12 @@ implemented in typed Python.
 
 ## Practical Summary
 
-Right now the project is a solid typed bootstrap for a Tcl LSP:
+The project provides a typed Tcl language server with static analysis:
 
 - syntax parsing works for the tested core forms
-- semantic analysis works for a small, statically analyzable Tcl subset plus conservative local package inference via `pkgIndex.tcl`
+- semantic analysis combines source declarations, project metadata, and conservative dependency loading
 - navigation features work for that subset
-- the server can speak enough LSP to be used in an editor
+- the server supports navigation, completion, rename, diagnostics, and highlighting in editors
 - the project can be built and distributed as an alpha Python package
 
-It is not yet a full Tcl language server, and the biggest missing areas are broader Tcl semantics, dynamic-language handling beyond conservative fallbacks, and additional editor features beyond the MVP navigation surface.
+The main remaining gaps are broader Tcl semantics, dynamic-language handling beyond conservative fallbacks, and editor features such as code actions and formatting.

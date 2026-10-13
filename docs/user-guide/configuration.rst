@@ -54,11 +54,11 @@ Metadata can also be declared directly in the config:
 
 .. code-block:: tcl
 
-   meta module JasperGold {
-       source .tcl-ls/jasper-commands.meta.tcl
+   meta module ExampleTool {
+       source .tcl-ls/tool-commands.meta.tcl
    }
 
-Here, the included declarations belong to ``JasperGold`` unless they declare
+Here, the included declarations belong to ``ExampleTool`` unless they declare
 their own module. See :ref:`metadata-composition` for module and include rules,
 and :doc:`../meta` for writing or generating metadata.
 
@@ -149,7 +149,7 @@ Select a module with a Tcl comment:
 .. code-block:: tcl
 
    if {$use_tool} {
-       # tcl-ls: module JasperGold
+       # tcl-ls: module ExampleTool
        clock -none
    }
    clock seconds
@@ -167,9 +167,9 @@ A project rule can select a module from known variable values:
 
 .. code-block:: tcl
 
-   module JasperGold when {$::fts::TOOL eq "jg"}
+   module ExampleTool when {$::project::tool eq "example"}
 
-This selects JasperGold where static analysis knows the condition is true,
+This selects ExampleTool where static analysis knows the condition is true,
 such as the matching ``if`` or ``switch`` branch. It does not assert the
 condition or execute Tcl commands. An unknown condition does not select the
 module. Use fully qualified variable names for project-wide conditions.

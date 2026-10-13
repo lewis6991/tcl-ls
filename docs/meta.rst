@@ -47,7 +47,7 @@ result variable. Selectors count arguments from 1. Leading comments supply
 command documentation.
 
 Use the ``Tcl`` module for commands available throughout the project, a package
-name for package commands, or a tool name such as ``JasperGold``. See
+name for package commands, or a tool name such as ``ExampleTool``. See
 :ref:`module-selection` for activation through package requirements, project
 rules, and source comments.
 
@@ -60,6 +60,56 @@ For more command models, see the :doc:`reference/meta-syntax`:
 * ``source`` and ``package`` describe dependencies.
 * ``meta alias`` reuses metadata for an alias or renamed command.
 * ``plugin`` calls a Tcl hook when declarations cannot express the behavior.
+
+Describe Procedure Parameters
+-----------------------------
+
+Use ``procedure`` when a command declares a procedure. Keep its name, parameters,
+and body in separate fields:
+
+.. code-block:: tcl
+
+   meta module Tcl {
+       meta command project::define {name parameters body} {
+           procedure {
+               name {select 1}
+               params {select 2}
+               body {select 3}
+           }
+       }
+   }
+
+This example accepts a standard Tcl parameter list. The analyzer can also read a
+known literal variable value, such as ``project::define prove $common_args {...}``.
+Parameter definitions retain their original source locations. Braced arguments
+keep variable references literal.
+
+For a custom parameter syntax, add a parser hook to ``params``:
+
+.. code-block:: tcl
+
+   params {
+       select 2
+       plugin {options.tcl ::project::metadata::parameters}
+   }
+
+The hook receives a source-item dictionary for the selected argument. It returns
+IDs for the source items that name the body parameters. The metadata still
+selects the procedure name and body. The script path is relative to the metadata
+file. See :ref:`metadata-parameter-parsers` for a complete example and
+:ref:`metadata-procedures` for all field settings.
+
+Update Older Metadata
+---------------------
+
+Procedure fields and package annotations require braced key/value lists.
+Replace ``name select 1`` with ``name {select 1}``, and replace
+``package select 1`` with ``package {select 1}``. Literal values use the same
+form, such as ``params {literal {target args}}``.
+
+The old Tepam parameter formats are no longer supported. Use a ``params`` parser
+hook for custom declarations. The bundled Tepam metadata provides its own hook;
+project wrappers can provide a separate hook for their behavior.
 
 Generate A Tool Inventory
 -------------------------
@@ -77,7 +127,7 @@ Generation requires ``tclsh`` on ``PATH`` to obtain a plain Tcl baseline:
 .. code-block:: tcl
 
    source /path/printed/by/helper-path/tcl_meta.tcl
-   tcl-meta build-file --no-probe --new-only --module JasperGold jasper.meta.tcl
+   tcl-meta build-file --no-probe --new-only --module ExampleTool tool.meta.tcl
 
 This example inspects definitions without calling tool commands. It keeps
 procedure parameters, uses ``args`` for native commands, and excludes names
@@ -91,15 +141,15 @@ regeneration preserves them. Load that file after the inventory:
 .. code-block:: tcl
 
    # .tcl-ls/project.meta.tcl
-   source jasper.meta.tcl
-   source jasper-overrides.meta.tcl
+   source tool.meta.tcl
+   source tool-overrides.meta.tcl
 
-For example, ``jasper-overrides.meta.tcl`` can declare a tool replacement and
+For example, ``tool-overrides.meta.tcl`` can declare a tool replacement and
 retain metadata for the original Tcl command under its renamed name:
 
 .. code-block:: tcl
 
-   meta module JasperGold {
+   meta module ExampleTool {
        meta override clock {args}
        meta alias tcl_clock clock -module Tcl
    }

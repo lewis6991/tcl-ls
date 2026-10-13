@@ -1,7 +1,7 @@
 # tcl-ls Neovim config
 
 The supplied LSP config requires Neovim 0.11 or newer and a `tcl-ls`
-executable on the editor's `PATH`. See
+executable and `tclsh` on the editor's `PATH`. See
 [Getting Started](https://lewis6991.github.io/tcl-ls/getting-started.html)
 for server installation.
 
@@ -31,7 +31,10 @@ enabling the config:
 
 ```lua
 vim.lsp.config('tcl-ls', {
-  cmd = { 'uv', 'run', '--directory', '/absolute/path/to/tcl-ls', 'tcl-ls' },
+  cmd = { 'uv', 'run', '--project', '/absolute/path/to/tcl-ls', 'tcl-ls' },
 })
 vim.lsp.enable('tcl-ls')
 ```
+
+`--project` selects the server checkout without changing the working directory
+supplied by Neovim. Both `uv` and `tclsh` must be on the editor's `PATH`.
