@@ -10,7 +10,7 @@ Severity And Source
 All diagnostics default to ``error``, except resolution diagnostics
 (``warning``), possible value constraint failures (``warning``), and
 ``unreachable-code`` (``hint``). Project rules and source
-comments can change severity or disable diagnostics for files or statements;
+comments can change severity or disable diagnostics for files or commands;
 see :ref:`diagnostic-configuration`.
 
 The ``source`` field identifies the origin:
@@ -43,8 +43,8 @@ Configuration And Directive Diagnostics
    include errors found when validating ``tcllsrc.tcl``.
 
 ``invalid-diagnostic-directive``
-   A diagnostic comment has invalid syntax, scope, or level, or a statement
-   directive has no following statement in its Tcl body.
+   A diagnostic comment has invalid syntax or level, or a command
+   directive has no following command in its Tcl body.
 
 ``invalid-module``
    A module comment has invalid syntax or names an unknown module.

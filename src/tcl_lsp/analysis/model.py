@@ -301,6 +301,8 @@ class DocumentFacts:
     module_scopes: tuple[ModuleSelection, ...] = ()
     module_rules: tuple[ModuleRule, ...] = ()
     diagnostic_rules: tuple[DiagnosticRule, ...] = ()
+    # Recognized and incomplete source directives, including while typing.
+    directive_comments: tuple[Span, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

@@ -21,11 +21,12 @@ Navigation And Editing
 * ``textDocument/references``
 * ``textDocument/rename``
 * ``textDocument/prepareRename`` when the client advertises rename prepare support
+* ``textDocument/codeAction`` to add diagnostic suppression comments
 * ``textDocument/hover``
 * ``textDocument/documentSymbol``
 * ``workspace/symbol``
 * ``textDocument/documentHighlight``
-* ``textDocument/completion`` (commands, packages, and variables)
+* ``textDocument/completion`` (commands, packages, variables, and source directives)
 * ``textDocument/signatureHelp``
 * ``textDocument/foldingRange``
 * ``textDocument/documentLink`` for source directives and uniquely resolved
@@ -50,12 +51,13 @@ record fields, literal values, and descriptions in :doc:`annotations`.
 Limits
 ------
 
-Code actions, formatting, code lens, and inlay hints are not implemented.
+Formatting, code lens, and inlay hints are not implemented.
 Renaming a body parameter is refused when its source declaration also defines
 parameters in other procedures. Use definition to find the shared argument list
 and edit it directly if all those procedures should change.
 
-Position conversion does not yet account for the negotiated encoding, so
-positions after non-ASCII characters can be inaccurate.
+Some features do not yet account for the negotiated position encoding, so
+positions after non-ASCII characters can be inaccurate. Code-action request
+ranges and text edits use the negotiated encoding.
 See :doc:`../user-guide/language-server` for workspace loading behavior and
 :doc:`diagnostics` for static analysis limits.

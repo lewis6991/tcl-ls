@@ -71,6 +71,7 @@ class BodyFacts:
     command_renames: tuple[CommandRename, ...]
     comment_spans: tuple[Span, ...]
     diagnostic_directives: tuple[tuple[int, DiagnosticRule], ...]
+    directive_comments: tuple[Span, ...]
     diagnostics: tuple[Diagnostic, ...]
     module_scopes: tuple[ModuleSelection, ...]
     namespaces: tuple[NamespaceScope, ...]
@@ -96,6 +97,7 @@ class FactBuffer:
     command_renames: list[CommandRename] = field(default_factory=list)
     comment_spans: list[Span] = field(default_factory=list)
     diagnostic_directives: list[tuple[int, DiagnosticRule]] = field(default_factory=list)
+    directive_comments: list[Span] = field(default_factory=list)
     diagnostics: list[Diagnostic] = field(default_factory=list)
     module_scopes: list[ModuleSelection] = field(default_factory=list)
     namespaces: list[NamespaceScope] = field(default_factory=list)
@@ -119,6 +121,7 @@ class FactBuffer:
             command_renames=tuple(self.command_renames),
             comment_spans=tuple(self.comment_spans),
             diagnostic_directives=tuple(self.diagnostic_directives),
+            directive_comments=tuple(self.directive_comments),
             diagnostics=tuple(self.diagnostics),
             module_scopes=tuple(self.module_scopes),
             namespaces=tuple(self.namespaces),
@@ -142,6 +145,7 @@ class FactBuffer:
         self.command_renames.extend(facts.command_renames)
         self.comment_spans.extend(facts.comment_spans)
         self.diagnostic_directives.extend(facts.diagnostic_directives)
+        self.directive_comments.extend(facts.directive_comments)
         self.diagnostics.extend(facts.diagnostics)
         self.module_scopes.extend(facts.module_scopes)
         self.namespaces.extend(facts.namespaces)
@@ -261,12 +265,17 @@ class _Relocation(SourceRelocation):
                 for item in facts.command_renames
             ),
             comment_spans=tuple(self.span(span) for span in facts.comment_spans),
+            directive_comments=tuple(self.span(span) for span in facts.directive_comments),
             diagnostic_directives=tuple(
                 (
                     offset + self._after.offset - self._before.offset,
-                    replace(rule, statement=self.span(rule.statement))
-                    if rule.statement is not None
-                    else rule,
+                    replace(
+                        rule,
+                        command=None if rule.command is None else self.span(rule.command),
+                        directive_span=(
+                            None if rule.directive_span is None else self.span(rule.directive_span)
+                        ),
+                    ),
                 )
                 for offset, rule in facts.diagnostic_directives
             ),

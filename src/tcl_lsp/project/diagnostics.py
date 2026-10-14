@@ -4,11 +4,20 @@ from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
-from typing import Literal, cast
+from typing import Literal
 
 from tcl_lsp.common import Diagnostic, DiagnosticSeverity, Span
 
 type DiagnosticLevel = DiagnosticSeverity | Literal['off', 'default']
+
+DIAGNOSTIC_LEVELS: tuple[DiagnosticLevel, ...] = (
+    'error',
+    'warning',
+    'information',
+    'hint',
+    'off',
+    'default',
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,7 +26,8 @@ class DiagnosticRule:
     level: DiagnosticLevel
     directory: Path | None = None
     path_pattern: tuple[str, ...] | None = None
-    statement: Span | None = None
+    command: Span | None = None
+    directive_span: Span | None = None
 
     def matches_path(self, path: Path | None) -> bool:
         if self.path_pattern is None:
@@ -39,7 +49,7 @@ def parse_diagnostic_rule(
         raise RuntimeError(f'Diagnostic rules must be `diagnostic code level{suffix}`.')
     code, level = words[:2]
     assert code is not None and level is not None
-    if level not in {'error', 'warning', 'information', 'hint', 'off', 'default'}:
+    if level not in DIAGNOSTIC_LEVELS:
         raise RuntimeError(
             f'Invalid diagnostic level `{level}`; use error, warning, information, '
             'hint, off, or default.'
@@ -51,7 +61,16 @@ def parse_diagnostic_rule(
         if path.is_absolute() or '..' in path.parts:
             raise RuntimeError('Diagnostic paths must be relative and cannot contain `..`.')
         pattern = path.parts
-    return DiagnosticRule(code, cast(DiagnosticLevel, level), directory, pattern)
+    return DiagnosticRule(code, level, directory, pattern)
+
+
+def parse_diagnostic_directive(words: tuple[str, ...]) -> DiagnosticRule:
+    if len(words) != 3 or words[0] not in {'diagnostic', 'diagnostic-file'}:
+        raise RuntimeError(
+            'Diagnostic comments must be `# tcl-ls: diagnostic code level` '
+            'or `# tcl-ls: diagnostic-file code level`.'
+        )
+    return parse_diagnostic_rule(words[1:])
 
 
 def apply_diagnostic_rules(
@@ -68,11 +87,11 @@ def apply_diagnostic_rules(
                 for rule in reversed(matching)
                 if fnmatchcase(diagnostic.code, rule.code)
                 and (
-                    rule.statement is None
+                    rule.command is None
                     or (
-                        rule.statement.start.offset
+                        rule.command.start.offset
                         <= diagnostic.span.start.offset
-                        < rule.statement.end.offset
+                        < rule.command.end.offset
                     )
                 )
             ),

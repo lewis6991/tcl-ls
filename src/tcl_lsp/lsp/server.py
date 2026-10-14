@@ -11,11 +11,14 @@ from typing import Any, cast
 from lsprotocol import types
 from pygls.lsp.server import LanguageServer as PyglsLanguageServer
 from pygls.protocol.language_server import LanguageServerProtocol
+from pygls.workspace.position_codec import PositionCodec
 
 from tcl_lsp import __version__
 from tcl_lsp.analysis import FactExtractor, Resolver, WorkspaceIndex
 from tcl_lsp.common import Diagnostic, lsp_range
+from tcl_lsp.lsp.diagnostics import lsp_diagnostic
 from tcl_lsp.lsp.document_changes import DocumentChangeWorker
+from tcl_lsp.lsp.features.code_actions import diagnostic_code_actions
 from tcl_lsp.lsp.features.completion import CompletionResults, completion_items
 from tcl_lsp.lsp.features.document_links import document_links
 from tcl_lsp.lsp.features.folding import folding_ranges
@@ -62,16 +65,6 @@ from tcl_lsp.project.paths import (
     source_id_to_path,
 )
 
-_DIAGNOSTIC_SEVERITY_MAP = {
-    'error': types.DiagnosticSeverity.Error,
-    'warning': types.DiagnosticSeverity.Warning,
-    'information': types.DiagnosticSeverity.Information,
-    'hint': types.DiagnosticSeverity.Hint,
-}
-_DIAGNOSTIC_TAG_MAP = {
-    'deprecated': types.DiagnosticTag.Deprecated,
-    'unnecessary': types.DiagnosticTag.Unnecessary,
-}
 _DISK_DOCUMENT_CACHE_LIMIT = 128
 _SEMANTIC_TOKEN_CACHE_LIMIT = 8
 
@@ -556,9 +549,18 @@ class LanguageServer(PyglsLanguageServer):
         uri: str,
         line: int,
         character: int,
+        position_codec: PositionCodec | None = None,
     ) -> CompletionResults:
         snapshot = self._current_analysis_snapshot(snapshot, uri)
-        return completion_items(
+        document = snapshot.documents.get(uri)
+        lines: list[str] = []
+        if position_codec is not None and document is not None:
+            lines = document.text.splitlines(keepends=True)
+            position = position_codec.position_from_client_units(
+                lines, types.Position(line, character)
+            )
+            line, character = position.line, position.character
+        result = completion_items(
             snapshot.documents,
             workspace_index=snapshot.workspace_index,
             metadata_registry=snapshot.metadata_registry,
@@ -566,6 +568,13 @@ class LanguageServer(PyglsLanguageServer):
             line=line,
             character=character,
         )
+        if position_codec is not None and document is not None:
+            for item in result.items:
+                if isinstance(item.text_edit, types.TextEdit):
+                    item.text_edit.range = position_codec.range_to_client_units(
+                        lines, item.text_edit.range
+                    )
+        return result
 
     def signature_help_at(
         self,
@@ -909,17 +918,7 @@ class LanguageServer(PyglsLanguageServer):
         self.text_document_publish_diagnostics(
             types.PublishDiagnosticsParams(
                 uri=uri,
-                diagnostics=[
-                    types.Diagnostic(
-                        range=lsp_range(diagnostic.span),
-                        severity=_DIAGNOSTIC_SEVERITY_MAP[diagnostic.severity],
-                        code=diagnostic.code,
-                        source=diagnostic.source,
-                        message=diagnostic.message,
-                        tags=[_DIAGNOSTIC_TAG_MAP[tag] for tag in diagnostic.tags] or None,
-                    )
-                    for diagnostic in diagnostics
-                ],
+                diagnostics=[lsp_diagnostic(diagnostic) for diagnostic in diagnostics],
             )
         )
 
@@ -1255,6 +1254,7 @@ def completion_request(
         uri=params.text_document.uri,
         line=params.position.line,
         character=params.position.character,
+        position_codec=server.workspace.position_codec,
     )
     return types.CompletionList(
         is_incomplete=result.is_incomplete,
@@ -1315,6 +1315,33 @@ def folding_range_request(
     if document is None:
         return []
     return list(folding_ranges(document))
+
+
+@server.feature(
+    types.TEXT_DOCUMENT_CODE_ACTION,
+    types.CodeActionOptions(code_action_kinds=[types.CodeActionKind.QuickFix]),
+)
+def code_action_request(
+    server: LanguageServer, params: types.CodeActionParams
+) -> list[types.CodeAction]:
+    if params.text_document.uri not in server.analysis_snapshot().documents:
+        return []
+    document = server.current_managed_document(params.text_document.uri)
+    if document is None:
+        return []
+    workspace = server.client_capabilities.workspace
+    versioned_edits = (
+        workspace is not None
+        and workspace.workspace_edit is not None
+        and workspace.workspace_edit.document_changes is True
+    )
+    return diagnostic_code_actions(
+        document,
+        params.range,
+        position_codec=server.workspace.position_codec,
+        only=params.context.only,
+        versioned_edits=versioned_edits,
+    )
 
 
 @server.feature(types.TEXT_DOCUMENT_DOCUMENT_LINK)

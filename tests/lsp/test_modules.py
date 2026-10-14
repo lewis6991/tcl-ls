@@ -848,7 +848,7 @@ def test_uncertain_bodies_invalidate_variable_links(project: Path, body: str) ->
 def test_diagnostic_directives_do_not_change_module_flow(project: Path) -> None:
     text = (
         'set ::tool example\nwhile {$again} {\n'
-        '# tcl-ls: diagnostic statement unresolved-variable off\n'
+        '# tcl-ls: diagnostic unresolved-variable off\n'
         'puts $unknown\n}\nprove\n'
     )
     server = LanguageServer()

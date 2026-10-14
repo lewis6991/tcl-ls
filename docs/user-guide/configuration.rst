@@ -94,35 +94,65 @@ components. Thus, ``vendor/*.tcl`` selects files directly under ``vendor``,
 while ``vendor/**/*.tcl`` also selects nested files. Absolute paths and ``..``
 components are rejected.
 
-File And Statement Directives
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+File And Command Directives
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Source comments can override project rules. A ``file`` directive applies to the
-whole file, including code before the comment:
-
-.. code-block:: tcl
-
-   # tcl-ls: diagnostic file unresolved-variable off
-
-A ``statement`` directive applies to the next Tcl statement:
+Source comments can override project rules. Use ``diagnostic-file`` to apply a
+rule to the whole file, including code before the comment. Place these comments
+near the top of the file, after any shebang:
 
 .. code-block:: tcl
 
-   # tcl-ls: diagnostic statement unresolved-command off
+   # tcl-ls: diagnostic-file unresolved-variable off
+
+The same form can change a diagnostic's severity:
+
+.. code-block:: tcl
+
+   # tcl-ls: diagnostic-file invalid-expr warning
+
+Use ``diagnostic`` to apply a rule to the next Tcl command:
+
+.. code-block:: tcl
+
+   # tcl-ls: diagnostic unresolved-command off
    tool_command argument
 
-It covers the complete statement, including nested bodies and command
-substitutions. The statement must be in the same Tcl body as the comment. The
-rule does not extend to a second statement, even on the same line.
+It covers the complete command, including nested bodies and command
+substitutions. The command must be in the same Tcl body as the comment. The
+rule does not extend to a second command, even on the same line.
 
-Statement rules override file rules, which override project rules. Within each
+Command rules override file rules, which override project rules. Within each
 scope, the last matching rule wins. Directives accept the same codes and levels
 as project rules, but do not accept ``-path``. They must be Tcl comments; text
 inside strings or data words has no effect.
 
+Editor completion offers directive names, diagnostic codes, and levels. Each
+item has a short description. Completion replaces the whole word when the
+cursor is in its middle. Diagnostic codes can also be wildcard patterns, such
+as ``unresolved-*``.
+
 These controls apply to parser and analysis diagnostics in both tools. They do
 not disable parsing, symbol resolution, or completion.
 ``--fail-on-diagnostics`` considers only enabled diagnostics.
+
+Suppression Code Actions
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Use your editor's code-action menu on a diagnostic to add a suppression
+comment. The server offers quick fixes for that diagnostic code:
+
+* **Suppress for this command** adds a comment before the smallest enclosing
+  command with a safe comment position. For an inline body or command
+  substitution, this can be the outer command. The action is omitted if no
+  safe position exists.
+* **Suppress for this file** adds a file comment after existing file directives,
+  or near the start of the file. It preserves a shebang line. The action is
+  omitted when a command rule would override it.
+
+The actions preserve indentation and line endings. They do not suppress other
+diagnostic codes. They are not marked as preferred fixes, so an editor's
+preferred-fix command does not select a suppression automatically.
 
 .. _module-selection:
 

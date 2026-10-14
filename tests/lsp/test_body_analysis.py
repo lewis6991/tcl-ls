@@ -52,7 +52,7 @@ proc last {arg} {
     set shared $arg
     set state $shared
     proc nested {n} {return $n}
-    # tcl-ls: diagnostic statement unresolved-command off
+    # tcl-ls: diagnostic unresolved-command off
     missing
     return [nested $state]
 }

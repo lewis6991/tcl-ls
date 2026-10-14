@@ -150,7 +150,7 @@ from tcl_lsp.project.config import (
     parse_config,
 )
 from tcl_lsp.project.declarations import is_declaration_file
-from tcl_lsp.project.diagnostics import DiagnosticRule, parse_diagnostic_rule
+from tcl_lsp.project.diagnostics import DiagnosticRule, parse_diagnostic_directive
 from tcl_lsp.project.paths import source_id_to_path
 
 _CONFLICTING_EMBEDDED_LANGUAGE_CODE = 'conflicting-embedded-language'
@@ -416,9 +416,10 @@ class _FactCollector:
                 rule
                 for _, rule in sorted(
                     self._facts.diagnostic_directives,
-                    key=lambda item: (item[1].statement is not None, item[0]),
+                    key=lambda item: (item[1].command is not None, item[0]),
                 )
             ),
+            directive_comments=tuple(self._facts.directive_comments),
         )
 
     def _collect_lowered_script(
@@ -464,7 +465,7 @@ class _FactCollector:
                     self._facts.diagnostic_directives.append(
                         (
                             comment.span.start.offset,
-                            replace(rule, statement=event.command.span),
+                            replace(rule, command=event.command.span),
                         )
                     )
                 pending_diagnostics.clear()
@@ -478,7 +479,7 @@ class _FactCollector:
             script_modules = current_context.selected_modules
         for comment, _ in pending_diagnostics:
             self._invalid_diagnostic_directive(
-                comment, 'Statement diagnostic directive has no following statement.'
+                comment, 'Command diagnostic directive has no following command.'
             )
         # Module directives have lexical scope; only variable effects leave a body.
         return replace(context, flow_state=current_context.flow_state)
@@ -526,21 +527,23 @@ class _FactCollector:
         pending_diagnostics: list[tuple[Token, DiagnosticRule]],
     ) -> _ExtractionContext:
         text = comment.text[1:].strip()
+        if 'tcl-ls:'.startswith(text) or text.startswith('tcl-ls:'):
+            self._facts.directive_comments.append(comment.span)
         if not text.startswith('tcl-ls:'):
             return context
         words = text.split()
-        if words[:2] == ['tcl-ls:', 'diagnostic']:
+        if (
+            len(words) >= 2
+            and words[0] == 'tcl-ls:'
+            and words[1] in {'diagnostic', 'diagnostic-file'}
+        ):
             try:
-                if len(words) < 3 or words[2] not in {'file', 'statement'}:
-                    raise RuntimeError(
-                        'Diagnostic directives must be '
-                        '`# tcl-ls: diagnostic file|statement code level`.'
-                    )
-                rule = parse_diagnostic_rule(tuple(words[3:]))
+                rule = parse_diagnostic_directive(tuple(words[1:]))
+                rule = replace(rule, directive_span=comment.span)
             except RuntimeError as exc:
                 self._invalid_diagnostic_directive(comment, str(exc))
             else:
-                if words[2] == 'statement':
+                if words[1] == 'diagnostic':
                     pending_diagnostics.append((comment, rule))
                 else:
                     self._facts.diagnostic_directives.append((comment.span.start.offset, rule))

@@ -26,6 +26,7 @@ from tcl_lsp.lsp.features.cursor_context import (
     cursor_context,
     is_empty_command_position,
 )
+from tcl_lsp.lsp.features.directive_completion import directive_completion_items
 from tcl_lsp.lsp.state import ManagedDocument
 from tcl_lsp.metadata_paths import MetadataRegistry
 
@@ -74,6 +75,15 @@ def completion_items(
     document = documents_by_uri.get(uri)
     if document is None:
         return CompletionResults(items=())
+
+    directive_items = directive_completion_items(
+        document,
+        metadata_registry=metadata_registry,
+        line=line,
+        character=character,
+    )
+    if directive_items is not None:
+        return CompletionResults(items=directive_items)
 
     context = cursor_context(document, line=line, character=character)
     if context is None:

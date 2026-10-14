@@ -49,11 +49,16 @@ def test_value_constraint_checks_agree_in_editor_and_checker(tmp_path: Path, thr
         '# @type integer\nset count auto\n'
         'expr {$count + 1}\n'
         'expr {0 && (1 +)}\n'
-        '# tcl-ls: diagnostic statement invalid-expr-operand off\n'
+        '# tcl-ls: diagnostic invalid-expr-operand off\n'
         'expr {"bad" + 1}\n'
+        'proc mixed {flag} {\n'
+        '    if {$flag} {set a {a 1 2 3}} else {set a 1}\n'
+        '    expr 1 + $a\n'
+        '}\n'
     )
     expected = [
         ('invalid-expr', 'error'),
+        ('invalid-expr', 'warning'),
         ('invalid-expr-operand', 'error'),
         ('invalid-value', 'hint'),
     ]
@@ -116,8 +121,8 @@ def test_file_directives_override_config_without_losing_definitions(tmp_path: Pa
     source = tmp_path / 'main.tcl'
     source.write_text(
         'missing_command\n'
-        '# tcl-ls: diagnostic file * off\n'
-        '# tcl-ls: diagnostic file unmatched-brace default\n'
+        '# tcl-ls: diagnostic-file * off\n'
+        '# tcl-ls: diagnostic-file unmatched-brace default\n'
         'proc run {} {return ok}\n'
         'run\n'
         'set data {\n',
@@ -146,10 +151,10 @@ def test_file_directives_override_config_without_losing_definitions(tmp_path: Pa
 def test_only_real_comments_configure_diagnostics(tmp_path: Path) -> None:
     source = tmp_path / 'main.tcl'
     source.write_text(
-        'set data {# tcl-ls: diagnostic file * off}\n'
-        'puts "# tcl-ls: diagnostic file * off"\n'
+        'set data {# tcl-ls: diagnostic-file * off}\n'
+        'puts "# tcl-ls: diagnostic-file * off"\n'
         'missing_command\n'
-        '# tcl-ls: diagnostic file unresolved-command invalid\n',
+        '# tcl-ls: diagnostic-file unresolved-command invalid\n',
     )
     server = LanguageServer()
     try:
@@ -167,7 +172,7 @@ def test_diagnostic_rules_reload_on_analysis_and_do_not_leak_between_files(tmp_p
     config = tmp_path / 'tcllsrc.tcl'
     config.write_text('diagnostic unresolved-command off\n')
     sibling = tmp_path / 'sibling.tcl'
-    sibling.write_text('# tcl-ls: diagnostic file unresolved-command hint\nmissing_command\n')
+    sibling.write_text('# tcl-ls: diagnostic-file unresolved-command hint\nmissing_command\n')
     server = LanguageServer()
     try:
         assert _open_diagnostics(server, source) == []
@@ -215,16 +220,16 @@ def test_disabled_diagnostics_do_not_fail_the_cli(
 def test_statement_directives_cover_one_statement_and_override_file_rules(tmp_path: Path) -> None:
     source = tmp_path / 'main.tcl'
     source.write_text(
-        '# tcl-ls: diagnostic statement unresolved-command off\n'
+        '# tcl-ls: diagnostic unresolved-command off\n'
         'if {1} {\n'
         '    missing_in_body\n'
-        '    # tcl-ls: diagnostic statement unresolved-command hint\n'
+        '    # tcl-ls: diagnostic unresolved-command hint\n'
         '    missing_nested_override\n'
         '}\n'
         'missing_after\n'
-        '# tcl-ls: diagnostic statement unresolved-command off\n'
+        '# tcl-ls: diagnostic unresolved-command off\n'
         'missing_first; missing_second\n'
-        '# tcl-ls: diagnostic file unresolved-command error\n'
+        '# tcl-ls: diagnostic-file unresolved-command error\n'
     )
     server = LanguageServer()
     try:
@@ -241,14 +246,62 @@ def test_statement_directives_cover_one_statement_and_override_file_rules(tmp_pa
 
 def test_statement_directive_requires_a_statement_in_the_same_body(tmp_path: Path) -> None:
     source = tmp_path / 'main.tcl'
-    source.write_text(
-        'if {1} {\n# tcl-ls: diagnostic statement unresolved-command off\n}\nmissing\n'
-    )
+    source.write_text('if {1} {\n# tcl-ls: diagnostic unresolved-command off\n}\nmissing\n')
     server = LanguageServer()
     try:
         assert _open_diagnostics(server, source) == [
             ('invalid-diagnostic-directive', 'error'),
             ('unresolved-command', 'warning'),
+        ]
+    finally:
+        server.shutdown()
+
+
+def test_command_directive_only_covers_the_next_command(tmp_path: Path) -> None:
+    source = tmp_path / 'main.tcl'
+    source.write_text('# tcl-ls: diagnostic unresolved-* off\nfirst_missing; second_missing\n')
+    server = LanguageServer()
+    try:
+        diagnostics = server.open_document(source.as_uri(), source.read_text(), 1)
+        assert [d.message for d in diagnostics] == ['Unresolved command `second_missing`.']
+        report = check_project(source, threads=1)
+        assert [d.diagnostic.message for d in report.diagnostics] == [
+            'Unresolved command `second_missing`.'
+        ]
+    finally:
+        server.shutdown()
+
+
+@pytest.mark.parametrize(
+    'rule',
+    [
+        'unresolved-command off -scope',
+        'unresolved-command off -scope command',
+        'unresolved-command off -scope file',
+        'unresolved-command off -scope line',
+        'unresolved-command off -path file',
+        'unresolved-command off -scope file -scope command',
+        'unresolved-command off extra words',
+        'statement unresolved-command off',
+        'file unresolved-command off',
+    ],
+)
+@pytest.mark.parametrize('directive', ['diagnostic', 'diagnostic-file'])
+def test_invalid_comment_options_have_a_diagnostic_and_do_not_suppress(
+    tmp_path: Path, rule: str, directive: str
+) -> None:
+    source = tmp_path / 'main.tcl'
+    source.write_text(f'# tcl-ls: {directive} {rule}\nmissing\n')
+    server = LanguageServer()
+    try:
+        assert _open_diagnostics(server, source) == [
+            ('invalid-diagnostic-directive', 'error'),
+            ('unresolved-command', 'warning'),
+        ]
+        report = check_project(source, threads=1)
+        assert sorted(d.diagnostic.code for d in report.diagnostics) == [
+            'invalid-diagnostic-directive',
+            'unresolved-command',
         ]
     finally:
         server.shutdown()
