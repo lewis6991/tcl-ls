@@ -20,6 +20,7 @@ from tcl_lsp.analysis.model import (
     PackageRequire,
     ProcDecl,
     SourceDirective,
+    ValueCheck,
     VarBinding,
     VariableReference,
 )
@@ -57,6 +58,7 @@ class BodyInputs:
     flow_procedure: bool
     flow_links: tuple[tuple[str, str | None], ...]
     flow_unknown_links: bool
+    flow_reachable: bool
     imports: tuple[tuple[str, CommandImportKind, str | None, str], ...]
 
 
@@ -83,10 +85,12 @@ class BodyFacts:
     variable_references: tuple[VariableReference, ...]
     type_aliases: tuple[TypeAlias, ...]
     comment_annotations: tuple[CommentAnnotation, ...]
+    value_checks: tuple[ValueCheck, ...]
 
 
 @dataclass(slots=True)
 class FactBuffer:
+    value_checks: list[ValueCheck] = field(default_factory=list)
     command_calls: list[CommandCall] = field(default_factory=list)
     command_imports: list[CommandImport] = field(default_factory=list)
     command_renames: list[CommandRename] = field(default_factory=list)
@@ -109,6 +113,7 @@ class FactBuffer:
 
     def freeze(self) -> BodyFacts:
         return BodyFacts(
+            value_checks=tuple(self.value_checks),
             command_calls=tuple(self.command_calls),
             command_imports=tuple(self.command_imports),
             command_renames=tuple(self.command_renames),
@@ -131,6 +136,7 @@ class FactBuffer:
         )
 
     def extend(self, facts: BodyFacts) -> None:
+        self.value_checks.extend(facts.value_checks)
         self.command_calls.extend(facts.command_calls)
         self.command_imports.extend(facts.command_imports)
         self.command_renames.extend(facts.command_renames)
@@ -206,6 +212,14 @@ class _Relocation(SourceRelocation):
                 proc.uri, proc.qualified_name, self.position(proc.name_span.start).offset
             )
         return BodyFacts(
+            value_checks=tuple(
+                replace(
+                    check,
+                    command_span=self.span(check.command_span),
+                    diagnostic=replace(check.diagnostic, span=self.span(check.diagnostic.span)),
+                )
+                for check in facts.value_checks
+            ),
             comment_annotations=tuple(
                 replace(item, span=self.span(item.span)) for item in facts.comment_annotations
             ),

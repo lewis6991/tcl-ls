@@ -31,8 +31,8 @@ on an alias declaration shows its definition. Procedure documentation includes
 the aliases used by its types, including aliases used by other aliases.
 
 Annotations do not change Tcl execution or argument counts. The server uses
-parameter, return, and variable types in analysis, as described below. It does not yet
-report type mismatches.
+parameter, return, and variable constraints in analysis, as described below.
+Expression checks and annotated assignments can report incompatible values.
 
 Annotation Forms
 ----------------
@@ -106,8 +106,9 @@ An ``@type`` annotation supplies type information for a ``set`` assignment.
 Direct copies, such as ``set copy $value``, carry that type to the new value.
 Variable hover shows the type at that use. Later writes clear the type unless
 the new value supplies type information. Unknown code and uncertain variable
-links also clear affected type information. A branch join keeps a type only
-when all paths agree.
+links also clear affected type information. A branch join combines known
+alternatives from paths that can continue. A path that returns or raises an
+error does not supply values to later statements.
 
 A type made entirely of literal values also supplies possible values to the
 existing value analysis. For example, ``"enabled"|"disabled"`` can narrow to
@@ -115,6 +116,85 @@ existing value analysis. For example, ``"enabled"|"disabled"`` can narrow to
 values can resolve dynamic variable names. A type such as
 ``string|"enabled"`` does not restrict the value to ``"enabled"``. Known
 assignment values take precedence over the annotation's possible values.
+
+.. _value-constraints:
+
+Value Constraints
+-----------------
+
+An annotation describes valid interpretations of a value. It does not add a
+runtime class or describe a Tcl object's cached representation. Interpretations
+can overlap. For example, ``"42"`` and ``[list 42]`` can both be used in
+arithmetic. ``string`` allows any Tcl value; it does not mean nonnumeric.
+``integer`` permits Tcl integers, including large integers. ``number`` permits
+numeric values. ``integer[]`` describes a Tcl list whose elements satisfy
+``integer``.
+
+The checker uses known values before annotations. A contradictory annotation
+does not replace the actual value:
+
+.. code-block:: tcl
+
+   # @type integer
+   set count auto           ;# invalid-value
+   expr {$count + 1}        ;# invalid-expr-operand
+
+Each operator requires an interpretation of its operands:
+
+* ``+ - * / **`` require numbers. Unary ``+`` and ``-`` also require numbers.
+* ``% & | ^ << >>`` and unary ``~`` require integers.
+* ``! && ||`` and conditions require Tcl expression truth conversion. This
+  accepts numeric values as well as boolean words, such as ``yes``.
+* ``in`` and ``ni`` require a valid Tcl list on the right.
+* ``eq ne`` compare strings. ``== != < <= > >=`` allow Tcl's numeric or string
+  comparison. These operators do not reject unrestricted strings.
+
+A definite incompatible operand is an error. A known incompatible alternative
+in a union is a warning. An unproved interpretation produces no diagnostic.
+For example:
+
+.. code-block:: tcl
+
+   # @param count integer|"auto"
+   proc next_count {count} {
+       expr {$count + 1}    ;# warning: count can be "auto"
+   }
+
+``eq`` and ``ne`` guards can remove literal alternatives. Strict
+``string is entier``, ``string is integer``, and ``string is double`` guards
+refine the successful branch. Use ``entier`` to accept arbitrary-size integers.
+Guards also work with ``!``, ``&&``, ``||``, and ``?:``:
+
+.. code-block:: tcl
+
+   # @param count integer|"auto"
+   proc next_count {count} {
+       if {$count eq "auto"} {return 0}
+       expr {$count + 1}    ;# accepted
+   }
+
+Numeric equality retains a value's spelling. Comparing ``$count == 16`` does
+not replace a known ``"0x10"`` value with ``"16"``.
+
+Expression text and operand data remain distinct. With
+``set formula {1 + 2}``, ``expr $formula`` parses an expression, whereas
+``expr {$formula}`` returns the string value. ``expr {$formula + 1}`` reports
+an invalid numeric operand. Short-circuit operators skip unused operand
+checks, but expression syntax must still be valid in every branch.
+
+Annotated ``set`` assignments check known literal values against literal,
+union, string, numeric, list, and list-element constraints. Unknown aliases
+and unsupported structures remain unproved. The checks do not execute project
+code. Unknown substitutions clear affected facts. Array expressions and escapes
+that the expression parser cannot model remain unproved. Numeric spellings
+that differ between Tcl versions also remain unproved, because there is no
+configured target version.
+
+Procedure argument and return contracts, math-function contracts, and runtime
+domain errors, such as division by zero, are not checked yet.
+
+Return Value Flow
+-----------------
 
 An annotated return type follows a single command substitution into its
 assigned variable. This uses the resolved procedure, including sourced

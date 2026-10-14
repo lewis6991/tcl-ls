@@ -2,18 +2,21 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
+from itertools import product
 
 from tcl_lsp.analysis.facts.parsing import ListItem, is_simple_name, split_tcl_list
 from tcl_lsp.analysis.facts.utils import qualify_name
 from tcl_lsp.analysis.facts.values import resolve_word_source
 from tcl_lsp.analysis.flow.exprs import eval_expr_text, expr_branch_flow_states
 from tcl_lsp.analysis.types import CallType, TypeInfo
+from tcl_lsp.analysis.value_constraints import constraint_info, union_nodes, value_constraint
 from tcl_lsp.common import Diagnostic, Position
 from tcl_lsp.parser import Parser, word_static_text
 from tcl_lsp.parser.model import (
     BracedWord,
     Command,
     CommandSubstitution,
+    LiteralText,
     Script,
     VariableSubstitution,
     Word,
@@ -40,6 +43,7 @@ class VariableFlowState:
     unknown_links: bool = False
     types_by_name: dict[str, TypeInfo] = field(default_factory=dict)
     literal_sources_by_name: dict[str, ListItem] = field(default_factory=dict)
+    reachable: bool = True
 
     @classmethod
     def empty(cls, *, namespace: str = '::', procedure: bool = True) -> VariableFlowState:
@@ -65,6 +69,10 @@ class VariableFlowState:
         """Keep only values known on every possible path."""
         if not states:
             return cls.empty()
+        live = tuple(state for state in states if state.reachable)
+        if not live:
+            return states[0]
+        states = live
         first = states[0]
         assert all((s.namespace, s.procedure) == (first.namespace, first.procedure) for s in states)
         links = [dict(state.links) for state in states]
@@ -89,9 +97,12 @@ class VariableFlowState:
             links=tuple(joined_links.items()),
             unknown_links=any(state.unknown_links for state in states),
             types_by_name={
-                name: info
-                for name, info in first.types_by_name.items()
-                if all(state.types_by_name.get(name) == info for state in states)
+                name: _joined_type(name, states)
+                for name in dict.fromkeys(name for state in states for name in state.types_by_name)
+                if all(
+                    name in state.types_by_name or name in state.exact_values_by_name
+                    for state in states
+                )
             },
             literal_sources_by_name={
                 name: source
@@ -190,6 +201,23 @@ class VariableFlowState:
         return state
 
 
+def _joined_type(name: str, states: tuple[VariableFlowState, ...]) -> TypeInfo:
+    first = states[0].types_by_name.get(name)
+    if first is not None and all(state.types_by_name.get(name) == first for state in states):
+        return first
+    nodes = tuple(
+        value_constraint(state.exact_values_by_name.get(name, ()), state.types_by_name.get(name))
+        for state in states
+    )
+    node = union_nodes(tuple(node for node in nodes if node is not None))
+    if first and all(
+        (info := state.types_by_name.get(name)) and info.expression == first.expression
+        for state in states
+    ):
+        return replace(first, resolved=node)
+    return constraint_info(node)
+
+
 @dataclass(frozen=True, slots=True)
 class VariableEffects:
     """Possible writes and link changes, without executing a command."""
@@ -249,6 +277,14 @@ def normalize_variable_name(name: str) -> str:
 
 
 def exact_word_values(word: Word, state: VariableFlowState) -> tuple[str, ...]:
+    if not isinstance(word, BracedWord) and any(
+        isinstance(part, LiteralText)
+        and part.span.end.offset - part.span.start.offset != len(part.text)
+        for part in word.parts
+    ):
+        # The syntax parser does not fully decode Tcl numeric escapes. Do not
+        # turn its display text into evidence about the runtime value.
+        return ()
     static_text = word_static_text(word)
     if static_text is not None:
         return (static_text,)
@@ -262,6 +298,21 @@ def exact_word_values(word: Word, state: VariableFlowState) -> tuple[str, ...]:
             return ()
         return _script_result_values(part.script, state)
     return state.exact_values(part.name)
+
+
+def exact_list_values(words: tuple[Word, ...], state: VariableFlowState) -> tuple[str, ...]:
+    """Model list results only when Tcl needs no element quoting."""
+    groups = tuple(exact_word_values(word, state) for word in words)
+    combinations = 1
+    for group in groups:
+        combinations *= len(group)
+        if not group or combinations > 16:
+            return ()
+        if any(
+            not value or any(c.isspace() or c in '{}[]$;\\"#' for c in value) for value in group
+        ):
+            return ()
+    return tuple(dict.fromkeys(' '.join(items) for items in product(*groups)))
 
 
 def dynamic_variable_target_names(
@@ -440,6 +491,8 @@ def _exact_list_item_texts(
 ) -> tuple[str, ...]:
     items: list[str] = []
     for value in exact_word_values(word, state):
+        if '\\' in value:
+            return ()
         for item in split_tcl_list(value, _ZERO_POSITION):
             if item.text in items:
                 continue
@@ -715,6 +768,8 @@ def _script_result_values(
 
     command_name = word_static_text(command.words[0])
     match command_name:
+        case 'list' | '::list':
+            return exact_list_values(command.words[1:], state)
         case 'concat' if len(command.words) == 2:
             return exact_word_values(command.words[1], state)
         case 'set':

@@ -24,6 +24,7 @@ from .unreachable_code import UnreachableCodeChecker
 from .unresolved_command import UnresolvedCommandChecker
 from .unresolved_package import UnresolvedPackageChecker
 from .unresolved_variable import UnresolvedVariableChecker
+from .value_constraints import ValueConstraintChecker
 from .wrong_argument_count import WrongArgumentCountChecker
 
 DIAGNOSTIC_CHECKERS: Final[tuple[DiagnosticChecker, ...]] = (
@@ -37,6 +38,7 @@ DIAGNOSTIC_CHECKERS: Final[tuple[DiagnosticChecker, ...]] = (
     UnknownOptionChecker(),
     MissingOptionValueChecker(),
     InvalidRegexChecker(),
+    ValueConstraintChecker(),
     UnreachableCodeChecker(),
     AmbiguousVariableChecker(),
     UnresolvedVariableChecker(),

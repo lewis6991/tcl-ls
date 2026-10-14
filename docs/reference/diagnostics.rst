@@ -8,7 +8,8 @@ Severity And Source
 -------------------
 
 All diagnostics default to ``error``, except resolution diagnostics
-(``warning``) and ``unreachable-code`` (``hint``). Project rules and source
+(``warning``), possible value constraint failures (``warning``), and
+``unreachable-code`` (``hint``). Project rules and source
 comments can change severity or disable diagnostics for files or statements;
 see :ref:`diagnostic-configuration`.
 
@@ -108,6 +109,20 @@ Command And Metadata Diagnostics
 ``invalid-regex``
    A statically known pattern for ``regexp`` or ``regsub`` fails Tcl regular
    expression compilation.
+
+``invalid-expr``
+   An expression has invalid syntax within the supported expression grammar.
+   Syntax must be valid even in a branch skipped by a short-circuit operator.
+
+``invalid-expr-operand``
+   A known operand does not satisfy an operator's numeric, integer, truth, or
+   list requirement. The default severity is ``warning`` when only some known
+   alternatives fail. Unknown inputs do not produce this diagnostic.
+
+``invalid-value``
+   A known value assigned by ``set`` does not satisfy its ``@type`` annotation.
+   The default severity is ``warning`` when only some known values fail.
+   See :ref:`value-constraints` for supported checks and examples.
 
 ``conflicting-embedded-language``
    Metadata ``enter`` clauses select overlapping command bodies.

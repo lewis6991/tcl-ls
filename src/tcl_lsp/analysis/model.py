@@ -263,6 +263,15 @@ class ResolvedReference:
 
 
 @dataclass(frozen=True, slots=True)
+class ValueCheck:
+    """A candidate diagnostic, emitted only if its owner resolves to a builtin."""
+
+    command_span: Span
+    command_name: str
+    diagnostic: Diagnostic
+
+
+@dataclass(frozen=True, slots=True)
 class DocumentFacts:
     uri: str
     parse_result: ParseResult | None
@@ -286,6 +295,7 @@ class DocumentFacts:
     type_aliases: tuple[TypeAlias, ...] = ()
     comment_annotations: tuple[CommentAnnotation, ...] = ()
     call_types: CallTypes = ()
+    value_checks: tuple[ValueCheck, ...] = ()
     # Active packages, including the closure added by dependency preparation.
     required_packages: frozenset[str] = frozenset()
     module_scopes: tuple[ModuleSelection, ...] = ()

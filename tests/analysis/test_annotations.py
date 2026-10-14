@@ -137,7 +137,6 @@ def test_type_comments_annotate_assignments_and_direct_copies(parser: Parser) ->
         'eval [read stdin]',
         'global value',
         'upvar 1 other value',
-        'if {$condition} {set value replacement}',
     ],
 )
 def test_writes_and_uncertain_links_clear_annotated_flow_types(parser: Parser, write: str) -> None:

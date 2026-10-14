@@ -104,6 +104,39 @@ proc use {state} {
         server.shutdown()
 
 
+def test_cached_value_checks_keep_locations_and_refresh_constraints(tmp_path: Path) -> None:
+    uri = (tmp_path / 'main.tcl').as_uri()
+    text = (
+        'proc first {} {puts unchanged}\n'
+        '# @param count integer|"auto"\n'
+        'proc use {count} {\n'
+        '    expr {$count + 1}\n'
+        '    if {"invalid"} {puts yes}\n'
+        '}\n'
+    )
+    server = new_server()
+    try:
+        diagnostics = server.open_document(uri, text, 1)
+        assert [(d.code, d.severity) for d in diagnostics] == [
+            ('invalid-expr-operand', 'warning'),
+            ('invalid-expr-operand', 'error'),
+        ]
+        variants = (
+            '\n\n' + text,
+            text.replace('integer|"auto"', 'integer'),
+            text.replace('"invalid"', '"yes"'),
+        )
+        for version, edited in enumerate(variants, start=2):
+            server.change_document(uri, edited, version)
+            assert_fresh_analysis(server, uri, edited)
+            for diagnostic in server.documents[uri].analysis.diagnostics:
+                span = diagnostic.span
+                source = edited[span.start.offset : span.end.offset]
+                assert source in {'{$count + 1}', '"invalid"'}
+    finally:
+        server.shutdown()
+
+
 @pytest.mark.parametrize('declaration', ['proc', 'define'])
 def test_body_reuse_updates_parameter_and_procedure_scopes(
     tmp_path: Path, declaration: str

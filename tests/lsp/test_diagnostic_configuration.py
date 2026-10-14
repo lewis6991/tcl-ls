@@ -42,6 +42,34 @@ def test_project_diagnostic_rules_agree_in_editor_and_checker(tmp_path: Path, th
 
 
 @pytest.mark.parametrize('threads', [1, 2])
+def test_value_constraint_checks_agree_in_editor_and_checker(tmp_path: Path, threads: int) -> None:
+    (tmp_path / 'tcllsrc.tcl').write_text('diagnostic invalid-value hint\n')
+    source = tmp_path / 'main.tcl'
+    source.write_text(
+        '# @type integer\nset count auto\n'
+        'expr {$count + 1}\n'
+        'expr {0 && (1 +)}\n'
+        '# tcl-ls: diagnostic statement invalid-expr-operand off\n'
+        'expr {"bad" + 1}\n'
+    )
+    expected = [
+        ('invalid-expr', 'error'),
+        ('invalid-expr-operand', 'error'),
+        ('invalid-value', 'hint'),
+    ]
+    server = LanguageServer()
+    try:
+        assert _open_diagnostics(server, source) == expected
+        report = check_project(source, threads=threads)
+        assert (
+            sorted((d.diagnostic.code, d.diagnostic.severity) for d in report.diagnostics)
+            == expected
+        )
+    finally:
+        server.shutdown()
+
+
+@pytest.mark.parametrize('threads', [1, 2])
 def test_path_rules_and_nested_configs_override_project_defaults(
     tmp_path: Path, threads: int
 ) -> None:

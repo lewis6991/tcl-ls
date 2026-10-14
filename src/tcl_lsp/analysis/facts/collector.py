@@ -28,6 +28,7 @@ from tcl_lsp.analysis.embedded_languages import (
     match_embedded_language_entries,
     resolve_embedded_language_entries,
 )
+from tcl_lsp.analysis.expressions import analyze_expression, assignment_diagnostics
 from tcl_lsp.analysis.facts.bodies import BodyAnalysisCache, BodyInputs, CachedBody, FactBuffer
 from tcl_lsp.analysis.facts.lowering import (
     DocumentSyntax,
@@ -108,6 +109,7 @@ from tcl_lsp.analysis.model import (
     ParameterDecl,
     ProcDecl,
     SourceDirective,
+    ValueCheck,
     VarBinding,
     VariableReference,
 )
@@ -402,6 +404,7 @@ class _FactCollector:
             variable_references=tuple(self._facts.variable_references),
             document_symbols=tuple(self._build_document_symbols()),
             diagnostics=tuple(self._facts.diagnostics),
+            value_checks=tuple(self._facts.value_checks),
             required_packages=self._required_packages,
             module_scopes=tuple(self._facts.module_scopes),
             module_rules=self._module_rules,
@@ -607,7 +610,12 @@ class _FactCollector:
             else None
         )
         if result is None:
-            self._collect_builtin_handler_command(syntax_command, normalized_command_name, context)
+            if normalized_command_name == 'expr':
+                context = self._collect_expression(syntax_command, context)
+            else:
+                self._collect_builtin_handler_command(
+                    syntax_command, normalized_command_name, context
+                )
         else:
             context = result
         if self._unpacks_tuple(syntax_command):
@@ -2311,6 +2319,7 @@ class _FactCollector:
             flow_procedure=flow.procedure,
             flow_links=flow.links,
             flow_unknown_links=flow.unknown_links,
+            flow_reachable=flow.reachable,
             imports=tuple(
                 (item.namespace, item.kind, item.imported_name, item.target_name)
                 for item in self._imports
@@ -2612,6 +2621,15 @@ class _FactCollector:
             if len(command.words) >= 3
             else ()
         )
+        if assigned_type and len(command.words) == 3 and context.flow_state.reachable:
+            if any(
+                (annotation := parse_annotation(comment.text[1:])) and annotation.tag == 'type'
+                for comment in command.leading_comments
+            ):
+                self._record_value_checks(
+                    command,
+                    assignment_diagnostics(assigned_values, assigned_type, command.words[2].span),
+                )
         if not assigned_values and assigned_type:
             assigned_values = literal_values(assigned_type.resolved)
         variable_name = self._simple_variable_name(variable_word)
@@ -2706,7 +2724,7 @@ class _FactCollector:
         )
         context = self._context_after_body_effects(command.body, context)
         context = self._context_after_body_effects(command.next_body, context)
-        context = self._collect_lowered_condition(command.condition, context)
+        context = self._collect_lowered_condition(command.condition, context, command.command)
         loop_context = context
         context, _ = self._if_clause_contexts(command.condition, context)
         context = self._collect_special_lowered_body(
@@ -2774,7 +2792,9 @@ class _FactCollector:
         remaining_possible = True
         exits: list[VariableFlowState] = []
         for clause in command.clauses:
-            remaining_context = self._collect_lowered_condition(clause.condition, remaining_context)
+            remaining_context = self._collect_lowered_condition(
+                clause.condition, remaining_context, command.command
+            )
             truth = eval_expr_text(
                 remaining_context.flow_state,
                 clause.condition.text if clause.condition is not None else '',
@@ -3045,7 +3065,7 @@ class _FactCollector:
         entry_by_script_word_index: dict[int, EmbeddedLanguageEntry],
     ) -> _ExtractionContext:
         context = self._context_after_body_effects(command.body, context)
-        context = self._collect_lowered_condition(command.condition, context)
+        context = self._collect_lowered_condition(command.condition, context, command.command)
         loop_context = context
         context, _ = self._if_clause_contexts(command.condition, context)
         self._collect_special_lowered_body(
@@ -3108,20 +3128,74 @@ class _FactCollector:
         self,
         condition: LoweredCondition | None,
         context: _ExtractionContext,
+        owner: Command,
     ) -> _ExtractionContext:
         if condition is None:
             return context
+        analysis = analyze_expression(
+            condition.text,
+            condition.span,
+            context.flow_state,
+            condition=True,
+            script_effects=lambda parsed, state: self._expression_script_effects(
+                parsed, state, context
+            ),
+        )
+        self._record_value_checks(owner, analysis.diagnostics)
         for substitution in condition.variable_substitutions:
             self._record_variable_reference(
                 name=substitution.name,
                 span=substitution.span,
                 context=context,
             )
+        context = self._context_with_flow_state(context, analysis.state)
         for script in condition.command_substitutions:
             self._collect_lowered_script(script, self._context_without_command_renames(context))
             # Expression substitutions may be skipped by short-circuit evaluation.
             context = self._context_after_effects(context, self._script_effects(script, context))
         return context
+
+    def _record_value_checks(self, command: Command, diagnostics: tuple[Diagnostic, ...]) -> None:
+        name = word_static_text(command.words[0])
+        if name is None:
+            return
+        self._facts.value_checks.extend(
+            ValueCheck(command.span, normalize_command_name(name), diagnostic)
+            for diagnostic in diagnostics
+        )
+
+    def _collect_expression(
+        self, command: Command, context: _ExtractionContext
+    ) -> _ExtractionContext:
+        arguments = command.words[1:]
+        if not arguments or any(word.expanded for word in arguments):
+            return self._context_with_flow_state(context, context.flow_state.invalidated())
+        texts: list[str] = []
+        for word in arguments:
+            values = exact_word_values(word, context.flow_state)
+            # Several possible texts have different control flow. Do not
+            # claim a definite error from just one of them.
+            if len(values) != 1:
+                return self._context_with_flow_state(context, context.flow_state.invalidated())
+            texts.append(values[0])
+        span = Span(arguments[0].span.start, arguments[-1].span.end)
+        analysis = analyze_expression(
+            ' '.join(texts),
+            span,
+            context.flow_state,
+            script_effects=lambda parsed, state: self._expression_script_effects(
+                parsed, state, context
+            ),
+        )
+        self._record_value_checks(command, analysis.diagnostics)
+        return self._context_with_flow_state(context, analysis.state)
+
+    def _expression_script_effects(
+        self, parsed: ParseResult, state: VariableFlowState, context: _ExtractionContext
+    ) -> VariableFlowState:
+        lowered = self._syntax.lower_parse_result(parsed, collect_lexical_spans=False)
+        effects = self._script_effects(lowered.script, replace(context, flow_state=state))
+        return effects.invalidate(state)
 
     def _namespace_context(
         self,
@@ -3245,6 +3319,16 @@ class _FactCollector:
         normalized_command_name: str | None,
         context: _ExtractionContext,
     ) -> _ExtractionContext:
+        # Return options can change completion (for example, -level 0).
+        plain_return = normalized_command_name == 'return' and len(command.command.words) <= 2
+        if plain_return or normalized_command_name in {
+            'error',
+            'throw',
+            'tailcall',
+            'break',
+            'continue',
+        }:
+            return replace(context, flow_state=replace(context.flow_state, reachable=False))
         if context.procedure_symbol_id is not None and normalized_command_name in {
             'global',
             'variable',
