@@ -182,6 +182,14 @@ Expression text and operand data remain distinct. With
 an invalid numeric operand. Short-circuit operators skip unused operand
 checks, but expression syntax must still be valid in every branch.
 
+When variable reads supply several known expression texts, the checker
+examines up to 16 alternatives. A check that fails for every alternative is
+an error. A check that fails for only some alternatives is a warning, with
+an example of a failing expression. Repeated reads use the same variable
+value within each alternative. Possible expression effects are combined
+before checking later statements. Unknown text, too many alternatives, and
+command results with several possible values remain unproved.
+
 Annotated ``set`` assignments check known literal values against literal,
 union, string, numeric, list, and list-element constraints. Unknown aliases
 and unsupported structures remain unproved. The checks do not execute project

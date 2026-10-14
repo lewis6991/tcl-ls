@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from tcl_lsp.parser.helpers import consume_bare_variable_name_end
@@ -71,55 +71,54 @@ class _Token:
     kind: _TokenKind
     text: str
     atom_kind: AtomKind = 'bare'
+    offset: int = field(kw_only=True)
+
+
+@dataclass(frozen=True, slots=True)
+class ExprSyntaxError:
+    """A parser failure at a zero-based offset in the expression text."""
+
+    message: str
+    offset: int
 
 
 @dataclass(frozen=True, slots=True)
 class ExprParseResult:
+    """No expression and no error means the syntax is not modelled."""
+
     expression: Expr | None
-    invalid: bool
+    error: ExprSyntaxError | None
 
 
 def parse_expr(text: str) -> Expr | None:
+    """Build a best-effort tree for flow analysis, including bare words."""
     return _ExprParser(text).parse()
 
 
 def parse_expr_result(text: str) -> ExprParseResult:
+    """Parse an expression and report errors within the supported grammar."""
     parser = _ExprParser(text)
     expr = parser.parse()
-    invalid = (expr is None and not parser.unsupported) or (
-        expr is not None and _invalid_bare_atom(expr)
-    )
-    return ExprParseResult(None if invalid else expr, invalid)
+    if expr is None and parser.unsupported:
+        return ExprParseResult(None, None)
+    return ExprParseResult(None if parser.error else expr, parser.error)
 
 
-def _invalid_bare_atom(expr: Expr) -> bool:
-    match expr:
-        case ExprAtom(text, 'bare'):
-            lowered = text.lower()
-            boolean = any(
-                word.startswith(lowered) for word in ('true', 'false', 'yes', 'no', 'on', 'off')
-            )
-            numeric = text[:1] in '0123456789.' or lowered in {'inf', 'infinity', 'nan'}
-            return not (boolean or numeric)
-        case ExprUnary(_, operand):
-            return _invalid_bare_atom(operand)
-        case ExprBinary(_, left, right):
-            return _invalid_bare_atom(left) or _invalid_bare_atom(right)
-        case ExprTernary(condition, true_expr, false_expr):
-            return any(_invalid_bare_atom(part) for part in (condition, true_expr, false_expr))
-        case ExprFunctionCall(_, arguments):
-            return any(_invalid_bare_atom(argument) for argument in arguments)
-        case _:
-            return False
+def _bare_word_is_literal(text: str) -> bool:
+    lowered = text.lower()
+    boolean = any(word.startswith(lowered) for word in ('true', 'false', 'yes', 'no', 'on', 'off'))
+    numeric = text[:1] in '0123456789.' or lowered in {'inf', 'infinity', 'nan'}
+    return boolean or numeric
 
 
 class _ExprParser:
-    __slots__ = ('_current', '_failed', '_index', '_text', 'unsupported')
+    __slots__ = ('_current', '_failed', '_index', '_text', 'error', 'unsupported')
 
     def __init__(self, text: str) -> None:
         self._text = text
         self._index = 0
         self._failed = False
+        self.error: ExprSyntaxError | None = None
         self.unsupported = False
         self._current = self._next_token()
 
@@ -128,6 +127,7 @@ class _ExprParser:
         if expr is None or self._failed:
             return None
         if self._current.kind != 'eof':
+            self._expected('an operator')
             return None
         return expr
 
@@ -140,7 +140,10 @@ class _ExprParser:
 
         self._advance()
         true_expr = self._parse_ternary()
-        if true_expr is None or not self._current_is_operator(':'):
+        if true_expr is None:
+            return None
+        if not self._current_is_operator(':'):
+            self._expected('`:` and a false expression after `?`')
             return None
         self._advance()
         false_expr = self._parse_ternary()
@@ -199,6 +202,7 @@ class _ExprParser:
         return ExprUnary(operator, operand)
 
     def _parse_postfix(self) -> Expr | None:
+        token = self._current
         expr = self._parse_primary()
         while isinstance(expr, ExprAtom):
             if self._current.kind != 'lparen' or not _is_function_name(expr.text):
@@ -206,6 +210,16 @@ class _ExprParser:
             expr = self._parse_function_call(expr.text)
             if expr is None:
                 return None
+        if (
+            token.kind == 'atom'
+            and isinstance(expr, ExprAtom)
+            and expr.kind == 'bare'
+            and not _bare_word_is_literal(expr.text)
+        ):
+            self._record_error(
+                f'Invalid bare word `{expr.text}`: expected a number or boolean literal.',
+                token.offset,
+            )
         return expr
 
     def _parse_primary(self) -> Expr | None:
@@ -218,17 +232,22 @@ class _ExprParser:
             self._advance()
             return expr
         if not self._current_is_kind('lparen'):
+            self._expected('an operand')
             return None
 
         self._advance()
         expr = self._parse_ternary()
-        if expr is None or not self._current_is_kind('rparen'):
+        if expr is None:
+            return None
+        if not self._current_is_kind('rparen'):
+            self._expected('`)` to close the expression')
             return None
         self._advance()
         return expr
 
     def _parse_function_call(self, name: str) -> Expr | None:
         if not self._current_is_kind('lparen'):
+            self._expected('`(` to start the function arguments')
             return None
 
         self._advance()
@@ -244,6 +263,7 @@ class _ExprParser:
                 self._advance()
 
         if not self._current_is_kind('rparen'):
+            self._expected('`,` or `)` after a function argument')
             return None
         self._advance()
         return ExprFunctionCall(name, tuple(args))
@@ -276,16 +296,36 @@ class _ExprParser:
     def _advance(self) -> None:
         self._current = self._next_token()
 
+    def _expected(self, expected: str) -> None:
+        found = (
+            'the end of the expression'
+            if self._current.kind == 'eof'
+            else f'`{self._current.text}`'
+        )
+        self._record_error(f'Expected {expected}, but found {found}.', self._current.offset)
+
+    def _record_error(self, message: str, offset: int) -> None:
+        # Lookahead can find a later error before the current operand is
+        # checked. Keep the first error in source order.
+        if self.error is None or offset < self.error.offset:
+            self.error = ExprSyntaxError(message, offset)
+
+    def _unclosed(self, description: str, closing: str) -> None:
+        self._record_error(f'Unclosed {description}; expected `{closing}`.', self._index)
+        self._failed = True
+        self._index = len(self._text)
+
     def _next_token(self) -> _Token:
         self._skip_trivia()
+        start = self._index
         if self._index >= len(self._text):
-            return _Token('eof', '')
+            return _Token('eof', '', offset=start)
 
         current_char = self._text[self._index]
         number = _NUMBER_TOKEN.match(self._text, self._index)
         if number is not None:
             self._index = number.end()
-            return _Token('atom', number[0])
+            return _Token('atom', number[0], offset=start)
         if current_char == '$':
             start = self._index
             if self._text.startswith('${', start):
@@ -297,43 +337,43 @@ class _ExprParser:
                 if self._text[end : end + 1] == '(':
                     self.unsupported = True
                 self._index = end
-                return _Token('atom', self._text[start:end], 'variable')
+                return _Token('atom', self._text[start:end], 'variable', offset=start)
         if current_char == '(':
             self._index += 1
-            return _Token('lparen', '(')
+            return _Token('lparen', '(', offset=start)
         if current_char == ')':
             self._index += 1
-            return _Token('rparen', ')')
+            return _Token('rparen', ')', offset=start)
         if current_char == ',':
             self._index += 1
-            return _Token('comma', ',')
+            return _Token('comma', ',', offset=start)
         if current_char == '[':
             token = self._command_token()
             if token is not None or self._failed:
                 if token is None:
-                    return _Token('eof', '')
+                    return _Token('eof', '', offset=self._index)
                 return token
         if current_char == '"':
             token = self._quoted_atom_token()
             if token is not None or self._failed:
                 if token is None:
-                    return _Token('eof', '')
+                    return _Token('eof', '', offset=self._index)
                 return token
         if current_char == '{':
             token = self._braced_atom_token()
             if token is not None or self._failed:
                 if token is None:
-                    return _Token('eof', '')
+                    return _Token('eof', '', offset=self._index)
                 return token
 
         for operator in _SYMBOLIC_OPERATORS:
             if self._text.startswith(operator, self._index):
                 self._index += len(operator)
-                return _Token('operator', operator)
+                return _Token('operator', operator, offset=start)
 
         if current_char in _SINGLE_CHAR_OPERATORS:
             self._index += 1
-            return _Token('operator', current_char)
+            return _Token('operator', current_char, offset=start)
 
         return self._bare_atom_token()
 
@@ -346,6 +386,7 @@ class _ExprParser:
             break
 
     def _quoted_atom_token(self) -> _Token | None:
+        start = self._index
         index = self._index + 1
         pieces: list[str] = []
         kind: AtomKind = 'quoted'
@@ -354,10 +395,11 @@ class _ExprParser:
             current_char = self._text[index]
             if current_char == '"':
                 self._index = index + 1
-                return _Token('atom', ''.join(pieces), kind)
+                return _Token('atom', ''.join(pieces), kind, offset=start)
             if current_char == '[':
                 substitution = _consume_command_substitution(self._text, index)
                 if substitution is None:
+                    self._record_error('Unclosed command substitution; expected `]`.', index)
                     self._failed = True
                     self._index = len(self._text)
                     return None
@@ -374,33 +416,33 @@ class _ExprParser:
             pieces.append(current_char)
             index += 1
 
-        self._failed = True
-        self._index = len(self._text)
+        self._unclosed('string literal', '"')
         return None
 
     def _braced_atom_token(self) -> _Token | None:
+        start = self._index
         atom = _consume_braced_atom(self._text, self._index)
         if atom is None:
-            self._failed = True
-            self._index = len(self._text)
+            self._unclosed('braced string literal', '}')
             return None
 
         text, end_index = atom
         self._index = end_index
-        return _Token('atom', text, 'unknown' if '\\\n' in text else 'braced')
+        return _Token('atom', text, 'unknown' if '\\\n' in text else 'braced', offset=start)
 
     def _command_token(self) -> _Token | None:
+        start = self._index
         substitution = _consume_command_substitution(self._text, self._index)
         if substitution is None:
-            self._failed = True
-            self._index = len(self._text)
+            self._unclosed('command substitution', ']')
             return None
 
         script_text, end_index = substitution
         self._index = end_index
-        return _Token('command', script_text)
+        return _Token('command', script_text, offset=start)
 
     def _bare_atom_token(self) -> _Token:
+        start = self._index
         pieces: list[str] = []
         kind: AtomKind = 'bare'
         while self._index < len(self._text):
@@ -423,8 +465,8 @@ class _ExprParser:
 
         text = ''.join(pieces)
         if text in _BAREWORD_OPERATORS:
-            return _Token('operator', text)
-        return _Token('atom', text, kind)
+            return _Token('operator', text, offset=start)
+        return _Token('atom', text, kind, offset=start)
 
 
 def _consume_braced_atom(text: str, start_index: int) -> tuple[str, int] | None:

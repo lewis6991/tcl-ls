@@ -188,6 +188,237 @@ def test_expression_text_and_operand_data_are_distinct(parser: Parser) -> None:
     assert [(d.code, d.span.start.line) for d in diagnostics] == [('invalid-expr-operand', 3)]
 
 
+@pytest.mark.parametrize(
+    'command',
+    ['expr 1 + $a', 'expr {1 + helllo}', 'set formula {1 + helllo}; expr $formula'],
+)
+def test_bare_word_diagnostic_explains_the_parsed_expression(parser: Parser, command: str) -> None:
+    result = analyze_document(parser, 'file:///values.tcl', f'set a helllo\n{command}\n')
+
+    assert len(result.analysis.diagnostics) == 1
+    diagnostic = result.analysis.diagnostics[0]
+    assert diagnostic.code == 'invalid-expr'
+    assert diagnostic.message == (
+        'Invalid bare word `helllo`: expected a number or boolean literal.\n'
+        'Expression: `1 + helllo`'
+    )
+
+
+@pytest.mark.parametrize(
+    ('value', 'reason'),
+    [
+        ('a 1 2 3', 'Invalid bare word `a`:'),
+        ('1 2 3', 'Expected an operator, but found `2`.'),
+        ('', 'Expected an operand, but found the end of the expression.'),
+        ('(1 + 2', 'Expected `)` to close the expression, but found the end'),
+        ('1 ? 2', 'Expected `:` and a false expression after `?`, but found the end'),
+        ('max(1 2)', 'Expected `,` or `)` after a function argument, but found `2`.'),
+        ('"abc', 'Unclosed string literal; expected `"`.'),
+        ('[puts x', 'Unclosed command substitution; expected `]`.'),
+        ('(a)', 'Invalid bare word `a`:'),
+    ],
+)
+def test_substituted_expression_errors_explain_the_parser_failure(
+    parser: Parser, value: str, reason: str
+) -> None:
+    result = analyze_document(parser, 'file:///values.tcl', f'set a {{{value}}}\nexpr 1 + $a\n')
+
+    assert len(result.analysis.diagnostics) == 1
+    diagnostic = result.analysis.diagnostics[0]
+    assert (diagnostic.code, diagnostic.severity) == ('invalid-expr', 'error')
+    assert reason in diagnostic.message
+    assert diagnostic.message.endswith(f'\nExpression: `1 + {value}`')
+
+
+@pytest.mark.parametrize('command', ['expr 1 + $a', 'expr 1 + {a 1 2 3}'])
+def test_grouping_an_argument_does_not_quote_it_in_the_expression(
+    parser: Parser, command: str
+) -> None:
+    result = analyze_document(parser, 'file:///values.tcl', f'set a {{a 1 2 3}}\n{command}\n')
+
+    assert len(result.analysis.diagnostics) == 1
+    diagnostic = result.analysis.diagnostics[0]
+    assert diagnostic.code == 'invalid-expr'
+    assert 'Invalid bare word `a`:' in diagnostic.message
+    assert diagnostic.message.endswith('\nExpression: `1 + a 1 2 3`')
+
+
+@pytest.mark.parametrize('command', ['expr {1 + $a}', 'expr {1 + {a 1 2 3}}'])
+def test_list_value_used_as_one_operand_fails_numeric_conversion(
+    parser: Parser, command: str
+) -> None:
+    result = analyze_document(parser, 'file:///values.tcl', f'set a {{a 1 2 3}}\n{command}\n')
+
+    assert len(result.analysis.diagnostics) == 1
+    diagnostic = result.analysis.diagnostics[0]
+    assert diagnostic.code == 'invalid-expr-operand'
+    assert diagnostic.message == 'Operator `+` requires a number; operand is `"a 1 2 3"`.'
+
+
+def test_substituted_value_can_supply_expression_syntax(parser: Parser) -> None:
+    result = analyze_document(
+        parser,
+        'file:///values.tcl',
+        'set a {2 + 3}\nexpr 1 + $a\nexpr {1 + $a}\n',
+    )
+
+    assert [(d.code, d.span.start.line) for d in result.analysis.diagnostics] == [
+        ('invalid-expr-operand', 2)
+    ]
+
+
+@pytest.mark.parametrize(
+    ('left', 'right', 'expected'),
+    [
+        ('a 1 2 3', '1', [('invalid-expr', 'warning')]),
+        ('1', 'a 1 2 3', [('invalid-expr', 'warning')]),
+        ('a 1 2 3', 'b 1 2 3', [('invalid-expr', 'error')]),
+        ('1', '2 + 3', []),
+    ],
+)
+def test_expression_text_alternatives_report_possible_and_definite_failures(
+    parser: Parser, left: str, right: str, expected: list[tuple[str, str]]
+) -> None:
+    result = analyze_document(
+        parser,
+        'file:///values.tcl',
+        f'proc run {{flag}} {{\n'
+        f'    if {{$flag}} {{set a {{{left}}}}} else {{set a {{{right}}}}}\n'
+        '    expr 1 + $a\n'
+        '}\n',
+    )
+
+    diagnostics = result.analysis.diagnostics
+    assert [(d.code, d.severity) for d in diagnostics] == expected
+    if diagnostics:
+        assert 'Invalid bare word' in diagnostics[0].message
+        label = 'Possible expansion' if expected[0][1] == 'warning' else 'Example expansion'
+        assert f'\n{label}: `1 + ' in diagnostics[0].message
+
+
+def test_possible_expression_warning_leads_with_the_cause(parser: Parser) -> None:
+    result = analyze_document(
+        parser,
+        'file:///values.tcl',
+        'proc run {flag} {\n    if {$flag} {set a {a 1 2 3}} else {set a 1}\n    expr 1 + $a\n}\n',
+    )
+
+    assert len(result.analysis.diagnostics) == 1
+    diagnostic = result.analysis.diagnostics[0]
+    assert (diagnostic.code, diagnostic.severity) == ('invalid-expr', 'warning')
+    assert diagnostic.message == (
+        'Invalid bare word `a`: expected a number or boolean literal.\n'
+        'Possible expansion: `1 + a 1 2 3`'
+    )
+
+
+def test_unknown_expression_text_alternative_remains_unproved(parser: Parser) -> None:
+    result = analyze_document(
+        parser,
+        'file:///values.tcl',
+        'proc run {flag} {\n'
+        '    if {$flag} {set a {a 1 2 3}} else {set a [read stdin]}\n'
+        '    expr 1 + $a\n'
+        '}\n',
+    )
+
+    assert result.analysis.diagnostics == ()
+
+
+def test_expression_operand_checks_also_run_for_each_known_text(parser: Parser) -> None:
+    result = analyze_document(
+        parser,
+        'file:///values.tcl',
+        'proc run {flag} {\n    if {$flag} {set a {"bad"}} else {set a 1}\n    expr 1 + $a\n}\n',
+    )
+
+    assert [(d.code, d.severity) for d in result.analysis.diagnostics] == [
+        ('invalid-expr-operand', 'warning')
+    ]
+    assert 'Operator `+` requires a number' in result.analysis.diagnostics[0].message
+
+
+def test_known_condition_excludes_an_invalid_expression_text(parser: Parser) -> None:
+    result = analyze_document(
+        parser,
+        'file:///values.tcl',
+        'if {0} {set a {a 1 2 3}} else {set a 1}\nexpr 1 + $a\n',
+    )
+
+    assert [d.code for d in result.analysis.diagnostics] == ['unreachable-code']
+
+
+def test_multiple_command_results_without_input_relations_remain_unproved(parser: Parser) -> None:
+    result = analyze_document(
+        parser,
+        'file:///values.tcl',
+        'proc run {flag} {\n'
+        '    if {$flag} {set a {}} else {set a {"}}\n'
+        '    expr [set a] 1 [set a]\n'
+        '}\n',
+    )
+
+    assert result.analysis.diagnostics == ()
+
+
+def test_expression_alternatives_use_one_value_for_repeated_variable_reads(parser: Parser) -> None:
+    result = analyze_document(
+        parser,
+        'file:///values.tcl',
+        'proc run {flag} {\n    if {$flag} {set a {}} else {set a {"}}\n    expr $a 1 $a\n}\n',
+    )
+
+    # Both ` 1 ` and `" 1 "` are valid. Mixed reads would invent unclosed quotes.
+    assert result.analysis.diagnostics == ()
+
+
+def test_readonly_expression_alternatives_preserve_later_value_checks(parser: Parser) -> None:
+    result = analyze_document(
+        parser,
+        'file:///values.tcl',
+        'proc run {flag} {\n'
+        '    set count auto\n'
+        '    if {$flag} {set a 1} else {set a 2}\n'
+        '    expr 1 + $a\n'
+        '    expr {$count + 1}\n'
+        '}\n',
+    )
+
+    assert [(d.code, d.severity, d.span.start.line) for d in result.analysis.diagnostics] == [
+        ('invalid-expr-operand', 'error', 4)
+    ]
+
+
+def test_effects_from_any_expression_alternative_invalidate_later_values(parser: Parser) -> None:
+    result = analyze_document(
+        parser,
+        'file:///values.tcl',
+        'proc run {flag} {\n'
+        '    set count auto\n'
+        '    if {$flag} {set a {[set count 42]}} else {set a 0}\n'
+        '    expr $a\n'
+        '    expr {$count + 1}\n'
+        '}\n',
+    )
+
+    assert result.analysis.diagnostics == ()
+
+
+def test_braced_expression_explains_the_numeric_operand_requirement(parser: Parser) -> None:
+    result = analyze_document(parser, 'file:///values.tcl', 'set a helllo\nexpr {1 + $a}\n')
+
+    assert len(result.analysis.diagnostics) == 1
+    diagnostic = result.analysis.diagnostics[0]
+    assert diagnostic.code == 'invalid-expr-operand'
+    assert diagnostic.message == 'Operator `+` requires a number; operand is `"helllo"`.'
+
+
+def test_numeric_substitution_is_valid_expression_text(parser: Parser) -> None:
+    result = analyze_document(parser, 'file:///values.tcl', 'set a 42\nexpr 1 + $a\n')
+
+    assert result.analysis.diagnostics == ()
+
+
 def test_numeric_equality_preserves_the_original_spelling(parser: Parser) -> None:
     result = analyze_document(
         parser,

@@ -112,6 +112,13 @@ Command And Metadata Diagnostics
 
 ``invalid-expr``
    An expression has invalid syntax within the supported expression grammar.
+   The message gives the parser's reason, followed by the expression text
+   after known substitutions on a separate line. Reasons include invalid bare
+   words, missing operands or operators, incomplete conditional expressions,
+   and unclosed delimiters.
+   The default severity is ``warning`` when only some known expression texts
+   fail this check. ``Possible expansion`` shows a failing alternative for a
+   warning; ``Example expansion`` shows one when all alternatives fail.
    Syntax must be valid even in a branch skipped by a short-circuit operator.
 
 ``invalid-expr-operand``

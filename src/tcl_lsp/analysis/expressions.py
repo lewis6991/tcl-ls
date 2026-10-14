@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from tcl_lsp.analysis.flow.exprs import (
     eval_expr,
@@ -11,7 +11,7 @@ from tcl_lsp.analysis.flow.exprs import (
     expr_atom_variable,
     expr_branch_states,
 )
-from tcl_lsp.analysis.flow.variables import VariableFlowState, exact_list_values
+from tcl_lsp.analysis.flow.variables import VariableFlowState, exact_list_values, exact_word_values
 from tcl_lsp.analysis.types import ListType, NamedType, TypeInfo, TypeNode, type_text
 from tcl_lsp.analysis.value_constraints import (
     Interpretation,
@@ -34,10 +34,11 @@ from tcl_lsp.parser.expr import (
     ExprUnary,
     parse_expr_result,
 )
-from tcl_lsp.parser.model import ParseResult
+from tcl_lsp.parser.model import BracedWord, ParseResult, VariableSubstitution, Word
 
 _INTEGER_OPERATORS = frozenset({'%', '&', '|', '^', '<<', '>>'})
 _NUMBER_OPERATORS = frozenset({'+', '-', '*', '/', '**'})
+_MAX_EXPRESSION_ALTERNATIVES = 16
 _VALUE_PARSER = Parser()
 type ScriptEffects = Callable[[ParseResult, VariableFlowState], VariableFlowState]
 
@@ -48,7 +49,114 @@ class ExpressionAnalysis:
     state: VariableFlowState
 
 
+def analyze_expression_arguments(
+    arguments: tuple[Word, ...],
+    span: Span,
+    state: VariableFlowState,
+    *,
+    script_effects: ScriptEffects | None = None,
+) -> ExpressionAnalysis:
+    """Check finite expression texts and join their possible effects."""
+    if not state.reachable:
+        return ExpressionAnalysis((), state)
+    alternatives = _expression_alternatives(arguments, state)
+    if not alternatives:
+        return ExpressionAnalysis((), state.invalidated())
+    if len(alternatives) == 1:
+        text, branch = alternatives[0]
+        return analyze_expression(text, span, branch, script_effects=script_effects)
+    analyses = tuple(
+        _analyze_expression(text, span, branch, script_effects=script_effects)
+        for text, branch in alternatives
+    )
+    return ExpressionAnalysis(
+        _alternative_diagnostics(analyses, tuple(text for text, _ in alternatives)),
+        VariableFlowState.join(*(analysis.state for analysis in analyses)),
+    )
+
+
+def _expression_alternatives(
+    arguments: tuple[Word, ...], state: VariableFlowState
+) -> tuple[tuple[str, VariableFlowState], ...]:
+    if not arguments or any(word.expanded for word in arguments):
+        return ()
+    partial: list[tuple[tuple[str, ...], VariableFlowState]] = [((), state)]
+    for word in arguments:
+        variable: str | None = None
+        if not isinstance(word, BracedWord) and len(word.parts) == 1:
+            part = word.parts[0]
+            if isinstance(part, VariableSubstitution):
+                variable = part.name
+
+        expanded: list[tuple[tuple[str, ...], VariableFlowState]] = []
+        for texts, branch in partial:
+            values = exact_word_values(word, branch)
+            if not values:
+                return ()
+            if len(values) > 1 and variable is None:
+                # A command result has no tracked relation to its inputs.
+                # Independent choices could invent impossible combinations.
+                return ()
+            for value in values:
+                # A later read of this variable must use the same value,
+                # including reads deferred until expression evaluation.
+                narrowed = branch.with_exact_values(variable, (value,)) if variable else branch
+                expanded.append(((*texts, value), narrowed))
+                if len(expanded) > _MAX_EXPRESSION_ALTERNATIVES:
+                    return ()
+        partial = expanded
+    return tuple((' '.join(texts), branch) for texts, branch in partial)
+
+
+def _alternative_diagnostics(
+    analyses: tuple[ExpressionAnalysis, ...], texts: tuple[str, ...]
+) -> tuple[Diagnostic, ...]:
+    # Show one example per check, even if different texts fail it differently.
+    codes = dict.fromkeys(d.code for analysis in analyses for d in analysis.diagnostics)
+    diagnostics: list[Diagnostic] = []
+    for code in codes:
+        matches = tuple(
+            (text, tuple(d for d in analysis.diagnostics if d.code == code))
+            for text, analysis in zip(texts, analyses, strict=True)
+        )
+        text, example = next((text, d) for text, group in matches for d in group)
+        definite = all(any(d.severity == 'error' for d in group) for _, group in matches)
+        diagnostic = replace(example, severity='error' if definite else 'warning')
+        diagnostics.append(
+            _with_expression_context(
+                diagnostic, text, 'Example expansion' if definite else 'Possible expansion'
+            )
+        )
+    return tuple(diagnostics)
+
+
+def _with_expression_context(diagnostic: Diagnostic, text: str, label: str) -> Diagnostic:
+    return replace(diagnostic, message=f'{diagnostic.message}\n{label}: `{text}`')
+
+
 def analyze_expression(
+    text: str,
+    span: Span,
+    state: VariableFlowState,
+    *,
+    condition: bool = False,
+    script_effects: ScriptEffects | None = None,
+) -> ExpressionAnalysis:
+    analysis = _analyze_expression(
+        text, span, state, condition=condition, script_effects=script_effects
+    )
+    if not any(d.code == 'invalid-expr' for d in analysis.diagnostics):
+        return analysis
+    return replace(
+        analysis,
+        diagnostics=tuple(
+            _with_expression_context(d, text, 'Expression') if d.code == 'invalid-expr' else d
+            for d in analysis.diagnostics
+        ),
+    )
+
+
+def _analyze_expression(
     text: str,
     span: Span,
     state: VariableFlowState,
@@ -62,13 +170,14 @@ def analyze_expression(
         parsed = parse_expr_result(text)
         expr = parsed.expression
         if expr is None:
-            if parsed.invalid:
+            if parsed.error is not None:
+                error = parsed.error
                 return ExpressionAnalysis(
                     (
                         Diagnostic(
                             span=span,
                             severity='error',
-                            message='Invalid expression syntax.',
+                            message=error.message,
                             source='analysis',
                             code='invalid-expr',
                         ),

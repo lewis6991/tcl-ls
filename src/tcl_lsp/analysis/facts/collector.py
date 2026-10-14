@@ -28,7 +28,11 @@ from tcl_lsp.analysis.embedded_languages import (
     match_embedded_language_entries,
     resolve_embedded_language_entries,
 )
-from tcl_lsp.analysis.expressions import analyze_expression, assignment_diagnostics
+from tcl_lsp.analysis.expressions import (
+    analyze_expression,
+    analyze_expression_arguments,
+    assignment_diagnostics,
+)
 from tcl_lsp.analysis.facts.bodies import BodyAnalysisCache, BodyInputs, CachedBody, FactBuffer
 from tcl_lsp.analysis.facts.lowering import (
     DocumentSyntax,
@@ -3168,19 +3172,11 @@ class _FactCollector:
         self, command: Command, context: _ExtractionContext
     ) -> _ExtractionContext:
         arguments = command.words[1:]
-        if not arguments or any(word.expanded for word in arguments):
+        if not arguments:
             return self._context_with_flow_state(context, context.flow_state.invalidated())
-        texts: list[str] = []
-        for word in arguments:
-            values = exact_word_values(word, context.flow_state)
-            # Several possible texts have different control flow. Do not
-            # claim a definite error from just one of them.
-            if len(values) != 1:
-                return self._context_with_flow_state(context, context.flow_state.invalidated())
-            texts.append(values[0])
         span = Span(arguments[0].span.start, arguments[-1].span.end)
-        analysis = analyze_expression(
-            ' '.join(texts),
+        analysis = analyze_expression_arguments(
+            arguments,
             span,
             context.flow_state,
             script_effects=lambda parsed, state: self._expression_script_effects(
