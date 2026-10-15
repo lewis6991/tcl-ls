@@ -35,6 +35,11 @@ Navigation And Editing
 Completion triggers are ``$``, ``:``, and ``-``. Signature help triggers are
 space and tab.
 
+For a source procedure with active module metadata, definition and declaration
+return the source locations first, followed by the metadata declarations.
+Implementation returns only source procedures with bodies. When no source
+definition is available, definition and declaration can point to metadata alone.
+
 Use :doc:`annotations` to add parameter types, return types, and descriptions
 to procedure hover, completion, and signature help.
 

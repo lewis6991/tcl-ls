@@ -126,6 +126,36 @@ def _match_signature_items(
     if token == 'args':
         return 'exact'
 
+    if token == '?':
+        try:
+            group_end = items.index('?', item_index + 1)
+        except ValueError:
+            return 'reject'
+
+        omitted = _match_signature_items(
+            items,
+            arg_texts=arg_texts,
+            arg_expanded=arg_expanded,
+            arg_grouped=arg_grouped,
+            item_index=group_end + 1,
+            arg_index=arg_index,
+        )
+        if omitted == 'exact':
+            return omitted
+
+        included_items = items[item_index + 1 : group_end] + items[group_end + 1 :]
+        return _best_match_state(
+            omitted,
+            _match_signature_items(
+                included_items,
+                arg_texts=arg_texts,
+                arg_expanded=arg_expanded,
+                arg_grouped=arg_grouped,
+                item_index=0,
+                arg_index=arg_index,
+            ),
+        )
+
     if arg_index >= len(arg_texts):
         return 'reject'
 
@@ -234,6 +264,9 @@ def _match_slot_token(
 
     if slot_name in {'name', 'procName', 'target'}:
         return 'exact' if ' ' not in actual else 'reject'
+    if slot_name == 'absoluteName':
+        valid = actual.startswith('::') and not any(character.isspace() for character in actual)
+        return 'exact' if valid else 'reject'
     if slot_name == 'shape':
         return 'exact'
     if slot_name == 'groupedShape':

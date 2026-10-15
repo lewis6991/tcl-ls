@@ -16,6 +16,7 @@ from typing import IO, cast
 from tcl_lsp.analysis.facts.parsing import ListItem, split_tcl_list
 from tcl_lsp.analysis.metadata_commands import (
     MetadataBind,
+    MetadataCall,
     MetadataContext,
     MetadataPackage,
     MetadataPlugin,
@@ -23,6 +24,7 @@ from tcl_lsp.analysis.metadata_commands import (
     MetadataRef,
     MetadataSelector,
     MetadataSource,
+    parse_call_value,
     parse_metadata_settings,
     parse_package_value,
     parse_procedure_parameters,
@@ -63,6 +65,7 @@ class PluginProcedureEffect:
 type PluginEffect = (
     MetadataBind
     | MetadataRef
+    | MetadataCall
     | MetadataSource
     | MetadataPackage
     | MetadataContext
@@ -369,6 +372,11 @@ def parse_plugin_effects(
         if effect_name == 'ref':
             effects.append(_parse_plugin_ref_effect(command))
             continue
+        if effect_name == 'call':
+            effect = parse_call_value(command_words[1:], command_name='plugin effect')
+            _validate_plugin_selector(effect.selector, key='call')
+            effects.append(effect)
+            continue
         if effect_name == 'source':
             effects.append(_parse_plugin_source_effect(command))
             continue
@@ -383,7 +391,7 @@ def parse_plugin_effects(
             continue
         raise RuntimeError(
             f'Unknown Tcl plugin effect `{effect_name}`. '
-            'Plugins may return bind, ref, source, package, enter, or procedure.'
+            'Plugins may return bind, ref, call, source, package, enter, or procedure.'
         )
 
     return tuple(effects)

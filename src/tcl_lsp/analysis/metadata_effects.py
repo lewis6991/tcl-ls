@@ -152,9 +152,11 @@ class _DependencyScanner:
     required_packages: set[str] = field(init=False, default_factory=set)
 
     def scan_facts(self, facts: DocumentFacts) -> None:
-        for path in file_scoped_metadata_sources(self.metadata_registry.catalog).get(
-            self.source_path.name, ()
-        ):
+        sources = file_scoped_metadata_sources(self.metadata_registry.catalog)
+        # Rc declarations describe the workspace interpreter, so their fixed
+        # dependencies apply to each source rather than a file named tcllsrc.tcl.
+        paths = (*sources.get('tcllsrc.tcl', ()), *sources.get(self.source_path.name, ()))
+        for path in paths:
             self.source_uris.setdefault(path.as_uri(), None)
         candidate_names = _candidate_effect_command_names(self.metadata_registry)
         for directive in facts.source_directives:

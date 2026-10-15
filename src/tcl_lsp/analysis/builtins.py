@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
 from lsprotocol import types
 
@@ -25,6 +24,7 @@ from tcl_lsp.metadata_paths import (
     MetadataRegistry,
     MetadataRevision,
 )
+from tcl_lsp.project.declarations import MetadataPath
 
 _PACKAGE_ALIASES = {
     # Some bundled tcllib metadata is shipped for specific subpackages even when
@@ -266,8 +266,8 @@ def _builtin_definition_targets(
 def _load_metadata_file(
     *,
     package_name: str,
-    metadata_path: Path,
-    alias_paths: tuple[Path, ...],
+    metadata_path: MetadataPath,
+    alias_paths: tuple[MetadataPath, ...],
     revision: MetadataRevision,
 ) -> dict[str, BuiltinCommand]:
     commands: dict[str, list[BuiltinOverload]] = {}
@@ -327,8 +327,8 @@ def _load_metadata_file(
 def _load_metadata_package(
     *,
     package_name: str,
-    metadata_path_layers: tuple[tuple[Path, ...], ...],
-    alias_paths: tuple[Path, ...],
+    metadata_path_layers: tuple[tuple[MetadataPath, ...], ...],
+    alias_paths: tuple[MetadataPath, ...],
     revision: MetadataRevision,
 ) -> dict[str, BuiltinCommand]:
     package_commands: dict[str, BuiltinCommand] = {}
@@ -357,8 +357,8 @@ def _load_metadata_package(
 def _load_annotated_metadata_package(
     *,
     package_name: str,
-    metadata_path_layers: tuple[tuple[Path, ...], ...],
-    alias_paths: tuple[Path, ...],
+    metadata_path_layers: tuple[tuple[MetadataPath, ...], ...],
+    alias_paths: tuple[MetadataPath, ...],
     revision: MetadataRevision,
 ) -> dict[str, MetadataCommand]:
     annotated: dict[str, MetadataCommand] = {}
@@ -388,10 +388,10 @@ def _load_annotated_metadata_package(
 @metadata_lru_cache(maxsize=128)
 def _builtin_metadata_path_layers_by_package(
     catalog: MetadataCatalog,
-) -> dict[str, tuple[tuple[Path, ...], ...]]:
-    path_layers_by_package: dict[str, list[tuple[Path, ...]]] = {}
+) -> dict[str, tuple[tuple[MetadataPath, ...], ...]]:
+    path_layers_by_package: dict[str, list[tuple[MetadataPath, ...]]] = {}
     for _, layer_paths in catalog.metadata_file_layers():
-        layer_paths_by_package: dict[str, list[Path]] = {}
+        layer_paths_by_package: dict[str, list[MetadataPath]] = {}
         for metadata_path in layer_paths:
             for module in metadata_modules(metadata_path):
                 layer_paths_by_package.setdefault(module.name, []).append(metadata_path)
@@ -410,8 +410,8 @@ def _builtin_metadata_path_layers_by_package(
 def _annotated_entries_for_file(
     *,
     package_name: str,
-    metadata_path: Path,
-    alias_paths: tuple[Path, ...],
+    metadata_path: MetadataPath,
+    alias_paths: tuple[MetadataPath, ...],
     revision: MetadataRevision,
 ) -> tuple[tuple[str, ...], dict[str, MetadataCommand]]:
     override_entries: dict[str, MetadataCommand | None] = {}

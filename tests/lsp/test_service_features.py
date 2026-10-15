@@ -195,16 +195,19 @@ def test_language_service_definition_resolves_builtin_command_metadata(
     assert definition_locations[0] == builtin.overloads[0].location
 
 
-def test_language_service_definition_returns_all_builtin_overloads(
+def test_language_service_definition_deduplicates_shared_builtin_locations(
     service: LanguageService,
 ) -> None:
     service.open_document(MAIN_URI, 'after 100\n', 1)
 
     builtin = builtin_command('after')
     assert builtin is not None
+    location = builtin.overloads[0].location
+    assert len(builtin.overloads) > 1
+    assert all(overload.location == location for overload in builtin.overloads)
 
     definition_locations = service.definition(MAIN_URI, 0, 1)
-    assert definition_locations == tuple(overload.location for overload in builtin.overloads)
+    assert definition_locations == (location,)
 
 
 def test_language_service_definition_prefers_project_builtin_override_metadata(

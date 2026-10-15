@@ -54,8 +54,15 @@ from tcl_lsp.metadata_paths import (
     create_metadata_registry,
 )
 from tcl_lsp.parser import Parser
-from tcl_lsp.project.config import config_files, configured_library_paths, configured_metadata_paths
-from tcl_lsp.project.declarations import load_declaration_snapshot
+from tcl_lsp.project.config import (
+    config_context,
+    config_files,
+    configured_library_paths,
+    configured_metadata_paths,
+)
+from tcl_lsp.project.context import ConfigContext
+from tcl_lsp.project.declarations import MetadataPath
+from tcl_lsp.project.evaluation import evaluate_config
 from tcl_lsp.project.paths import (
     FileRevision,
     candidate_package_roots,
@@ -110,8 +117,8 @@ class _PreparedWorkspace:
         )
 
 
-def _active_metadata_paths(snapshot: DocumentBuildSnapshot) -> tuple[Path, ...]:
-    active_paths: dict[Path, None] = {}
+def _active_metadata_paths(snapshot: DocumentBuildSnapshot) -> tuple[MetadataPath, ...]:
+    active_paths: dict[MetadataPath, None] = {}
     for uri in snapshot.open_document_uris:
         for metadata_path in snapshot.metadata_paths_by_uri.get(uri, ()):
             active_paths.setdefault(metadata_path, None)
@@ -131,7 +138,7 @@ class LanguageServer(PyglsLanguageServer):
     _next_server_request_id: int
     _open_document_uris: set[str]
     _parser: Parser
-    _metadata_paths_by_uri: dict[str, tuple[Path, ...]]
+    _metadata_paths_by_uri: dict[str, tuple[MetadataPath, ...]]
     _resolver: Resolver
     _scanned_package_roots: set[Path]
     _semantic_token_results_by_uri: dict[str, OrderedDict[str, _SemanticTokenResult]]
@@ -276,6 +283,7 @@ class LanguageServer(PyglsLanguageServer):
                     workspace_index=self._workspace_index,
                     scanned_package_roots=tuple(self._scanned_package_roots),
                     configuration_revision=self._configuration_revision,
+                    configuration_roots=self._metadata_registry.configuration_roots,
                 )
 
             self._change_worker.discard(uri)
@@ -370,10 +378,29 @@ class LanguageServer(PyglsLanguageServer):
         path = source_id_to_path(uri)
         if path is None:
             return ()
-        configs = config_files(path)
+        configs = config_files(path, include_user=False)
         if configs:
             return (configs[-1].parent,)
         return candidate_package_roots(path)
+
+    def _config_context(self, path: Path) -> ConfigContext:
+        path = path.resolve(strict=False)
+        try:
+            workspace = self.workspace
+        except RuntimeError:
+            workspace = None
+        roots: list[Path] = []
+        if workspace is not None:
+            uris = tuple(workspace.folders)
+            if not uris and workspace.root_uri is not None:
+                uris = (workspace.root_uri,)
+            for uri in uris:
+                if (root := source_id_to_path(uri)) is not None:
+                    root = root.resolve(strict=False)
+                    if path.is_relative_to(root):
+                        roots.append(root)
+        root = max(roots, key=lambda root: len(root.parts)) if roots else None
+        return config_context(path, workspace_root=root)
 
     def _current_document_version(self, uri: str) -> int | None:
         with self._state_lock:
@@ -726,15 +753,20 @@ class LanguageServer(PyglsLanguageServer):
         path_settings_changed = False
         open_document_uris.update(uri for uri, _, _ in pending_documents)
         configuration_revision: dict[tuple[Path, int, int], None] = {}
+        configuration_roots: dict[Path, None] = {}
         for uri in sorted(open_document_uris):
             path = source_id_to_path(uri)
-            if path is not None:
+            context = self._config_context(path) if path is not None else None
+            if path is not None and context is not None:
+                configuration_roots.setdefault(context.workspace_root, None)
                 for config_path in config_files(path):
                     configuration_revision.update(
-                        dict.fromkeys(load_declaration_snapshot(config_path).revision)
+                        dict.fromkeys(evaluate_config(config_path, context).snapshot.revision)
                     )
-            metadata_paths = () if path is None else configured_metadata_paths(path)
-            library_paths = () if path is None else configured_library_paths(path)
+            metadata_paths = (
+                () if path is None else configured_metadata_paths(path, context=context)
+            )
+            library_paths = () if path is None else configured_library_paths(path, context=context)
             if uri in existing_open_document_uris and (
                 metadata_paths_by_uri.get(uri, ()) != metadata_paths
                 or library_paths_by_uri.get(uri, ()) != library_paths
@@ -751,9 +783,12 @@ class LanguageServer(PyglsLanguageServer):
             workspace_index=workspace_index,
             scanned_package_roots=scanned_package_roots,
             configuration_revision=tuple(configuration_revision),
+            configuration_roots=tuple(configuration_roots),
         )
         path_settings_changed |= snapshot.configuration_revision != self._configuration_revision
-        target_metadata_registry = create_metadata_registry(_active_metadata_paths(snapshot))
+        target_metadata_registry = create_metadata_registry(
+            _active_metadata_paths(snapshot), configuration_roots=snapshot.configuration_roots
+        )
         return snapshot, target_metadata_registry, path_settings_changed
 
     def _prepare_documents(
@@ -874,7 +909,12 @@ class LanguageServer(PyglsLanguageServer):
         pending_documents: tuple[tuple[str, str, int], ...],
     ) -> bool:
         with self._preparation_lock:
-            result = WorkspaceRebuilder().rebuild(
+            registry = create_metadata_registry(
+                _active_metadata_paths(snapshot), configuration_roots=snapshot.configuration_roots
+            )
+            if registry != self._metadata_registry:
+                self._clear_cached_disk_documents()
+            result = WorkspaceRebuilder(metadata_registry=registry).rebuild(
                 snapshot,
                 pending_documents,
                 load_cached_document=self._cached_disk_document,
@@ -926,7 +966,6 @@ class LanguageServer(PyglsLanguageServer):
         if metadata_registry == self._metadata_registry:
             return
 
-        self._clear_cached_disk_documents()
         self._extractor.close()
         self._metadata_registry = metadata_registry
         self._extractor = FactExtractor(self._parser, metadata_registry=metadata_registry)

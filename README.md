@@ -32,7 +32,9 @@ tcl-check path/to/project
 ```
 
 Use `tcllsrc.tcl` to load project metadata, locate libraries, and configure
-diagnostics. Metadata can describe custom procedure declarations and use Tcl
+diagnostics. For settings shared across projects, use
+`$XDG_CONFIG_HOME/tcl-ls/tcllsrc.tcl` (default: `~/.config/tcl-ls/tcllsrc.tcl`).
+Metadata can describe custom procedure declarations and use Tcl
 parameter parser hooks to retain the original parameter locations.
 The [documentation](https://lewis6991.github.io/tcl-ls/) covers:
 

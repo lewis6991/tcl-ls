@@ -231,9 +231,13 @@ class _ExprAnalyzer:
                 comparison.var_name,
                 tuple(value for value, result in zip(values, results, strict=True) if not result),
             )
+            equal = equal.guarded(comparison.var_name)
+            different = different.guarded(comparison.var_name)
             return (equal, different) if comparison.operator == '==' else (different, equal)
         equal = state.with_exact_values(comparison.var_name, (comparison.literal_value,))
         different = _state_without_exact_value(state, comparison.var_name, comparison.literal_value)
+        equal = equal.guarded(comparison.var_name)
+        different = different.guarded(comparison.var_name)
         match comparison.operator:
             case 'eq':
                 return equal, different

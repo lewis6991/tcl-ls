@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from tcl_lsp.checker import check_project
+from tcl_lsp.common import Position
 from tcl_lsp.lsp import LanguageServer
 from tcl_lsp.lsp.features.hover import hover
 from tcl_lsp.lsp.features.navigation import definition
@@ -149,14 +150,14 @@ def test_saved_include_changes_refresh_editor_and_checker(
     fragment.write_text('meta command choose {one}\n')
     (tmp_path / 'tcllsrc.tcl').write_text('meta module Tcl {source commands.meta.tcl}\n')
     parses: list[str] = []
-    parse = Parser.parse_document
+    parse = Parser.parse_embedded_script
 
-    def count(self: Parser, path: str, text: str) -> ParseResult:
+    def count(self: Parser, path: str, text: str, start_position: Position) -> ParseResult:
         if path == fragment.as_uri():
             parses.append(text)
-        return parse(self, path, text)
+        return parse(self, path, text, start_position)
 
-    monkeypatch.setattr(Parser, 'parse_document', count)
+    monkeypatch.setattr(Parser, 'parse_embedded_script', count)
     source = tmp_path / 'main.tcl'
     source.write_text('choose a b\n')
     server = LanguageServer()
@@ -227,7 +228,7 @@ def test_invalid_metadata_reports_the_declaration_or_its_include(
 @pytest.mark.parametrize(
     'include', ['source b.meta.tcl', 'source missing.meta.tcl', 'source $computed']
 )
-def test_bad_includes_report_errors_without_executing_tcl(tmp_path: Path, include: str) -> None:
+def test_bad_includes_report_errors_at_the_config_include(tmp_path: Path, include: str) -> None:
     (tmp_path / 'a.meta.tcl').write_text(include + '\n')
     (tmp_path / 'b.meta.tcl').write_text('source a.meta.tcl\n')
     config = tmp_path / 'tcllsrc.tcl'

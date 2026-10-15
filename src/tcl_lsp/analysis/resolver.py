@@ -119,6 +119,13 @@ class Resolver:
         uri: str,
         facts: DocumentFacts,
     ) -> AnalysisResult:
+        registry = self._metadata_registry.for_source(uri)
+        resolver = (
+            self if registry == self._metadata_registry else Resolver(metadata_registry=registry)
+        )
+        return resolver._facts_only_analysis(uri, facts)
+
+    def _facts_only_analysis(self, uri: str, facts: DocumentFacts) -> AnalysisResult:
         definitions = self._build_definitions(facts, facts.variable_bindings)
         return AnalysisResult(
             uri=uri,
@@ -131,6 +138,22 @@ class Resolver:
         )
 
     def analyze(
+        self,
+        uri: str,
+        facts: DocumentFacts,
+        workspace_index: WorkspaceIndex,
+        *,
+        include_diagnostics: bool = True,
+    ) -> AnalysisResult:
+        registry = self._metadata_registry.for_source(uri)
+        resolver = (
+            self if registry == self._metadata_registry else Resolver(metadata_registry=registry)
+        )
+        return resolver._analyze(
+            uri, facts, workspace_index, include_diagnostics=include_diagnostics
+        )
+
+    def _analyze(
         self,
         uri: str,
         facts: DocumentFacts,
@@ -219,8 +242,8 @@ class Resolver:
                         )
                     )
 
-        # Config commands are validated by the same static grammar as loading.
-        # Keep resolution for navigation and help, without Tcl runtime checks.
+        # Rc evaluation reports config errors. Keep resolution for navigation
+        # and help without applying source-code diagnostic checks here.
         if include_diagnostics and not is_config_file(source_id_to_path(uri)):
             diagnostics.extend(
                 collect_diagnostics(
@@ -254,6 +277,19 @@ class Resolver:
         command_names: frozenset[str],
     ) -> AnalysisResult:
         """Resolve possible callers without computing unrelated editor features."""
+        registry = self._metadata_registry.for_source(uri)
+        resolver = (
+            self if registry == self._metadata_registry else Resolver(metadata_registry=registry)
+        )
+        return resolver._analyze_command_references(uri, facts, workspace_index, command_names)
+
+    def _analyze_command_references(
+        self,
+        uri: str,
+        facts: DocumentFacts,
+        workspace_index: WorkspaceIndex,
+        command_names: frozenset[str],
+    ) -> AnalysisResult:
         resolutions = tuple(
             binding.resolution
             for _, binding in self._command_bindings(
@@ -280,6 +316,13 @@ class Resolver:
 
     def call_types(self, facts: DocumentFacts, workspace_index: WorkspaceIndex) -> CallTypes:
         """Supply flow inputs only for calls with an unambiguous resolved target."""
+        registry = self._metadata_registry.for_source(facts.uri)
+        resolver = (
+            self if registry == self._metadata_registry else Resolver(metadata_registry=registry)
+        )
+        return resolver._call_types(facts, workspace_index)
+
+    def _call_types(self, facts: DocumentFacts, workspace_index: WorkspaceIndex) -> CallTypes:
         if not any(binding.type_info for binding in facts.variable_bindings) and not any(
             proc.return_type
             for document in workspace_index.documents()
@@ -422,7 +465,13 @@ class Resolver:
     ) -> tuple[Diagnostic, ...]:
         path = source_id_to_path(uri)
         path = None if path is None else path.resolve(strict=False)
-        configured = () if path is None else configured_diagnostic_rules(path)
+        configured = (
+            ()
+            if path is None
+            else configured_diagnostic_rules(
+                path, context=self._metadata_registry.context_for(path)
+            )
+        )
         return apply_diagnostic_rules(
             diagnostics, (*configured, *facts.diagnostic_rules), path=path
         )

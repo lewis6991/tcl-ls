@@ -980,6 +980,12 @@ def test_language_server_hover_formats_meta_builtin_command(server: LanguageServ
         ),
         ('bind 3 set', 'bind selector kind', 'positional arguments', 'bind 3 set'),
         ('ref 3', 'ref selector', 'positional arguments', 'ref 3'),
+        (
+            'call 1.. namespace ::',
+            'call selector ? namespace absoluteName ?',
+            'a selector, optionally followed by `namespace` and an absolute name',
+            'call 1.. namespace ::',
+        ),
         ('option -start value', 'option name value', 'positional arguments', 'option -start value'),
         ('source 1 caller', 'source selector caller', 'positional arguments', 'source 1 caller'),
         (

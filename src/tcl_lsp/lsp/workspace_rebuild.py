@@ -18,6 +18,7 @@ from tcl_lsp.lsp.state import (
 )
 from tcl_lsp.metadata_paths import MetadataRegistry, create_metadata_registry
 from tcl_lsp.parser import Parser
+from tcl_lsp.project.declarations import MetadataPath
 from tcl_lsp.project.indexing import (
     dependency_source_uris_for_facts,
     discover_lazy_package_indexes,
@@ -42,11 +43,12 @@ type CachedDocumentSaver = Callable[[ManagedDocument], None]
 class DocumentBuildSnapshot:
     documents: dict[str, ManagedDocument]
     open_document_uris: tuple[str, ...]
-    metadata_paths_by_uri: dict[str, tuple[Path, ...]]
+    metadata_paths_by_uri: dict[str, tuple[MetadataPath, ...]]
     library_paths_by_uri: dict[str, tuple[Path, ...]]
     workspace_index: WorkspaceIndex
     scanned_package_roots: tuple[Path, ...]
     configuration_revision: FileRevision = ()
+    configuration_roots: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,7 +114,8 @@ class WorkspaceRebuilder:
         cache_document: CachedDocumentSaver | None = None,
     ) -> RebuildResult | None:
         target_metadata_registry = self._metadata_registry or create_metadata_registry(
-            self._active_metadata_paths(snapshot)
+            self._active_metadata_paths(snapshot),
+            configuration_roots=snapshot.configuration_roots,
         )
         parser = Parser()
         extractor = FactExtractor(parser, metadata_registry=target_metadata_registry)
@@ -230,7 +233,8 @@ class WorkspaceRebuilder:
         cache_document: CachedDocumentSaver | None = None,
     ) -> RebuildResult | None:
         target_metadata_registry = self._metadata_registry or create_metadata_registry(
-            self._active_metadata_paths(snapshot)
+            self._active_metadata_paths(snapshot),
+            configuration_roots=snapshot.configuration_roots,
         )
         parser = Parser()
         extractor = FactExtractor(parser, metadata_registry=target_metadata_registry)
@@ -542,8 +546,8 @@ class WorkspaceRebuilder:
                 ),
             )
 
-    def _active_metadata_paths(self, snapshot: DocumentBuildSnapshot) -> tuple[Path, ...]:
-        active_paths: dict[Path, None] = {}
+    def _active_metadata_paths(self, snapshot: DocumentBuildSnapshot) -> tuple[MetadataPath, ...]:
+        active_paths: dict[MetadataPath, None] = {}
         for uri in snapshot.open_document_uris:
             for metadata_path in snapshot.metadata_paths_by_uri.get(uri, ()):
                 active_paths.setdefault(metadata_path, None)

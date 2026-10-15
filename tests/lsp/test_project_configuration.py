@@ -47,6 +47,7 @@ def test_config_commands_have_editor_help_and_stay_local_to_config(
                     assert f'`{level}`' in hover.contents
                 assert 'Default: all files in this config' in hover.contents
             if name == 'module':
+                assert 'Without `when`, activate the module' in hover.contents
                 assert 'An unknown or false result does not activate the module.' in hover.contents
             locations = service.definition(config.as_uri(), line, 2)
             assert locations and locations[0].uri.endswith('/meta/tcllsrc.meta.tcl')
@@ -55,7 +56,7 @@ def test_config_commands_have_editor_help_and_stay_local_to_config(
             snapshot, uri=config.as_uri(), line=3, character=24
         )
         assert signature is not None
-        assert signature.signatures[0].label == 'module {name when condition}'
+        assert signature.signatures[0].label == 'module {name ? when condition ?}'
         completions = completion_items(
             snapshot.documents,
             workspace_index=snapshot.workspace_index,
@@ -84,19 +85,11 @@ def test_config_commands_have_editor_help_and_stay_local_to_config(
 
 def test_invalid_config_can_be_opened_checked_and_corrected(tmp_path: Path) -> None:
     config = tmp_path / 'tcllsrc.tcl'
-    config.write_text(
-        'source $path\n'
-        'module Tool when {$value eq}\n'
-        'diagnostic unresolved-command quiet\n'
-        'unknown-setting value\n'
-        'set path libs\n'
-        'lib-path {*}{one two}\n'
-        'meta-path .tcl-ls\n'
-    )
+    config.write_text('source $path\n')
     server = LanguageServer()
     try:
         diagnostics = server.open_document(config.as_uri(), config.read_text(), 1)
-        expected = [(line, 'invalid-project-config') for line in range(7)]
+        expected = [(0, 'invalid-project-config')]
         assert [(d.span.start.line, d.code) for d in diagnostics] == expected
         report = check_project(config, threads=1)
         assert [
@@ -126,5 +119,56 @@ def test_config_uses_parent_diagnostic_settings(tmp_path: Path) -> None:
     try:
         diagnostics = server.open_document(config.as_uri(), config.read_text(), 1)
         assert [(d.code, d.severity) for d in diagnostics] == [('invalid-project-config', 'hint')]
+    finally:
+        server.shutdown()
+
+
+def test_unconditional_module_applies_to_source_and_procedures(tmp_path: Path) -> None:
+    config = tmp_path / 'tcllsrc.tcl'
+    metadata = 'meta module ExampleTool {meta command prove {}}\n'
+    config.write_text(metadata + 'module ExampleTool\n')
+    source = tmp_path / 'main.tcl'
+    text = 'proc run {} {eval {}; prove}\nprove\n'
+    source.write_text(text)
+    server = LanguageServer()
+    try:
+        assert server.open_document(config.as_uri(), config.read_text(), 1) == ()
+        assert server.open_document(source.as_uri(), text, 1) == ()
+        assert check_project(source, threads=1).diagnostics == ()
+
+        config.write_text(metadata)
+        diagnostics = server.change_document(source.as_uri(), text + '# recheck\n', 2)
+        assert [(d.code, d.message) for d in diagnostics] == [
+            ('unresolved-command', 'Unresolved command `prove`.'),
+            ('unresolved-command', 'Unresolved command `prove`.'),
+        ]
+    finally:
+        server.shutdown()
+
+
+@pytest.mark.parametrize(
+    'selection',
+    [
+        'module',
+        'module {}',
+        'module ExampleTool when',
+        'module ExampleTool unless {1}',
+        'module ExampleTool when {}',
+        'module ExampleTool when {1} extra',
+    ],
+)
+def test_incomplete_or_malformed_module_rules_are_rejected(tmp_path: Path, selection: str) -> None:
+    config = tmp_path / 'tcllsrc.tcl'
+    text = selection + '\n'
+    config.write_text(text)
+    server = LanguageServer()
+    try:
+        diagnostics = server.open_document(config.as_uri(), text, 1)
+        assert [(d.code, d.message) for d in diagnostics] == [
+            (
+                'invalid-project-config',
+                'Module rules must be `module name ?when {condition}?`.',
+            )
+        ]
     finally:
         server.shutdown()

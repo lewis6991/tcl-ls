@@ -7,10 +7,10 @@ diagnostic has a code, message, severity, source, and source location.
 Severity And Source
 -------------------
 
-All diagnostics default to ``error``, except resolution diagnostics
-(``warning``), possible value constraint failures (``warning``), and
-``unreachable-code`` (``hint``). Project rules and source
-comments can change severity or disable diagnostics for files or commands;
+All diagnostics default to ``error``, except resolution diagnostics,
+possible value constraint failures, and environment conflicts (``warning``),
+and ``unreachable-code`` (``hint``). Project rules and source comments can
+change severity or disable diagnostics for files or commands;
 see :ref:`diagnostic-configuration`.
 
 The ``source`` field identifies the origin:
@@ -66,6 +66,11 @@ Structural Diagnostics
 ``unreachable-code``
    A command cannot run because an earlier command always leaves the script or
    a statically known condition excludes its branch.
+
+``incompatible-environment``
+   A known namespace value at a call conflicts with a condition required by the
+   called procedure. Requirements come from guards on the path that defines
+   the procedure.
 
 Resolution Diagnostics
 ----------------------

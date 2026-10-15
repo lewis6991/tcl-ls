@@ -18,9 +18,11 @@ project metadata, include a file from ``tcllsrc.tcl``:
    source .tcl-ls/project.meta.tcl
 
 Paths are relative to the containing file. Metadata files can include other
-files with ``source``; these are static declarations, not Tcl execution. See
-:ref:`metadata-composition` for module scope and :ref:`metadata-precedence` for
-override rules.
+files with ``source``. Files sourced from an rc script run as Tcl and can use
+control flow to generate declarations. Annotation bodies remain data. Metadata
+loaded directly through ``--meta-path`` uses static declarations. See
+:doc:`user-guide/configuration` for rc evaluation, :ref:`metadata-composition`
+for module scope, and :ref:`metadata-precedence` for override rules.
 
 For a one-off checker run, use ``tcl-check --meta-path``. It accepts a metadata
 file or directory; see :doc:`reference/cli` for path discovery rules.
@@ -55,6 +57,7 @@ For more command models, see the :doc:`reference/meta-syntax`:
 
 * ``option`` and nested ``command`` describe flags and subcommands.
 * ``bind`` and ``ref`` describe variable writes and references.
+* ``call`` describes a command name and arguments forwarded by a wrapper.
 * ``meta language``, ``enter``, and ``procedure`` describe embedded scripts and
   procedure declarations.
 * ``source`` and ``package`` describe dependencies.

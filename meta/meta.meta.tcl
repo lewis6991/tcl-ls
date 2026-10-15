@@ -1,12 +1,12 @@
 # Metadata command format for tcl-ls.
 #
-# Metadata files use the `meta` ensemble for structured declarations instead of
-# executable behavior and conventionally use the `.meta.tcl` suffix.
+# Metadata files use the `meta` ensemble for structured declarations and
+# conventionally use the `.meta.tcl` suffix. Annotation bodies remain data.
 #
 # Hover help is defined beside each schema command below.
 # Literal `?` words only appear inside `shape` lists.
 meta module Tcl {
-    # Describe Tcl commands for static analysis. Declarations are not executed.
+    # Describe Tcl commands for static analysis. Annotation bodies are data.
     #
     # Syntax: a subcommand followed by positional arguments and braced blocks.
     #
@@ -49,6 +49,7 @@ meta module Tcl {
         # Syntax: one positional path.
         #
         # Record a fixed dependency of the associated Tcl file.
+        # In `tcllsrc.tcl`, the dependency applies to all covered source files.
         # The path is relative to this metadata file.
         # Allowed only outside module blocks. Use ordinary `source path` to
         # include metadata declarations instead.
@@ -313,6 +314,32 @@ meta module Tcl {
         # ```
         command ref {<selector>}
 
+        # Syntax: a selector, optionally followed by `namespace` and an absolute name.
+        #
+        # Describe a forwarded command invocation. The first selected word is
+        # the command name; the remaining words are its arguments.
+        # Selectors start at 1 after the matched command prefix.
+        # Words keep their argument boundaries and are not parsed as a script.
+        # Substitutions belong to the caller.
+        #
+        # **Options**
+        #
+        # - `namespace absoluteName`: resolve the command in this namespace.
+        #   Use `::` for the root namespace. Default: the caller's namespace.
+        #
+        # A selector must choose contiguous words. `after-options` is allowed;
+        # `list` and non-contiguous steps are not.
+        # Hover, navigation, completion, signature help, and semantic tokens
+        # use the selected command's definition. This does not execute the call
+        # or analyze arguments as nested script bodies.
+        #
+        # **Example**
+        #
+        # ```tcl
+        # call 1.. namespace ::
+        # ```
+        command call {<selector> ? =namespace <absoluteName> ?}
+
         # Syntax: positional arguments. `body` and `owner` are literal words.
         #
         # Parse selected runtime arguments in the named embedded language.
@@ -420,7 +447,7 @@ meta module Tcl {
         # - `procName`: the hook, invoked as `procName words info`.
         #   `words` is the full source command; `info` is a Tcl dictionary.
         #
-        # Return a Tcl list of `bind`, `ref`, `enter`, `package`, `source`, or
+        # Return a Tcl list of `bind`, `ref`, `call`, `enter`, `package`, `source`, or
         # `procedure` effects. Procedure fields use the same braced settings.
         # Use `::tcl_lsp::word index` or `::tcl_lsp::variable name` for known values.
         # `::tcl_lsp::source_list_items value` and `::tcl_lsp::slice value start end`
@@ -621,7 +648,9 @@ meta module TclLSMetadata {
     # Include static metadata declarations at this point.
     # Relative paths start in this metadata file's directory.
     # Included files inherit the enclosing module, if present.
-    # The path must be static. Missing files and include cycles are errors.
+    # Direct metadata loading requires a static path. Files sourced from an rc
+    # script run as Tcl and can use substitutions. Missing files and include
+    # cycles are errors.
     #
     # **Example**
     #

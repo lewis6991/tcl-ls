@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -49,7 +50,11 @@ def test_analysis_reports_no_diagnostics_for_metadata_files(parser: Parser) -> N
     workspace = WorkspaceIndex()
     facts_by_uri: dict[str, DocumentFacts] = {}
 
-    metadata_paths = sorted(DEFAULT_METADATA_REGISTRY.catalog.metadata_files())
+    metadata_paths = sorted(
+        path
+        for path in DEFAULT_METADATA_REGISTRY.catalog.metadata_files()
+        if isinstance(path, Path)
+    )
     assert metadata_paths
 
     for metadata_path in metadata_paths:
@@ -105,6 +110,33 @@ def test_metadata_editor_checks_grouped_parameter_settings(
         'meta command declare {name header body} {\n'
         f'    procedure {{name {{select 1}}; params {params}; body {{select 3}}}}\n'
         '}\n',
+    )
+
+    assert tuple(d.code for d in snapshot.analysis.diagnostics) == codes
+
+
+@pytest.mark.parametrize(
+    ('annotation', 'codes'),
+    [
+        ('call 1..', ()),
+        ('call 1.. namespace ::', ()),
+        ('call 2.. namespace ::service::', ()),
+        ('call after-options 1.. namespace ::service', ()),
+        ('call 1.. namespace relative', ('invalid-arguments',)),
+        ('call 1.. namespace {::two words}', ('invalid-arguments',)),
+        ('call 1.. namespace', ('invalid-arguments',)),
+        ('call 1.. ::', ('invalid-arguments',)),
+        ('call 1.. unexpected ::', ('invalid-arguments',)),
+        ('call 1.. namespace :: extra', ('invalid-arguments',)),
+    ],
+)
+def test_metadata_editor_checks_forwarded_call_annotations(
+    parser: Parser, annotation: str, codes: tuple[str, ...]
+) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///custom.meta.tcl',
+        f'meta command dispatch {{command args}} {{\n    {annotation}\n}}\n',
     )
 
     assert tuple(d.code for d in snapshot.analysis.diagnostics) == codes

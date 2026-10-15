@@ -15,6 +15,7 @@ from .base import (
     ResolvedVariable,
 )
 from .duplicate_proc import DuplicateProcChecker
+from .incompatible_environment import IncompatibleEnvironmentChecker
 from .invalid_arguments import InvalidArgumentsChecker
 from .invalid_regex import InvalidRegexChecker
 from .missing_option_value import MissingOptionValueChecker
@@ -39,6 +40,7 @@ DIAGNOSTIC_CHECKERS: Final[tuple[DiagnosticChecker, ...]] = (
     MissingOptionValueChecker(),
     InvalidRegexChecker(),
     ValueConstraintChecker(),
+    IncompatibleEnvironmentChecker(),
     UnreachableCodeChecker(),
     AmbiguousVariableChecker(),
     UnresolvedVariableChecker(),

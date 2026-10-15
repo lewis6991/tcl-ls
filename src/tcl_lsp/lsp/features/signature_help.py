@@ -34,6 +34,7 @@ def signature_help(
     line: int,
     character: int,
 ) -> types.SignatureHelp | None:
+    metadata_registry = metadata_registry.for_source(uri)
     document = documents_by_uri.get(uri)
     if document is None:
         return None

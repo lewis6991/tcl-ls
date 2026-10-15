@@ -1,9 +1,15 @@
 Metadata Syntax
 ===============
 
-Metadata uses Tcl syntax with a static declaration language. Names, paths,
-shapes, and annotation words must be static; metadata loading does not execute
-Tcl commands. For an authoring workflow, see :doc:`../meta`.
+Metadata uses Tcl syntax to describe commands and their analysis behaviour.
+Annotation bodies are data. Metadata loaded directly from bundled files or
+checker ``--meta-path`` arguments uses static declarations: names, paths,
+shapes, and annotation words must be static.
+
+Files sourced by ``tcllsrc.tcl`` run as Tcl. They can use control flow and
+substitution to register declarations, while annotation bodies remain data.
+See :doc:`../user-guide/configuration` for rc evaluation and :doc:`../meta`
+for an authoring workflow.
 
 Writing Conventions
 -------------------
@@ -86,8 +92,10 @@ source sibling exists beside the metadata, the default association is
 Precedence
 ~~~~~~~~~~
 
-Metadata roots are loaded in order: bundled metadata, project configuration
-from parent to child directories, then checker ``--meta-path`` arguments.
+Metadata roots are loaded in order: bundled metadata, user configuration,
+project configuration from parent to child directories, then checker
+``--meta-path`` arguments. See :doc:`../user-guide/configuration` for config
+file locations.
 Later roots replace earlier command trees with the same module and language.
 Within one root, explicit includes and module blocks follow declaration order;
 later blocks replace earlier command trees.
@@ -154,6 +162,10 @@ only outside module blocks. For example, ``loader.meta.tcl`` can contain:
 The analyzer then reads that dependency when it reads ``loader.tcl``. Paths
 are relative to the metadata file. Later metadata roots replace earlier source
 lists for the same associated filename.
+
+In ``tcllsrc.tcl``, these dependencies apply to all source files covered by
+that config. The source files are analyzed, rather than executed by the rc
+interpreter. Paths remain relative to the declaring config file.
 
 Use ordinary ``source path`` to include metadata. To describe a command whose
 arguments select source files, use the :ref:`source annotation
@@ -381,7 +393,7 @@ the command's ``option`` annotations. ``list`` splits each selected word as a
 Tcl list. Analysis may ignore selections that depend on an unknown argument
 expansion.
 
-Use selectors directly in ``bind``, ``ref``, ``source``, and ``enter``. In
+Use selectors directly in ``bind``, ``ref``, ``call``, ``source``, and ``enter``. In
 source descriptions, introduce the selector with the ``select`` key, as in
 ``package {select 1}`` and ``body {select 3}``. Each annotation can impose
 further restrictions.
@@ -440,6 +452,38 @@ Its optional ``kind`` identifies the binding behavior and must be one of:
    }
 
 Here, every second argument before the final body is a list of variable names.
+
+``call``
+~~~~~~~~
+
+.. code-block:: tcl
+
+   call selector
+   call selector namespace absoluteName
+
+Describes a forwarded command invocation. The first selected word is the
+command name, and the remaining words are its arguments. For example:
+
+.. code-block:: tcl
+
+   meta command dispatch {command args} {
+       call 1.. namespace ::
+   }
+
+In ``dispatch tool::check {two words}``, hover and semantic highlighting on
+``tool::check`` use its definition. Navigation, references, completion, signature
+help, and call diagnostics also use the forwarded command. ``{two words}``
+remains one argument; it is not parsed as a script.
+
+Without ``namespace``, command lookup uses the caller's namespace. An explicit
+namespace must be absolute; ``::`` selects root command lookup. Argument
+substitutions still belong to the caller and are collected once. The annotation
+does not execute the call, infer its variable writes, or parse its arguments as
+nested script bodies. Use ``enter`` to describe script bodies.
+
+The selector must choose contiguous argument words. ``after-options`` is
+allowed; ``list`` and non-contiguous steps are not. Unknown expansions that
+prevent a stable selection are left unresolved.
 
 .. _metadata-enter:
 
@@ -808,7 +852,7 @@ Plugin Effects
 ~~~~~~~~~~~~~~
 
 A plugin returns a Tcl list of effect clauses using the annotation forms
-above. It may return ``bind``, ``ref``, ``enter``, ``package``, ``source``, and
+above. It may return ``bind``, ``ref``, ``call``, ``enter``, ``package``, ``source``, and
 ``procedure``. It cannot return declarations such as ``command``, ``variants``,
 ``form``, ``option``, or ``plugin``.
 

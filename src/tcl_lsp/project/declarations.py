@@ -3,13 +3,14 @@ from __future__ import annotations
 import os
 from collections import OrderedDict
 from collections.abc import Iterator
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from threading import RLock
 
 from tcl_lsp.cache import register_cache_clearer
 from tcl_lsp.common import Span
 from tcl_lsp.parser import BracedWord, Command, Parser, ParseResult, word_static_text
+from tcl_lsp.project.context import ConfigContext
 from tcl_lsp.project.paths import FileRevision, revision_is_current
 
 
@@ -71,6 +72,21 @@ class DeclarationSnapshot:
         return revision_is_current(self.revision)
 
 
+@dataclass(frozen=True, slots=True)
+class EvaluatedDeclarations:
+    path: Path
+    # The registration result identifies metadata; its execution context does not.
+    context: ConfigContext = field(compare=False)
+    snapshot: DeclarationSnapshot
+
+    @property
+    def name(self) -> str:
+        return self.path.name
+
+
+type MetadataPath = Path | EvaluatedDeclarations
+
+
 _SNAPSHOTS: OrderedDict[Path, DeclarationSnapshot] = OrderedDict()
 _SNAPSHOT_LOCK = RLock()
 
@@ -83,7 +99,9 @@ def _clear_snapshots() -> None:
 register_cache_clearer('metadata', _clear_snapshots)
 
 
-def load_declaration_snapshot(path: Path) -> DeclarationSnapshot:
+def load_declaration_snapshot(path: MetadataPath) -> DeclarationSnapshot:
+    if isinstance(path, EvaluatedDeclarations):
+        return path.snapshot
     path = path.resolve(strict=False)
     with _SNAPSHOT_LOCK:
         snapshot = _SNAPSHOTS.get(path)
@@ -105,7 +123,7 @@ def load_declaration_snapshot(path: Path) -> DeclarationSnapshot:
         return snapshot
 
 
-def load_declarations(path: Path) -> DeclarationGroup:
+def load_declarations(path: MetadataPath) -> DeclarationGroup:
     return load_declaration_snapshot(path).declarations
 
 
@@ -215,7 +233,9 @@ def _include(
     return _expand(_read_file(path, revision), path, module, stack, revision=revision)
 
 
-def metadata_root(path: Path) -> Path:
+def metadata_root(path: MetadataPath) -> MetadataPath:
+    if isinstance(path, EvaluatedDeclarations):
+        return path
     resolved = path.expanduser().resolve(strict=False)
     if (
         not resolved.is_dir()
@@ -227,7 +247,9 @@ def metadata_root(path: Path) -> Path:
     return resolved
 
 
-def metadata_roots(path: Path) -> tuple[Path, ...]:
+def metadata_roots(path: MetadataPath) -> tuple[MetadataPath, ...]:
+    if isinstance(path, EvaluatedDeclarations):
+        return (path,)
     if path.is_dir():
         return tuple(root for root, _ in _directory_roots(path))
     return (path,) if path.is_file() else ()

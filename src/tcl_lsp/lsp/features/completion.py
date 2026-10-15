@@ -72,6 +72,7 @@ def completion_items(
     line: int,
     character: int,
 ) -> CompletionResults:
+    metadata_registry = metadata_registry.for_source(uri)
     document = documents_by_uri.get(uri)
     if document is None:
         return CompletionResults(items=())

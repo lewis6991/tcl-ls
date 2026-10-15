@@ -191,8 +191,6 @@ def test_diagnostic_rules_reload_on_analysis_and_do_not_leak_between_files(tmp_p
     [
         'diagnostic unresolved-command',
         'diagnostic unresolved-command quiet',
-        'diagnostic $code off',
-        'diagnostic unresolved-command {*}$level',
         'diagnostic unresolved-command off -path',
         'diagnostic unresolved-command off -path /absolute',
         'diagnostic unresolved-command off -path ../outside',
@@ -204,6 +202,20 @@ def test_invalid_diagnostic_config_is_rejected(tmp_path: Path, rule: str) -> Non
     source = tmp_path / 'main.tcl'
     source.write_text('puts ok\n')
     with pytest.raises(RuntimeError, match=r'[Dd]iagnostic'):
+        check_project(source, threads=1)
+
+
+@pytest.mark.parametrize(
+    ('rule', 'variable'),
+    [('diagnostic $code off', 'code'), ('diagnostic unresolved-command {*}$level', 'level')],
+)
+def test_diagnostic_config_reports_undefined_tcl_variables(
+    tmp_path: Path, rule: str, variable: str
+) -> None:
+    (tmp_path / 'tcllsrc.tcl').write_text(rule + '\n')
+    source = tmp_path / 'main.tcl'
+    source.write_text('puts ok\n')
+    with pytest.raises(RuntimeError, match=f'can\'t read "{variable}": no such variable'):
         check_project(source, threads=1)
 
 

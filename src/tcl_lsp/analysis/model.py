@@ -110,6 +110,7 @@ class ProcDecl:
     annotations: ProcedureAnnotations = field(default_factory=ProcedureAnnotations)
     type_aliases: tuple[TypeAlias, ...] = ()
     return_type: TypeInfo | None = None
+    global_requirements: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,6 +199,7 @@ class CommandCall:
     span: Span
     name_span: Span
     dynamic: bool
+    global_values: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
     @property
     def has_expanded_args(self) -> bool:

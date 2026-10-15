@@ -14,7 +14,7 @@ subcommands. See :doc:`../user-guide/language-server` for editor setup.
 
    tcl-check [options] path
 
-``path`` is a source file or project directory. Project config is read
+``path`` is a source file or project directory. User and project config are read
 automatically; see :doc:`../user-guide/configuration`.
 
 ``--color {auto,always,never}``

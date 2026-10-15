@@ -1,7 +1,8 @@
 Project Configuration
 =====================
 
-Both ``tcl-ls`` and ``tcl-check`` read project settings from ``tcllsrc.tcl``.
+Both ``tcl-ls`` and ``tcl-check`` read user and project settings from
+``tcllsrc.tcl``.
 For example:
 
 .. code-block:: tcl
@@ -12,8 +13,12 @@ For example:
 Discovery And Syntax
 --------------------
 
-Config discovery searches a directory and all its parents, reading parent
-settings first:
+Both tools first read ``$XDG_CONFIG_HOME/tcl-ls/tcllsrc.tcl``. If
+``XDG_CONFIG_HOME`` is unset, empty, or a relative path, they use
+``~/.config/tcl-ls/tcllsrc.tcl`` instead. The user config is optional.
+
+Next, config discovery searches a directory and all its parents, reading
+parent settings before child settings:
 
 * The language server starts from each opened file's directory.
 * The checker starts from its target directory (or its target file's directory)
@@ -22,31 +27,119 @@ settings first:
   and module rules.
 
 Relative paths resolve from the file that contains the declaration.
+Each config file is loaded once, even if it is found as both a user config
+and an ancestor config. The user config does not set the project's root
+directory for reference searches.
 
 Config files accept these commands:
 
-* ``source path`` includes a file of metadata or config declarations.
+* ``source path`` evaluates another Tcl metadata or config file.
 * ``lib-path path`` searches a directory for ``pkgIndex.tcl`` files to resolve
   external packages. ``library-path`` is a synonym.
 * ``meta`` declares metadata directly; see :ref:`project-metadata`.
 * ``diagnostic code level ?-path pattern?`` controls diagnostics.
-* ``module name when {condition}`` selects a metadata module when a
-  condition is known to be true.
+* ``module name`` selects a metadata module for all covered source files.
+  Add ``when {condition}`` to select it only where the condition is known
+  to be true.
 
-Config files are read as static declarations. Paths and other arguments must
-be literal Tcl words; Tcl commands are not executed. Brace conditions and words
-that contain spaces or brackets.
+Config files run as Tcl scripts. They can use ``set``, ``if``, ``foreach``,
+procedures, and normal Tcl substitutions to choose which settings and metadata
+to register. Metadata annotation bodies remain data; they are not executed.
+The condition passed to ``module name when {condition}`` describes the analyzed
+source and is still analyzed statically, rather than evaluated while loading
+the config.
 
 Use config files for settings shared by the editor and checker. For temporary
 metadata, use the checker's ``--meta-path`` option; see
 :doc:`../reference/cli`.
+
+User Configuration
+------------------
+
+The user config accepts the same commands as project configs. Use it to share
+metadata, module rules, library paths, and diagnostic settings across checkouts.
+For example, add this to ``~/.config/tcl-ls/tcllsrc.tcl`` (or the corresponding
+path under ``XDG_CONFIG_HOME``):
+
+.. code-block:: tcl
+
+   source /absolute/path/to/shared/tcllsrc.tcl
+
+The shared file can include metadata and plugins from their original location.
+Paths in ``source`` and ``lib-path`` calls remain relative to the file that
+contains the call, so the checkouts do not need copies of those files. Ordinary
+Tcl substitutions work, including environment-variable references. Use
+``file normalize`` when you need to expand ``~`` in a path.
+
+User settings apply to all projects. Project diagnostic rules and metadata
+can override them because project configs load later. Library paths accumulate
+in config order. Named metadata modules still need selection; loading a user
+config does not activate all its modules. See :ref:`module-selection`.
+
+Workspace Context
+-----------------
+
+Rc scripts run with their working directory set to the workspace root.
+``$::tcl_lsp::context`` is a Tcl dictionary with these keys:
+
+* ``workspace-root``: the absolute path of the matching editor workspace folder.
+  Without an editor workspace, use the nearest project config's directory,
+  the detected package root, or the source directory, in that order. For a
+  checker directory target, use that target directory.
+* ``config-path``: the absolute path of the entry rc file being evaluated.
+  Use ``info script`` to find the current file inside a sourced script.
+
+For example, a user config can load shared metadata only when the checkout has
+no config at the workspace root. File probes start from that root:
+
+.. code-block:: tcl
+
+   if {![file exists tcllsrc.tcl]} {
+       source /absolute/path/to/shared/tcllsrc.tcl
+   }
+
+This check covers that path only. If a project keeps its config in a
+subdirectory, probe that path as well. Other settings in the user config still
+apply. You can also probe workspace files through normal Tcl commands:
+
+.. code-block:: tcl
+
+   set root [dict get $::tcl_lsp::context workspace-root]
+   if {[file exists [file join $root tool-settings.json]]} {
+       source /absolute/path/to/shared/tool.meta.tcl
+   }
+
+Each rc file runs once per workspace in a fresh Tcl process while its inputs
+stay unchanged. Opening another source file or discovering a dependency reuses
+that result. Nested project configs are evaluated when their scope is first
+needed, with the same workspace context. Variables and helper procedures
+remain available to files it sources. Separate rc files exchange
+settings through their registrations, rather than Tcl variables. Different
+workspaces keep separate metadata results.
+
+Unchanged declaration syntax is parsed once across workspaces. Identical
+registration results also share their metadata model. Rc scripts do not
+receive a source-file path. Module conditions are checked during analysis;
+they do not cause the rc script to run again.
+
+Saved results are reused while their inputs stay unchanged. Source includes,
+files opened for reading, and file probes such as ``file exists`` are checked
+again on the next analysis, including paths which were absent. Scripts that
+use ``glob`` are evaluated again rather than cached. Changes to the process
+environment also cause evaluation again. Changes made through other external
+commands are not tracked. Filesystem changes made by rc scripts during
+evaluation have undefined behaviour.
+
+Runtime errors stop that rc script and report ``invalid-project-config`` when
+editing it. Saved invalid settings prevent ordinary source analysis until they
+are corrected. Evaluation has a five-second timeout.
 
 .. _project-metadata:
 
 Metadata Includes
 -----------------
 
-``source`` includes one file at that position. Included files can include other
+``source`` evaluates one file at that position. Included files can include other
 files, so a shared metadata file can collect declarations in the required order.
 The path must name a file, not a directory.
 
@@ -83,9 +176,10 @@ built-in severity, including when an earlier rule disabled it. Codes accept
 wildcards, such as ``unresolved-*`` or ``*`` for all diagnostics. See the
 :doc:`diagnostic catalog <../reference/diagnostics>` for available codes.
 
-Project rules apply in declaration order; the last matching rule wins. A rule
+Config rules apply in declaration order; the last matching rule wins. A rule
 without ``-path`` applies to all files covered by that config, including
-subdirectories.
+subdirectories. In a user config, a rule without ``-path`` applies to all
+projects. Path patterns still resolve from the declaring file's directory.
 
 Path patterns are relative to the declaring file's directory and use ``/``
 separators. A directory name includes its descendants. ``*``, ``?``, and
@@ -171,6 +265,16 @@ this does not prove runtime execution order. A qualified name such as
 For commands supplied by a tool, select the module with a source directive,
 a project rule, or ``tcl-check --module name``.
 
+To enable a module throughout a config's source scope, add this to
+``tcllsrc.tcl``:
+
+.. code-block:: tcl
+
+   module ExampleTool
+
+In a user config, this applies to all workspaces where that registration is
+made. An rc ``if`` block can restrict it to matching workspaces.
+
 Source Directives
 ~~~~~~~~~~~~~~~~~
 
@@ -204,6 +308,45 @@ such as the matching ``if`` or ``switch`` branch. It does not assert the
 condition or execute Tcl commands. An unknown condition does not select the
 module. Use fully qualified variable names for project-wide conditions.
 Matching rules apply in config order, above explicitly selected modules.
+
+Guarded Procedure Environments
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A normal Tcl guard can establish the condition for the rest of a script:
+
+.. code-block:: tcl
+
+   if {$::project::tool ne "example"} {
+       error "This backend requires the example tool"
+   }
+
+   namespace eval backend {
+       proc run {} {
+           tool::check
+       }
+   }
+
+With the rule above, the continuing path selects ``ExampleTool``. Namespace
+values narrowed by guards become requirements of procedures defined on that
+path, including procedures inside namespace blocks. Their bodies are checked
+under those requirements. Ordinary assignments alone do not establish
+procedure requirements, because procedure bodies run later.
+
+These requirements do not make globals immutable. Writes, uncertain variable
+links, and dynamic execution invalidate affected facts. An error caught by
+``catch`` or a ``try`` handler does not establish a condition after the handler.
+Only facts shared by all continuing paths survive a branch join.
+
+Calls to a guarded procedure produce ``incompatible-environment`` warnings
+when a known namespace value conflicts with a requirement, including calls
+from another file. Unknown calling values do not prove a conflict.
+
+The ``# tcl-ls: module ExampleTool`` directive remains available for explicit
+module selection. It does not assign values to tool-selection variables or
+add variable requirements to procedures.
+
+Value Tracking Limits
+~~~~~~~~~~~~~~~~~~~~~
 
 Value tracking has these limits:
 
@@ -240,7 +383,9 @@ navigation for config commands. Invalid entries produce
 ``invalid-project-config`` diagnostics; incomplete Tcl syntax produces parser
 diagnostics. Invalid saved config files prevent their settings from loading.
 
-A config file is analyzed with its parent settings, excluding its own settings,
-so it can be opened and corrected. Its own diagnostic rules do not apply to
-itself, but source directives do. Saved changes take effect when a source is
-next analyzed, for example after editing or reopening it.
+A config file is analyzed with the other discovered settings, excluding its
+own settings, so it can be opened and corrected. Its own diagnostic rules do
+not apply to itself, but source directives do. Saved changes take effect when
+a source is next analyzed, for example after editing or reopening it.
+An unsaved config buffer is evaluated to validate its registrations, but its
+settings do not apply to other source buffers until it is saved.

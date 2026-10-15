@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 from tcl_lsp.analysis.facts.parsing import split_tcl_list
-from tcl_lsp.analysis.facts.utils import normalize_command_name
+from tcl_lsp.analysis.facts.utils import normalize_command_name, qualify_namespace
 from tcl_lsp.analysis.model import BINDING_KINDS, BindingKind, CommandVisibility
 from tcl_lsp.cache import metadata_lru_cache
 from tcl_lsp.common import Diagnostic, Position, Span
@@ -23,6 +23,7 @@ from tcl_lsp.project.declarations import (
     DeclarationBlock,
     DeclarationError,
     DeclarationGroup,
+    MetadataPath,
     ModuleScope,
     load_declarations,
 )
@@ -81,6 +82,12 @@ class MetadataRef:
 
 
 @dataclass(frozen=True, slots=True)
+class MetadataCall:
+    selector: MetadataSelector
+    namespace: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class MetadataSource:
     selector: MetadataSelector
     base: SourceBase
@@ -119,6 +126,7 @@ class MetadataPlugin:
 type MetadataAnnotation = (
     MetadataBind
     | MetadataRef
+    | MetadataCall
     | MetadataSource
     | MetadataPackage
     | MetadataContext
@@ -167,9 +175,9 @@ class MetadataFileSummary:
 
 
 def load_metadata_commands(
-    metadata_path: Path,
+    metadata_path: MetadataPath,
     *,
-    alias_paths: tuple[Path, ...] | None = None,
+    alias_paths: tuple[MetadataPath, ...] | None = None,
     revision: MetadataRevision = (),
 ) -> tuple[MetadataCommand, ...]:
     summary = metadata_file_summary(metadata_path, revision=revision)
@@ -182,7 +190,7 @@ def load_metadata_commands(
 
 @metadata_lru_cache(maxsize=128)
 def _metadata_commands_with_aliases(
-    metadata_path: Path, alias_paths: tuple[Path, ...], revision: MetadataRevision
+    metadata_path: MetadataPath, alias_paths: tuple[MetadataPath, ...], revision: MetadataRevision
 ) -> tuple[MetadataCommand, ...]:
     summary = metadata_file_summary(metadata_path, revision=revision)
     definitions_by_module: dict[str, dict[str, tuple[MetadataCommand, ...] | MetadataAlias]] = {}
@@ -249,7 +257,7 @@ def _metadata_commands_with_aliases(
     )
 
 
-def metadata_modules(metadata_path: Path) -> tuple[ModuleScope, ...]:
+def metadata_modules(metadata_path: MetadataPath) -> tuple[ModuleScope, ...]:
     return tuple(
         dict.fromkeys(
             block.module
@@ -260,7 +268,7 @@ def metadata_modules(metadata_path: Path) -> tuple[ModuleScope, ...]:
 
 
 def metadata_file_summary(
-    metadata_path: Path, *, revision: MetadataRevision = ()
+    metadata_path: MetadataPath, *, revision: MetadataRevision = ()
 ) -> MetadataFileSummary:
     return _metadata_file_summary(metadata_path, revision)
 
@@ -293,7 +301,9 @@ def metadata_module_names(catalog: MetadataCatalog) -> frozenset[str]:
 
 
 @metadata_lru_cache(maxsize=512)
-def _metadata_file_summary(metadata_path: Path, _revision: MetadataRevision) -> MetadataFileSummary:
+def _metadata_file_summary(
+    metadata_path: MetadataPath, _revision: MetadataRevision
+) -> MetadataFileSummary:
     return _summarize_declarations(
         load_declarations(metadata_path), config=metadata_path.name == 'tcllsrc.tcl'
     )
@@ -976,6 +986,10 @@ def _parse_annotation_body(
         if annotation_name == 'ref':
             annotations.append(_parse_ref_annotation(command, command_name))
             continue
+        if annotation_name == 'call':
+            words = _annotation_words(command, command_name)
+            annotations.append(parse_call_value(words[1:], command_name=command_name))
+            continue
         if annotation_name == 'enter':
             annotations.append(_parse_enter_annotation(command, command_name))
             continue
@@ -1042,6 +1056,28 @@ def _parse_ref_annotation(command: Command, command_name: str) -> MetadataRef:
     if consumed != len(words) - 1:
         raise RuntimeError(f'Ref annotations for `{command_name}` must be `ref selector`.')
     return MetadataRef(selector=selector)
+
+
+def parse_call_value(words: list[str] | tuple[str, ...], *, command_name: str) -> MetadataCall:
+    selector, consumed = _parse_selector_tokens(words, command_name=command_name)
+    if selector.list_mode or selector.step != 1:
+        raise RuntimeError(
+            f'Call annotations for `{command_name}` must select contiguous argument words.'
+        )
+    namespace: str | None = None
+    if consumed != len(words):
+        if len(words) - consumed != 2 or words[consumed] != 'namespace':
+            raise RuntimeError(
+                f'Call annotations for `{command_name}` must be '
+                '`call selector ?namespace absoluteName?`.'
+            )
+        namespace = words[-1]
+        if not namespace.startswith('::') or any(character.isspace() for character in namespace):
+            raise RuntimeError(
+                f'Call namespaces for `{command_name}` must be absolute Tcl namespace names.'
+            )
+        namespace = qualify_namespace(namespace, '::')
+    return MetadataCall(selector=selector, namespace=namespace)
 
 
 def _parse_source_annotation(command: Command, command_name: str) -> MetadataSource:

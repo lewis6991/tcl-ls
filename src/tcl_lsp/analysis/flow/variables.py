@@ -44,6 +44,9 @@ class VariableFlowState:
     types_by_name: dict[str, TypeInfo] = field(default_factory=dict)
     literal_sources_by_name: dict[str, ListItem] = field(default_factory=dict)
     reachable: bool = True
+    # Namespace values established by control-flow conditions. These become
+    # requirements of procedures defined on the guarded path, not constants.
+    guarded_values_by_name: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     @classmethod
     def empty(cls, *, namespace: str = '::', procedure: bool = True) -> VariableFlowState:
@@ -51,8 +54,17 @@ class VariableFlowState:
 
     def cleared(self) -> VariableFlowState:
         return (
-            replace(self, exact_values_by_name={}, types_by_name={}, literal_sources_by_name={})
-            if self.exact_values_by_name or self.types_by_name or self.literal_sources_by_name
+            replace(
+                self,
+                exact_values_by_name={},
+                types_by_name={},
+                literal_sources_by_name={},
+                guarded_values_by_name={},
+            )
+            if self.exact_values_by_name
+            or self.types_by_name
+            or self.literal_sources_by_name
+            or self.guarded_values_by_name
             else self
         )
 
@@ -109,6 +121,57 @@ class VariableFlowState:
                 for name, source in first.literal_sources_by_name.items()
                 if all(state.literal_sources_by_name.get(name) == source for state in states)
             },
+            guarded_values_by_name={
+                name: tuple(
+                    dict.fromkeys(
+                        value for state in states for value in state.guarded_values_by_name[name]
+                    )
+                )
+                for name in first.guarded_values_by_name
+                if all(name in state.guarded_values_by_name for state in states)
+            },
+        )
+
+    def guarded(self, name: str) -> VariableFlowState:
+        """Retain a known namespace condition as a procedure requirement."""
+        key = self._variable_key(name)
+        values = self.exact_values(name)
+        if key is None or not key.startswith('::') or not values:
+            return self
+        return replace(self, guarded_values_by_name=self.guarded_values_by_name | {key: values})
+
+    def global_requirements(self) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        if not self.reachable:
+            return ()
+        return tuple(
+            sorted(
+                (name, self.exact_values_by_name[name])
+                for name in self.guarded_values_by_name
+                if name in self.exact_values_by_name
+            )
+        )
+
+    def global_values(self) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        return (
+            tuple(
+                sorted(
+                    (name, values)
+                    for name, values in self.exact_values_by_name.items()
+                    if name.startswith('::')
+                )
+            )
+            if self.reachable
+            else ()
+        )
+
+    def for_guarded_scope(self, *, namespace: str, procedure: bool = True) -> VariableFlowState:
+        """Start a scope with only the namespace values established by guards."""
+        values = dict(self.global_requirements())
+        return type(self)(
+            values,
+            namespace=namespace,
+            procedure=procedure,
+            guarded_values_by_name=values,
         )
 
     def _variable_key(self, name: str) -> str | None:
@@ -122,8 +185,16 @@ class VariableFlowState:
     def with_links(
         self, links: dict[str, str | None], *, unknown: bool = False
     ) -> VariableFlowState:
+        state = self.cleared()
+        if not unknown:
+            requirements = dict(self.global_requirements())
+            state = replace(
+                state,
+                exact_values_by_name=requirements,
+                guarded_values_by_name=requirements,
+            )
         return replace(
-            self.cleared(),
+            state,
             links=tuple((dict(self.links) | links).items()),
             unknown_links=self.unknown_links or unknown,
         )
@@ -168,7 +239,14 @@ class VariableFlowState:
         else:
             sources.pop(key, None)
         return replace(
-            self, exact_values_by_name=next_values_by_name, literal_sources_by_name=sources
+            self,
+            exact_values_by_name=next_values_by_name,
+            literal_sources_by_name=sources,
+            guarded_values_by_name={
+                name: permitted
+                for name, permitted in self.guarded_values_by_name.items()
+                if name != key or (values and all(value in permitted for value in values))
+            },
         )
 
     def without_names(self, names: tuple[str, ...]) -> VariableFlowState:
@@ -190,6 +268,11 @@ class VariableFlowState:
             literal_sources_by_name={
                 name: source
                 for name, source in self.literal_sources_by_name.items()
+                if name not in keys
+            },
+            guarded_values_by_name={
+                name: values
+                for name, values in self.guarded_values_by_name.items()
                 if name not in keys
             },
         )

@@ -3,9 +3,11 @@ meta module TclLSConfig {
 
     # Syntax: one positional path.
     #
-    # Include static metadata or configuration declarations at this point.
+    # Evaluate a Tcl metadata or configuration file at this point.
     # Relative paths start in this config file's directory.
     # Included files inherit the enclosing metadata module, if present.
+    # Paths can use Tcl variables and command substitutions.
+    # `$::tcl_lsp::context` gives the workspace root and config path.
     #
     # **Example**
     #
@@ -28,18 +30,20 @@ meta module TclLSConfig {
     meta command lib-path {path}
     meta alias library-path lib-path
 
-    # Syntax: a module name, literal `when`, and a braced expression.
+    # Syntax: a module name, optionally followed by `when` and a braced expression.
     #
-    # Activate the metadata module when the expression is known to be true.
+    # Without `when`, activate the module throughout this config's source scope.
+    # With `when`, activate it only where the expression is known to be true.
     # The expression is analyzed statically; it is never executed.
     # An unknown or false result does not activate the module.
     #
     # **Example**
     #
     # ```tcl
+    # module ExampleTool
     # module ExampleTool when {$::tool eq "example"}
     # ```
-    meta command module {name =when condition}
+    meta command module {name ? =when condition ?}
 
     # Syntax: positional code and level, with optional `-path pattern`.
     #

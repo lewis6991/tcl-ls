@@ -19,6 +19,11 @@ from tests.lsp_service import LanguageService  # noqa: E402
 from tests.lsp_support import process_message  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def isolate_user_configuration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / 'user-config'))
+
+
 @pytest.fixture
 def parser() -> Parser:
     return Parser()

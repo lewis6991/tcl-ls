@@ -87,6 +87,7 @@ from tcl_lsp.analysis.flow import (
 from tcl_lsp.analysis.flow.exprs import eval_expr_text
 from tcl_lsp.analysis.metadata_commands import (
     MetadataBind,
+    MetadataCall,
     MetadataCommand,
     MetadataContext,
     MetadataPackage,
@@ -219,6 +220,35 @@ class FactExtractor:
         required_packages: frozenset[str] = frozenset(),
         call_types: CallTypes = (),
     ) -> DocumentFacts:
+        registry = self._metadata_registry.for_source(parse_result.source_id)
+        extractor = (
+            self
+            if registry == self._metadata_registry
+            else FactExtractor(self._parser, self._plugin_host, metadata_registry=registry)
+        )
+        return extractor._extract(
+            parse_result,
+            syntax=syntax,
+            body_cache=body_cache,
+            include_parse_result=include_parse_result,
+            include_lexical_spans=include_lexical_spans,
+            module_rules=module_rules,
+            required_packages=required_packages,
+            call_types=call_types,
+        )
+
+    def _extract(
+        self,
+        parse_result: ParseResult,
+        *,
+        syntax: DocumentSyntax | None = None,
+        body_cache: BodyAnalysisCache | None = None,
+        include_parse_result: bool = True,
+        include_lexical_spans: bool | None = None,
+        module_rules: tuple[ModuleRule, ...] | None = None,
+        required_packages: frozenset[str] = frozenset(),
+        call_types: CallTypes = (),
+    ) -> DocumentFacts:
         if include_lexical_spans is None:
             include_lexical_spans = include_parse_result
 
@@ -227,7 +257,13 @@ class FactExtractor:
         if is_declaration_file(source_path):
             module_rules = ()
         elif module_rules is None:
-            module_rules = configured_module_rules(source_path) if source_path is not None else ()
+            module_rules = (
+                configured_module_rules(
+                    source_path, context=self._metadata_registry.context_for(source_path)
+                )
+                if source_path is not None
+                else ()
+            )
 
         syntax = syntax or DocumentSyntax(parse_result, parser=self._parser)
         body_cache = body_cache or BodyAnalysisCache()
@@ -239,7 +275,11 @@ class FactExtractor:
         diagnostics = parse_result.diagnostics + lowering_result.diagnostics
         if configuration:
             assert source_path is not None
-            config = parse_config(parse_result, directory=source_path.parent.resolve(strict=False))
+            config = parse_config(
+                parse_result,
+                directory=source_path.parent.resolve(strict=False),
+                context=self._metadata_registry.context_for(source_path),
+            )
             diagnostics = config.diagnostics
             if not diagnostics and config.declarations is not None:
                 diagnostics = metadata_declaration_diagnostics(
@@ -865,6 +905,7 @@ class _FactCollector:
             return context, ()
 
         command_name_word = syntax_command.words[0]
+        call_index = len(self._facts.command_calls)
         argument_words = syntax_command.words[1:]
         self._record_command_call(
             command_name=command.command_name,
@@ -880,6 +921,10 @@ class _FactCollector:
         for word_references in command.word_references:
             context = self._collect_lowered_word_references(word_references, context)
 
+        call = self._facts.command_calls[call_index]
+        self._facts.command_calls[call_index] = replace(
+            call, global_values=context.flow_state.global_values()
+        )
         context = self._select_module(context, syntax_command.span)
         self._collect_builtin_subcommands(syntax_command, context)
         self._collect_contextual_subcommands(syntax_command, context)
@@ -914,6 +959,7 @@ class _FactCollector:
                 span=command_span,
                 name_span=name_span,
                 dynamic=command_name is None,
+                global_values=context.flow_state.global_values(),
             )
         )
         self._collect_command_rename(
@@ -1240,6 +1286,11 @@ class _FactCollector:
                 if entry is not None:
                     embedded_entries.append(entry)
                 continue
+            if isinstance(effect, MetadataCall):
+                words = self._selected_plugin_words(command, effect.selector)
+                if words:
+                    self._collect_forwarded_call(words, context, namespace=effect.namespace)
+                continue
             if isinstance(effect, MetadataPackage):
                 self._collect_plugin_package(command, context, effect)
                 continue
@@ -1345,7 +1396,7 @@ class _FactCollector:
             documentation=command_documentation(command),
             body_span=body_span(body_word) if body_word is not None else None,
         )
-        proc_decl = self._annotate_procedure(proc_decl)
+        proc_decl = self._annotate_procedure(proc_decl, context)
         self._facts.procedures.append(proc_decl)
 
         if body_word is None:
@@ -1453,7 +1504,7 @@ class _FactCollector:
             documentation=command_documentation(command),
             body_span=body_span(body_word) if body_word is not None else None,
         )
-        proc_decl = self._annotate_procedure(proc_decl)
+        proc_decl = self._annotate_procedure(proc_decl, context)
         self._facts.procedures.append(proc_decl)
 
         if body_word is None:
@@ -1936,7 +1987,7 @@ class _FactCollector:
             documentation=command_documentation(command),
             body_span=body_span(body_word) if body_word is not None else None,
         )
-        proc_decl = self._annotate_procedure(proc_decl)
+        proc_decl = self._annotate_procedure(proc_decl, context)
         self._facts.procedures.append(proc_decl)
 
         if body_word is None:
@@ -1962,7 +2013,7 @@ class _FactCollector:
         argument_texts = tuple(word_static_text(word) for word in argument_words)
         handled = False
         for annotation in metadata_command.annotations:
-            if not isinstance(annotation, (MetadataBind, MetadataRef)):
+            if not isinstance(annotation, (MetadataBind, MetadataRef, MetadataCall)):
                 continue
             selected_words = self._selected_metadata_argument_words(
                 argument_words=argument_words,
@@ -1974,6 +2025,11 @@ class _FactCollector:
                 continue
 
             handled = True
+            if isinstance(annotation, MetadataCall):
+                self._collect_forwarded_call(
+                    selected_words, context, namespace=annotation.namespace
+                )
+                continue
             if isinstance(annotation, MetadataBind):
                 if self._unpacks_tuple(command):
                     continue
@@ -1992,6 +2048,42 @@ class _FactCollector:
                 self._record_simple_reference_word(selected_word, context)
 
         return handled
+
+    def _collect_forwarded_call(
+        self,
+        words: tuple[Word, ...],
+        context: _ExtractionContext,
+        *,
+        namespace: str | None,
+    ) -> None:
+        if not words or words[0].expanded:
+            return
+        name_word, *arguments = words
+        name_span = name_word.content_span
+        command = Command(
+            span=Span(name_span.start, words[-1].span.end),
+            words=words,
+        )
+        call_context = replace(
+            context,
+            namespace=context.namespace if namespace is None else namespace,
+            embedded_language=None,
+            embedded_owner_name=None,
+            command_renames_enabled=False,
+        )
+        # Argument substitutions belong to the caller and were collected before
+        # its metadata. Only record the forwarded invocation here.
+        self._record_command_call(
+            command_name=word_static_text(name_word),
+            command_span=command.span,
+            name_span=name_span,
+            arg_texts=tuple(word_static_text(word) for word in arguments),
+            arg_spans=tuple(word.span for word in arguments),
+            arg_expanded=tuple(word.expanded for word in arguments),
+            arg_grouped=tuple(not isinstance(word, BareWord) for word in arguments),
+            context=call_context,
+        )
+        self._collect_builtin_subcommands(command, call_context)
 
     def _procedure_name(
         self,
@@ -2230,7 +2322,7 @@ class _FactCollector:
         argument_words: tuple[Word, ...],
         argument_texts: tuple[str | None, ...],
         metadata_command: MetadataCommand,
-        annotation: MetadataBind | MetadataRef,
+        annotation: MetadataBind | MetadataRef | MetadataCall,
     ) -> tuple[Word, ...] | None:
         selected_indices = select_argument_indices(
             annotation.selector,
@@ -2327,6 +2419,7 @@ class _FactCollector:
             flow_links=flow.links,
             flow_unknown_links=flow.unknown_links,
             flow_reachable=flow.reachable,
+            guarded_values=flow.global_requirements(),
             imports=tuple(
                 (item.namespace, item.kind, item.imported_name, item.target_name)
                 for item in self._imports
@@ -2523,7 +2616,7 @@ class _FactCollector:
             documentation=command.documentation,
             body_span=command.body_span,
         )
-        proc_decl = self._annotate_procedure(proc_decl)
+        proc_decl = self._annotate_procedure(proc_decl, context)
         self._facts.procedures.append(proc_decl)
 
         body_context = self._procedure_context(proc_decl, context)
@@ -3212,7 +3305,9 @@ class _FactCollector:
             embedded_language=None,
             embedded_owner_name=None,
             command_renames_enabled=command_renames_enabled,
-            flow_state=VariableFlowState.empty(namespace=namespace, procedure=False),
+            flow_state=VariableFlowState.empty(namespace=namespace, procedure=False)
+            if parent is None
+            else parent.flow_state.for_guarded_scope(namespace=namespace, procedure=False),
             metadata_registry=self._metadata_registry
             if parent is None
             else parent.metadata_registry,
@@ -3269,7 +3364,10 @@ class _FactCollector:
     def _procedure_context(
         self, proc_decl: ProcDecl, context: _ExtractionContext
     ) -> _ExtractionContext:
-        flow = VariableFlowState.empty(namespace=proc_decl.namespace)
+        values = dict(proc_decl.global_requirements)
+        flow = VariableFlowState(
+            values, namespace=proc_decl.namespace, guarded_values_by_name=values
+        )
         for parameter in proc_decl.parameters:
             if parameter.type_info:
                 flow = flow.with_type(parameter.name, parameter.type_info).with_exact_values(
@@ -3287,7 +3385,7 @@ class _FactCollector:
             flow_state=flow,
         )
 
-    def _annotate_procedure(self, proc: ProcDecl) -> ProcDecl:
+    def _annotate_procedure(self, proc: ProcDecl, context: _ExtractionContext) -> ProcDecl:
         annotations = parse_procedure_annotations(proc.documentation)
         parameters: list[ParameterDecl] = []
         for parameter in proc.parameters:
@@ -3305,6 +3403,7 @@ class _FactCollector:
         return replace(
             proc,
             annotations=annotations,
+            global_requirements=context.flow_state.global_requirements(),
             parameters=tuple(parameters),
             return_type=self._type_resolver.resolve(returns.type, proc.namespace)
             if returns and returns.type
@@ -3328,6 +3427,11 @@ class _FactCollector:
             'continue',
         }:
             return replace(context, flow_state=replace(context.flow_state, reachable=False))
+        if normalized_command_name == 'variable' and context.procedure_symbol_id is None:
+            return self._context_with_flow_state(
+                context,
+                self._flow_state_after_variable_initializers(command.command, context.flow_state),
+            )
         if context.procedure_symbol_id is not None and normalized_command_name in {
             'global',
             'variable',
@@ -3380,7 +3484,22 @@ class _FactCollector:
             else:
                 namespace = '::' if name == 'global' else context.namespace
                 links[name_tail(target)] = qualify_name(target, namespace)
-        return context.flow_state.with_links(links, unknown=unknown)
+        flow = context.flow_state
+        if name == 'variable':
+            flow = self._flow_state_after_variable_initializers(command, flow)
+        return flow.with_links(links, unknown=unknown)
+
+    def _flow_state_after_variable_initializers(
+        self, command: Command, flow: VariableFlowState
+    ) -> VariableFlowState:
+        for index in range(1, len(command.words) - 1, 2):
+            names = dynamic_variable_target_names(command.words[index], flow)
+            if len(names) != 1:
+                return flow.invalidated()
+            name = qualify_name(names[0], flow.namespace)
+            values = exact_word_values(command.words[index + 1], flow)
+            flow = flow.without_names((name,)).with_exact_values(name, values)
+        return flow
 
     def _context_after_effects(
         self, context: _ExtractionContext, effects: VariableEffects
