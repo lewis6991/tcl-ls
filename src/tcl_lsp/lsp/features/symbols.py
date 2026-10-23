@@ -27,6 +27,13 @@ def symbol_ids_at_position(
         if definition.location.uri == uri
         and definition.span.contains(line=line, character=character)
     ]
+    # Only the first binding becomes a definition. Later writes identify the
+    # same variable without being reads of its value.
+    direct_matches.extend(
+        binding.symbol_id
+        for binding in document.facts.variable_bindings
+        if binding.uri == uri and binding.span.contains(line=line, character=character)
+    )
     if direct_matches:
         return tuple(dict.fromkeys(direct_matches))
 

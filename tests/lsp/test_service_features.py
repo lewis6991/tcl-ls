@@ -317,6 +317,70 @@ def test_language_service_definition_resolves_variable_alias_sites(
     assert namespace_write_definition_locations[0].range.start.character == 13
 
 
+@pytest.mark.parametrize(
+    ('source_text', 'definition_line', 'write_line'),
+    [
+        (
+            'proc run {} {\n    set value 0\n    set value 1\n    puts $value\n}\n',
+            1,
+            2,
+        ),
+        ('proc run {value} {\n    set value 1\n    puts $value\n}\n', 0, 1),
+        (
+            'proc run {} {\n'
+            '    foreach value {1 2} {\n'
+            '        set value 3\n'
+            '        puts $value\n'
+            '    }\n'
+            '}\n',
+            1,
+            2,
+        ),
+    ],
+)
+def test_definition_on_variable_writes_returns_the_first_binding(
+    service: LanguageService, source_text: str, definition_line: int, write_line: int
+) -> None:
+    assert service.open_document(MAIN_URI, source_text, 1) == ()
+    lines = source_text.splitlines()
+
+    locations = service.definition(MAIN_URI, write_line, lines[write_line].index('value') + 1)
+
+    assert len(locations) == 1
+    assert locations[0].uri == MAIN_URI
+    assert locations[0].range.start.line == definition_line
+    assert locations[0].range.start.character == lines[definition_line].index('value')
+
+
+def test_definition_on_a_write_in_a_metadata_body_returns_the_callers_first_binding(
+    service: LanguageService, tmp_path: Path
+) -> None:
+    (tmp_path / 'tcllsrc.tcl').write_text(
+        'meta module Tcl {\n    meta command with_interrupts {code} {enter tcl body 1}\n}\n',
+        encoding='utf-8',
+    )
+    uri = (tmp_path / 'main.tcl').as_uri()
+    source_text = (
+        'proc run {} {\n'
+        '    set last_report_time 0\n'
+        '    with_interrupts {\n'
+        '        set last_report_time [clock seconds]\n'
+        '    }\n'
+        '    return $last_report_time\n'
+        '}\n'
+    )
+    assert service.open_document(uri, source_text, 1) == ()
+
+    locations = service.definition(
+        uri, 3, source_text.splitlines()[3].index('last_report_time') + 1
+    )
+
+    assert len(locations) == 1
+    assert locations[0].uri == uri
+    assert locations[0].range.start.line == 1
+    assert locations[0].range.start.character == 8
+
+
 def test_variable_hover_shows_the_target_of_namespace_and_global_links(
     service: LanguageService,
 ) -> None:
