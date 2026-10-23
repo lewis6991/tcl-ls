@@ -27,6 +27,8 @@ DIAGNOSTIC_DESCRIPTIONS: dict[str, str] = {
     'unresolved-command': 'A command call has no known declaration.',
     'unresolved-package': 'A package requirement has no known package.',
     'unresolved-variable': 'A procedure variable reference has no known binding.',
+    'unused-proc': 'A private procedure has no known use in the analyzed files.',
+    'unused-variable': 'A procedure variable or parameter has no known use.',
     'unsupported-special-enter': 'A body selector does not match a structured Tcl command body.',
     'wrong-argument-count': 'A command call has too few or too many arguments.',
 }

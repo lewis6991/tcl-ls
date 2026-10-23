@@ -38,7 +38,7 @@ def test_forwarded_command_has_editor_features_and_root_namespace_lookup(project
     source = project / 'main.tcl'
     text = (
         'namespace eval app {\n'
-        '    proc runtime_check {first second} {}\n'
+        '    proc runtime_check {first second} {list $first $second}\n'
         '    proc run {value} {\n'
         '        dispatch runtime_check $value\n'
         '        local_dispatch runtime_check first second\n'
@@ -133,7 +133,7 @@ def test_forwarded_calls_preserve_words_and_check_the_target(
     project: Path, call: str, expected: list[str]
 ) -> None:
     source = project / 'main.tcl'
-    text = f'namespace eval app {{proc run {{command}} {{{call}}}}}\n'
+    text = f'namespace eval app {{proc run {{command}} {{list $command; {call}}}}}\n'
     source.write_text(text)
     server = LanguageServer()
     try:

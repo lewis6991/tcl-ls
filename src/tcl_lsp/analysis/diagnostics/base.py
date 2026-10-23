@@ -44,6 +44,7 @@ class DiagnosticContext:
     command_targets: Mapping[CommandCallKey, ResolvedCommandTarget]
     command_resolutions: tuple[ResolvedCommand, ...]
     variable_resolutions: tuple[ResolvedVariable, ...]
+    usage_index: WorkspaceIndex | None = None
 
 
 class DiagnosticChecker(ABC):

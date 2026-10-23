@@ -136,7 +136,7 @@ def test_writes_and_unknown_effects_clear_constraints(parser: Parser, write: str
         parser,
         'file:///values.tcl',
         '# @param count "auto"\n'
-        f'proc next_count {{count script}} {{{write}; expr {{$count + 1}}}}\n',
+        f'proc next_count {{count script}} {{list $script; {write}; expr {{$count + 1}}}}\n',
     )
     assert result.analysis.diagnostics == ()
 
@@ -585,7 +585,7 @@ def test_expression_substitutions_invalidate_later_variable_values(
     result = analyze_document(
         parser,
         'file:///values.tcl',
-        f'proc use {{script}} {{set count auto; expr {{{expression}}}; expr {{$count + 1}}}}\n',
+        f'proc use {{script}} {{list $script; set count auto; expr {{{expression}}}; expr {{$count + 1}}}}\n',
     )
     assert result.analysis.diagnostics == ()
 

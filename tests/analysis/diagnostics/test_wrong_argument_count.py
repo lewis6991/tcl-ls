@@ -16,7 +16,9 @@ def test_analysis_reports_wrong_builtin_argument_count(parser: Parser) -> None:
 
 
 def test_analysis_reports_wrong_proc_argument_count(parser: Parser) -> None:
-    snapshot = _analyze(parser, 'file:///greet_args.tcl', 'proc greet {name} {}\ngreet\n')
+    snapshot = _analyze(
+        parser, 'file:///greet_args.tcl', 'proc greet {name} {return $name}\ngreet\n'
+    )
     analysis = snapshot.analysis
 
     assert [diagnostic.code for diagnostic in analysis.diagnostics] == ['wrong-argument-count']
@@ -29,7 +31,7 @@ def test_analysis_uses_proc_default_parameters_for_argument_checks(parser: Parse
     snapshot = _analyze(
         parser,
         'file:///greet_defaults.tcl',
-        'proc greet {name {title friend}} {}\ngreet Ada Dr Extra\n',
+        'proc greet {name {title friend}} {list $name $title}\ngreet Ada Dr Extra\n',
     )
     analysis = snapshot.analysis
 

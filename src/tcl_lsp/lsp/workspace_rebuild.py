@@ -525,6 +525,7 @@ class WorkspaceRebuilder:
                     facts=document.facts,
                     workspace_index=analysis_index,
                     include_diagnostics=self._include_diagnostics,
+                    usage_index=workspace_index,
                 )
             else:
                 analysis = resolver.analyze_command_references(

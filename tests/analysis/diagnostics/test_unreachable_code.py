@@ -92,7 +92,7 @@ def test_analysis_does_not_report_unreachable_after_catch(parser: Parser) -> Non
     snapshot = _analyze(
         parser,
         'file:///reachable_after_catch.tcl',
-        'proc run {} {\n    catch { return ok }\n    set later 1\n}\n',
+        'proc run {} {\n    catch { return ok }\n    set later 1; return $later\n}\n',
     )
 
     assert snapshot.analysis.diagnostics == ()

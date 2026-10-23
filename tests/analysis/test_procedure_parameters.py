@@ -66,7 +66,10 @@ def test_braced_proc_parameters_keep_variable_references_literal(
 
     (procedure,) = facts.procedures
     assert [p.name for p in procedure.parameters] == ['$common_args']
-    assert [d.message for d in analysis.diagnostics] == ['Unresolved variable `bg`.']
+    assert [d.message for d in analysis.diagnostics] == [
+        'Unresolved variable `bg`.',
+        'Variable `$common_args` is unused.',
+    ]
 
 
 @pytest.mark.parametrize('declaration', ['proc', 'declare'])
@@ -101,7 +104,10 @@ def test_resolving_a_parameter_word_does_not_substitute_its_value_again(
 
     (procedure,) = facts.procedures
     assert [p.name for p in procedure.parameters] == ['$nested']
-    assert [d.message for d in analysis.diagnostics] == ['Unresolved variable `bg`.']
+    assert [d.message for d in analysis.diagnostics] == [
+        'Unresolved variable `bg`.',
+        'Variable `$nested` is unused.',
+    ]
 
 
 @pytest.mark.parametrize('parameter_parser', ['tepam', 'tepam-args', 'shared_header'])
@@ -318,7 +324,7 @@ def test_shared_header_headers_leave_command_substitutions_literal(
     _write_wrapper_metadata(tmp_path, 'shared_header')
     source = tmp_path / 'main.tcl'
     source.write_text(
-        'proc common_args {mode} {return {{-props}}}\n'
+        'proc common_args {mode} {list $mode; return {{-props}}}\n'
         'declare prove {-args {[common_args sec] {-bg -type none}}} '
         '{puts [list $props $bg]}\n'
     )

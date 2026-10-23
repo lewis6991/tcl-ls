@@ -9,6 +9,7 @@ meta module cmdline {
     # Updates the variables named by optVar and valVar with the parsed option
     # name and value, and mutates argvVar by removing the consumed arguments.
     meta command cmdline::getopt {argvVar optstring optVar valVar} {
+        ref 1
         bind 3 set
         bind 4 set
     }
@@ -17,6 +18,7 @@ meta module cmdline {
     # Updates the variables named by optVar and valVar with the parsed option
     # name and value, and mutates argvVar by removing the consumed arguments.
     meta command cmdline::getKnownOpt {argvVar optstring optVar valVar} {
+        ref 1
         bind 3 set
         bind 4 set
     }

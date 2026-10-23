@@ -157,7 +157,8 @@ def test_body_reuse_updates_parameter_and_procedure_scopes(
         server.change_document(uri, edited, 2)
         assert_fresh_analysis(server, uri, edited)
         assert [d.message for d in server.documents[uri].analysis.diagnostics] == [
-            'Unresolved variable `value`.'
+            'Unresolved variable `value`.',
+            'Variable `other` is unused.',
         ]
     finally:
         server.shutdown()
@@ -182,7 +183,11 @@ def test_cached_wrappers_refresh_shared_parameters_and_their_locations(tmp_path:
             procedure = next(p for p in server.documents[uri].facts.procedures if p.name == 'prove')
             (parameter,) = procedure.parameters
             assert edited[parameter.span.start.offset : parameter.span.end.offset] == parameter.name
-            expected = ['Unresolved variable `props`.'] if '-engines' in edited else []
+            expected = (
+                ['Unresolved variable `props`.', 'Variable `engines` is unused.']
+                if '-engines' in edited
+                else []
+            )
             assert [d.message for d in server.documents[uri].analysis.diagnostics] == expected
     finally:
         server.shutdown()
@@ -229,7 +234,11 @@ def test_cached_proc_parameters_follow_changes_to_known_variable_values(tmp_path
             procedure = next(p for p in server.documents[uri].facts.procedures if p.name == 'prove')
             (parameter,) = procedure.parameters
             assert edited[parameter.span.start.offset : parameter.span.end.offset] == parameter.name
-            expected = ['Unresolved variable `props`.'] if '{engines}' in edited else []
+            expected = (
+                ['Unresolved variable `props`.', 'Variable `engines` is unused.']
+                if '{engines}' in edited
+                else []
+            )
             assert [d.message for d in server.documents[uri].analysis.diagnostics] == expected
     finally:
         server.shutdown()

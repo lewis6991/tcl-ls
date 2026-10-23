@@ -182,7 +182,9 @@ def test_saved_file_scoped_metadata_refreshes_binding_analysis(tmp_path: Path) -
     (tmp_path / 'other.meta.tcl').write_text('meta command wrapper {name}\n')
     (tmp_path / 'tcllsrc.tcl').write_text('source main.meta.tcl\nsource other.meta.tcl\n')
     source = tmp_path / 'main.tcl'
-    source.write_text('proc wrapper {name} {}\nproc run {} {\nwrapper value\nputs $value\n}\n')
+    source.write_text(
+        'proc wrapper {name} {return $name}\nproc run {} {\nwrapper value\nputs $value\n}\n'
+    )
     server = LanguageServer()
     try:
         diagnostics = server.open_document(source.as_uri(), source.read_text(), 1)

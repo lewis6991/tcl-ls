@@ -53,7 +53,13 @@ from tcl_lsp.analysis.facts.lowering import (
     LoweredWordReferences,
     command_scripts,
 )
-from tcl_lsp.analysis.facts.parsing import ListItem, is_simple_name, split_tcl_list
+from tcl_lsp.analysis.facts.parsing import (
+    ConditionVariableSubstitution,
+    ListItem,
+    is_simple_name,
+    scan_static_tcl_substitutions,
+    split_tcl_list,
+)
 from tcl_lsp.analysis.facts.utils import (
     body_span,
     command_documentation,
@@ -3329,6 +3335,27 @@ class _FactCollector:
             ),
         )
         self._record_value_checks(command, analysis.diagnostics)
+        # Braced expr arguments defer substitutions until expression
+        # evaluation, so ordinary word collection does not see these uses.
+        for word in arguments:
+            if not isinstance(word, BracedWord) or word.expanded:
+                continue
+            source = self._embedded_script_text(word)
+            assert source is not None
+            text, start = source
+            for substitution in scan_static_tcl_substitutions(text, start):
+                if isinstance(substitution, ConditionVariableSubstitution):
+                    self._record_variable_reference(
+                        name=substitution.name, span=substitution.span, context=context
+                    )
+                    continue
+                parsed = self._parser.parse_embedded_script(
+                    context.uri, substitution.text, substitution.content_span.start
+                )
+                lowered = self._syntax.lower_parse_result(parsed, collect_lexical_spans=False)
+                self._collect_lowered_script(
+                    lowered.script, self._context_without_command_renames(context)
+                )
         return self._context_with_flow_state(context, analysis.state)
 
     def _expression_script_effects(

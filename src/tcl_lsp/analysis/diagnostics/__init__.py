@@ -25,6 +25,8 @@ from .unreachable_code import UnreachableCodeChecker
 from .unresolved_command import UnresolvedCommandChecker
 from .unresolved_package import UnresolvedPackageChecker
 from .unresolved_variable import UnresolvedVariableChecker
+from .unused_proc import UnusedProcChecker
+from .unused_variable import UnusedVariableChecker
 from .value_constraints import ValueConstraintChecker
 from .wrong_argument_count import WrongArgumentCountChecker
 
@@ -44,12 +46,23 @@ DIAGNOSTIC_CHECKERS: Final[tuple[DiagnosticChecker, ...]] = (
     UnreachableCodeChecker(),
     AmbiguousVariableChecker(),
     UnresolvedVariableChecker(),
+    UnusedVariableChecker(),
+    UnusedProcChecker(),
 )
 
 
 def collect_diagnostics(context: DiagnosticContext) -> Iterable[Diagnostic]:
-    for checker in DIAGNOSTIC_CHECKERS:
-        yield from checker.check(context)
+    diagnostics = [
+        diagnostic for checker in DIAGNOSTIC_CHECKERS for diagnostic in checker.check(context)
+    ]
+    unreachable_spans = [d.span for d in diagnostics if d.code == 'unreachable-code']
+    for diagnostic in diagnostics:
+        if diagnostic.code in {'unused-variable', 'unused-proc'} and any(
+            span.start.offset <= diagnostic.span.start.offset < span.end.offset
+            for span in unreachable_spans
+        ):
+            continue
+        yield diagnostic
 
 
 __all__ = [

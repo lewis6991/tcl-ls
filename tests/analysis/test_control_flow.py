@@ -737,7 +737,7 @@ def test_analysis_tracks_static_if_bodies_for_metadata_guards() -> None:
     parse_result = parser.parse_document(
         'file:///meta_file.tcl',
         'if {[llength [info commands meta]] == 0} {\n'
-        '    proc meta {args} {}\n'
+        '    proc meta {args} {return $args}\n'
         '}\n'
         '# Builtin metadata entry.\n'
         'meta command after {ms}\n',

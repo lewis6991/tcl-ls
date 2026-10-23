@@ -460,7 +460,7 @@ def test_language_service_preserves_switch_branch_list_body_positions_after_cont
     service: LanguageService,
 ) -> None:
     source_text = (
-        'proc helper args {return ok}\n'
+        'proc helper args {list $args; return ok}\n'
         'proc run {mode a b c d e} {\n'
         '    switch -regexp $mode {\n'
         '        "prepare" {\n'
@@ -830,7 +830,7 @@ def test_language_service_static_command_rename_resolves_builtin_alias(
 ) -> None:
     diagnostics = service.open_document(
         MAIN_URI,
-        'rename exit ::mock::real_exit\nproc exit args {::mock::real_exit 0}\n',
+        'rename exit ::mock::real_exit\nproc exit args {::mock::real_exit {*}$args}\n',
         1,
     )
 
@@ -1136,7 +1136,7 @@ def test_language_service_does_not_report_meta_guard_commands_as_unresolved(
     diagnostics = service.open_document(
         'file:///meta_file.tcl',
         'if {[llength [info commands meta]] == 0} {\n'
-        '    proc meta {args} {}\n'
+        '    proc meta {args} {return $args}\n'
         '}\n'
         '# Builtin metadata entry.\n'
         'meta command after {ms}\n',

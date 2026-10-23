@@ -145,13 +145,18 @@ class Resolver:
         workspace_index: WorkspaceIndex,
         *,
         include_diagnostics: bool = True,
+        usage_index: WorkspaceIndex | None = None,
     ) -> AnalysisResult:
         registry = self._metadata_registry.for_source(uri)
         resolver = (
             self if registry == self._metadata_registry else Resolver(metadata_registry=registry)
         )
         return resolver._analyze(
-            uri, facts, workspace_index, include_diagnostics=include_diagnostics
+            uri,
+            facts,
+            workspace_index,
+            include_diagnostics=include_diagnostics,
+            usage_index=usage_index,
         )
 
     def _analyze(
@@ -161,6 +166,7 @@ class Resolver:
         workspace_index: WorkspaceIndex,
         *,
         include_diagnostics: bool = True,
+        usage_index: WorkspaceIndex | None = None,
     ) -> AnalysisResult:
         diagnostics = list(facts.diagnostics)
         required_packages = facts.required_packages
@@ -256,6 +262,7 @@ class Resolver:
                         command_targets=command_targets,
                         command_resolutions=tuple(command_resolutions),
                         variable_resolutions=tuple(variable_resolutions),
+                        usage_index=usage_index,
                     )
                 )
             )

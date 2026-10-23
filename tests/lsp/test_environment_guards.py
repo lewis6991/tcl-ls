@@ -25,7 +25,7 @@ def backend(tool: str) -> str:
         f'namespace eval {tool} {{\n'
         '    variable counter 0\n'
         '    proc run {} {\n'
-        '        global tool\n'
+        '        global tool; info exists tool\n'
         f'        {tool}_command value\n'
         f'        {other}_command value\n'
         '    }\n'

@@ -49,6 +49,7 @@ meta module asn {
 
     # Decode an application wrapper and store requested outputs by name.
     meta command asn::asnGetApplication {data_var appNumber_var {content_var {}} {encodingType_var {}}} {
+        ref 1
         bind 2 set
         bind 3 set
         bind 4 set

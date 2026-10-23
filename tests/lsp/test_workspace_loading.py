@@ -473,6 +473,7 @@ def test_language_service_open_document_only_fully_analyzes_open_documents(
         workspace_index: object,
         *,
         include_diagnostics: bool = True,
+        usage_index: object = None,
     ) -> object:
         analyzed_uris.append(uri)
         return original_analyze(
@@ -481,6 +482,7 @@ def test_language_service_open_document_only_fully_analyzes_open_documents(
             cast(Any, facts),
             cast(Any, workspace_index),
             include_diagnostics=include_diagnostics,
+            usage_index=cast(Any, usage_index),
         )
 
     monkeypatch.setattr(Resolver, 'analyze', counting_analyze)

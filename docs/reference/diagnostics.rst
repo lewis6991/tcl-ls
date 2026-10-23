@@ -9,8 +9,8 @@ Severity And Source
 
 All diagnostics default to ``error``, except resolution diagnostics,
 possible value constraint failures, and environment conflicts (``warning``),
-and ``unreachable-code`` (``hint``). Metadata chooses ``hint`` or ``information``
-for ``missing-variable``. Project rules and source comments can
+and ``unreachable-code``, ``unused-variable``, and ``unused-proc`` (``hint``). Metadata chooses
+``hint`` or ``information`` for ``missing-variable``. Project rules and source comments can
 change severity or disable diagnostics for files or commands;
 see :ref:`diagnostic-configuration`.
 
@@ -99,6 +99,35 @@ Resolution Diagnostics
 
 ``ambiguous-variable``
    A procedure-scoped variable reference matched multiple bindings.
+
+``unused-variable``
+   A procedure variable or parameter has no known use. The hint marks the first
+   binding with the editor's unused tag. This includes unused local links made
+   by ``variable``, ``global``, and ``upvar``. Initialising a namespace variable
+   or writing through a link counts as use. Uses in another procedure do not
+   use the local link.
+
+   Names that start with ``_`` are treated as intentional. Global and namespace
+   variables are excluded because other files can use them. Dynamic scripts,
+   variable names, local-variable inspection, and unknown calls with dynamic
+   arguments can hide uses, so they suppress hints in their procedure.
+   Literal variable names passed to unknown commands or procedures count as
+   possible uses. Metadata must describe variable reads with ``ref`` and script
+   arguments with ``enter tcl body``. Literal text does not suppress hints based
+   on its contents. This check does not detect individual unused assignments.
+
+``unused-proc``
+   A procedure whose final name starts with ``_`` has no known use. The hint
+   marks the procedure name with the editor's unused tag. Public procedure
+   names are excluded. Calls, renames, and literal callback names count as
+   uses; a self-recursive call alone does not.
+
+   Uses are checked across indexed files, including open files and loaded
+   dependencies, with Tcl namespace resolution. Same-named procedures in
+   different namespaces remain separate.
+   This does not scan unopened, unrelated project files or infer computed
+   command names. A literal callback name counts as a possible use even when
+   the receiving command's implementation is unknown.
 
 Command And Metadata Diagnostics
 --------------------------------

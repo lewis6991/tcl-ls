@@ -143,7 +143,7 @@ def test_analysis_collects_inline_tcloo_define_commands(parser: Parser) -> None:
         '    return [self]\n'
         '}\n'
         'oo::define Foo constructor {value} {\n'
-        '    set copy $value\n'
+        '    set copy $value; puts $copy\n'
         '}\n',
     )
     facts = snapshot.facts

@@ -507,7 +507,7 @@ def test_analysis_resolves_workspace_package_helper_metadata_bindings(parser: Pa
         'file:///tmp/fileutil.tcl',
         '# tcl-ls: module fileutil\n'
         'namespace eval fileutil {\n'
-        '    proc Spec {check alist ov fv args} {}\n'
+        '    proc Spec {check alist ov fv args} {list $check $alist $ov $fv $args}\n'
         '    proc run {args} {\n'
         '        Spec Writable $args opts fname data\n'
         '        puts $opts\n'

@@ -12,6 +12,105 @@ def _open_diagnostics(server: LanguageServer, path: Path) -> list[tuple[str, str
     return sorted((item.code, item.severity) for item in diagnostics)
 
 
+@pytest.mark.parametrize('severity', ['default', 'information', 'off'])
+def test_unused_private_procedures_agree_in_editor_and_checker(
+    tmp_path: Path, severity: str
+) -> None:
+    (tmp_path / 'tcllsrc.tcl').write_text(f'diagnostic unused-proc {severity}\n')
+    source = tmp_path / 'main.tcl'
+    source.write_text(
+        '# tcl-ls: diagnostic unused-proc off\n'
+        'proc _ignored {} {}\n'
+        'proc _unused {} {}\n'
+        'proc public {} {}\n'
+    )
+    expected = (
+        []
+        if severity == 'off'
+        else [('unused-proc', 'hint' if severity == 'default' else severity)]
+    )
+    server = LanguageServer()
+    try:
+        assert _open_diagnostics(server, source) == expected
+        assert [
+            (d.diagnostic.code, d.diagnostic.severity)
+            for d in check_project(source, threads=1).diagnostics
+        ] == expected
+
+        moved = '\n' + source.read_text()
+        diagnostics = server.change_document(source.as_uri(), moved, 2)
+        assert [(d.code, d.severity) for d in diagnostics] == expected
+        if diagnostics:
+            assert diagnostics[0].span.start.line == 3
+            assert diagnostics[0].tags == ('unnecessary',)
+        assert server.change_document(source.as_uri(), moved + '_unused\n', 3) == ()
+    finally:
+        server.shutdown()
+
+
+def test_private_procedure_hints_follow_calls_in_a_loaded_file(tmp_path: Path) -> None:
+    helper = tmp_path / 'helper.tcl'
+    helper.write_text('namespace eval app {proc _helper {} {}}\n')
+    source = tmp_path / 'main.tcl'
+    text = 'source [file join [file dirname [info script]] helper.tcl]\n::app::_helper\n'
+    source.write_text(text)
+    server = LanguageServer()
+    try:
+        assert server.open_document(source.as_uri(), text, 1) == ()
+        assert server.open_document(helper.as_uri(), helper.read_text(), 1) == ()
+        assert server.documents[helper.as_uri()].analysis.diagnostics == ()
+        assert check_project(tmp_path, threads=1).diagnostics == ()
+
+        changed = text.replace('::app::_helper\n', '')
+        assert server.change_document(source.as_uri(), changed, 2) == ()
+        assert [d.code for d in server.documents[helper.as_uri()].analysis.diagnostics] == [
+            'unused-proc'
+        ]
+        source.write_text(changed)
+        assert [d.diagnostic.code for d in check_project(tmp_path, threads=1).diagnostics] == [
+            'unused-proc'
+        ]
+    finally:
+        server.shutdown()
+
+
+@pytest.mark.parametrize('severity', ['default', 'information', 'off'])
+def test_unused_variables_agree_in_editor_and_checker(tmp_path: Path, severity: str) -> None:
+    (tmp_path / 'tcllsrc.tcl').write_text(f'diagnostic unused-variable {severity}\n')
+    source = tmp_path / 'main.tcl'
+    source.write_text(
+        'proc example {argument} {\n'
+        '    # tcl-ls: diagnostic unused-variable off\n'
+        '    variable ignored\n'
+        '    variable version\n'
+        '}\n'
+    )
+    expected = (
+        []
+        if severity == 'off'
+        else [('unused-variable', 'hint' if severity == 'default' else severity)] * 2
+    )
+    server = LanguageServer()
+    try:
+        assert _open_diagnostics(server, source) == expected
+        report = check_project(source, threads=1)
+        assert [(d.diagnostic.code, d.diagnostic.severity) for d in report.diagnostics] == expected
+
+        moved = '\n' + source.read_text()
+        diagnostics = server.change_document(source.as_uri(), moved, 2)
+        assert [(d.code, d.severity) for d in diagnostics] == expected
+        if diagnostics:
+            assert [d.span.start.line for d in diagnostics] == [1, 4]
+            assert all(d.tags == ('unnecessary',) for d in diagnostics)
+
+        used = moved.replace(
+            '    variable version', '    variable version; puts $version $argument'
+        )
+        assert server.change_document(source.as_uri(), used, 3) == ()
+    finally:
+        server.shutdown()
+
+
 @pytest.mark.parametrize('severity', ['default', 'information', 'error', 'off'])
 def test_creation_hints_use_the_same_rules_in_the_editor_and_checker(
     tmp_path: Path, severity: str

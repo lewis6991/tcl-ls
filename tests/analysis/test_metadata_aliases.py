@@ -55,6 +55,7 @@ def test_aliases_keep_subcommand_checks_and_variable_bindings(
     assert sorted(d.code for d in analysis.diagnostics) == [
         'missing-variable',
         'unknown-subcommand',
+        'unused-variable',
         'wrong-argument-count',
     ]
 
