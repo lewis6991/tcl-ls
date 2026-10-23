@@ -62,6 +62,7 @@ class BodyInputs:
     existence: tuple[tuple[str, bool | None], ...]
     unknown_existence: bool
     guarded_values: tuple[tuple[str, tuple[str, ...]], ...]
+    module_command_values: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...]
     imports: tuple[tuple[str, CommandImportKind, str | None, str], ...]
 
 

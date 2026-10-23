@@ -51,6 +51,8 @@ class VariableFlowState:
     # Unlisted locals are missing only in a frame with no unknown effects.
     existence_by_name: dict[str, bool | None] = field(default_factory=dict)
     unknown_existence: bool = False
+    # Results established by conditions for explicitly configured module queries.
+    module_command_values: dict[tuple[str, ...], tuple[str, ...]] = field(default_factory=dict)
 
     @classmethod
     def empty(cls, *, namespace: str = '::', procedure: bool = True) -> VariableFlowState:
@@ -66,12 +68,14 @@ class VariableFlowState:
                 guarded_values_by_name={},
                 existence_by_name={},
                 unknown_existence=True,
+                module_command_values={},
             )
             if self.exact_values_by_name
             or self.types_by_name
             or self.literal_sources_by_name
             or self.guarded_values_by_name
             or self.existence_by_name
+            or self.module_command_values
             or not self.unknown_existence
             else self
         )
@@ -146,6 +150,15 @@ class VariableFlowState:
                 )
                 for name in first.guarded_values_by_name
                 if all(name in state.guarded_values_by_name for state in states)
+            },
+            module_command_values={
+                command: tuple(
+                    dict.fromkeys(
+                        value for state in states for value in state.module_command_values[command]
+                    )
+                )
+                for command in first.module_command_values
+                if all(command in state.module_command_values for state in states)
             },
         )
 

@@ -125,7 +125,7 @@ from tcl_lsp.analysis.model import (
     VarBinding,
     VariableReference,
 )
-from tcl_lsp.analysis.modules import ModuleSelection, active_modules
+from tcl_lsp.analysis.modules import ModuleSelection, active_modules, module_condition_states
 from tcl_lsp.analysis.types import (
     AliasDefinitions,
     CallTypes,
@@ -2475,6 +2475,7 @@ class _FactCollector:
             existence=tuple(sorted(flow.existence_by_name.items())),
             unknown_existence=flow.unknown_existence,
             guarded_values=flow.global_requirements(),
+            module_command_values=tuple(sorted(flow.module_command_values.items())),
             imports=tuple(
                 (item.namespace, item.kind, item.imported_name, item.target_name)
                 for item in self._imports
@@ -3729,6 +3730,7 @@ class _FactCollector:
             and not context.flow_state.exact_values_by_name
             and not context.flow_state.types_by_name
             and not context.flow_state.existence_by_name
+            and not context.flow_state.module_command_values
         ):
             return context
         effects = (
@@ -3770,6 +3772,14 @@ class _FactCollector:
             effects = self._script_effects(script, context)
             true_context = self._context_after_effects(true_context, effects)
             false_context = self._context_after_effects(false_context, effects)
+        true_state, _ = module_condition_states(
+            true_context.flow_state, condition.text, self._module_rules
+        )
+        _, false_state = module_condition_states(
+            false_context.flow_state, condition.text, self._module_rules
+        )
+        true_context = self._context_with_flow_state(true_context, true_state)
+        false_context = self._context_with_flow_state(false_context, false_state)
         return true_context, false_context
 
     def _record_variable_reference(

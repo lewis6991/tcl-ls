@@ -309,6 +309,21 @@ condition or execute Tcl commands. An unknown condition does not select the
 module. Use fully qualified variable names for project-wide conditions.
 Matching rules apply in config order, above explicitly selected modules.
 
+A rule can also name a static environment query:
+
+.. code-block:: tcl
+
+   module ExampleTool when {[cfg_get main tool] eq "example"}
+
+This selects ExampleTool in a matching branch such as
+``if {[cfg_get main tool] eq "example" && $enabled} {...}``.
+The command name and arguments must be literal words. String comparisons
+with ``eq`` and ``ne`` are supported, including reversed operands and negation.
+The analyzer matches the configured query without running it. The rule treats
+the query as an environment value on that path; it does not infer the query's
+implementation or track changes to its backing configuration. Unknown script
+execution clears the value. Query results are not procedure requirements.
+
 Guarded Procedure Environments
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

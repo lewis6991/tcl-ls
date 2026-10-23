@@ -234,6 +234,108 @@ def test_call_argument_substitutions_update_the_calling_environment(project: Pat
     ]
 
 
+@pytest.fixture
+def query_project(project: Path) -> Path:
+    with (project / 'tcllsrc.tcl').open('a') as stream:
+        stream.write(
+            'meta module Tcl {meta command cfg_get {args}}\n'
+            'module Alpha when {[cfg_get main tool] eq "alpha"}\n'
+            'module Beta when {[cfg_get main tool] eq "beta"}\n'
+        )
+    return project
+
+
+@pytest.mark.parametrize(
+    ('condition', 'selected'),
+    [
+        ('[cfg_get main tool] eq "alpha"', True),
+        ('"alpha" eq [cfg_get main tool]', True),
+        ('!([cfg_get main tool] ne "alpha")', True),
+        ('[cfg_get "main" {tool}] eq "alpha"', True),
+        ('[cfg_get main tool] eq "alpha" && [cfg_get debug enabled]', True),
+        ('[cfg_get main tool] eq "alpha" || $::enabled', False),
+        ('[cfg_get main tool] ne "beta"', False),
+        ('[cfg_get other tool] eq "alpha"', False),
+        ('[cfg_get main $::field] eq "alpha"', False),
+        ('[cfg_get {*}{main tool}] eq "alpha"', False),
+        ('[cfg_get main tool; cfg_get main tool] eq "alpha"', False),
+    ],
+)
+def test_configured_queries_select_modules_only_on_the_matching_branch(
+    query_project: Path, condition: str, selected: bool
+) -> None:
+    source = query_project / 'query.tcl'
+    source.write_text(
+        f'proc run {{}} {{\n    if {{{condition}}} {{\n'
+        '        set database [cfg_get debug database]\n'
+        '        alpha_command $database\n'
+        '    }\n'
+        '    alpha_command outside\n'
+        '}\n'
+    )
+    diagnostics = check_project(source, threads=1).diagnostics
+    assert [(d.diagnostic.span.start.line, d.diagnostic.code) for d in diagnostics] == (
+        [] if selected else [(3, 'unresolved-command')]
+    ) + [(5, 'unresolved-command')]
+
+
+def test_query_guards_do_not_select_another_tool_in_the_else_branch(query_project: Path) -> None:
+    source = query_project / 'query.tcl'
+    source.write_text(
+        'proc run {} {\n'
+        '    if {[cfg_get main tool] eq "alpha"} {\n'
+        '        alpha_command value\n'
+        '        beta_command value\n'
+        '    } else {\n'
+        '        alpha_command value\n'
+        '        beta_command value\n'
+        '    }\n'
+        '}\n'
+    )
+    assert [
+        (d.diagnostic.span.start.line, d.diagnostic.message)
+        for d in check_project(source, threads=1).diagnostics
+    ] == [
+        (3, 'Unresolved command `beta_command`.'),
+        (5, 'Unresolved command `alpha_command`.'),
+        (6, 'Unresolved command `beta_command`.'),
+    ]
+
+
+def test_returning_query_guard_selects_the_environment_for_the_rest_of_the_procedure(
+    query_project: Path,
+) -> None:
+    source = query_project / 'query.tcl'
+    source.write_text(
+        'proc run {} {\n'
+        '    if {[cfg_get main tool] ne "alpha"} {return}\n'
+        '    alpha_command value\n'
+        '}\n'
+        'proc other {} {alpha_command value}\n'
+    )
+    assert [
+        (d.diagnostic.span.start.line, d.diagnostic.code)
+        for d in check_project(source, threads=1).diagnostics
+    ] == [(4, 'unresolved-command')]
+
+
+def test_unknown_execution_clears_the_query_environment(query_project: Path) -> None:
+    source = query_project / 'query.tcl'
+    source.write_text(
+        'proc run {} {\n'
+        '    if {[cfg_get main tool] eq "alpha"} {\n'
+        '        alpha_command value\n'
+        '        eval $::script\n'
+        '        alpha_command value\n'
+        '    }\n'
+        '}\n'
+    )
+    assert [
+        (d.diagnostic.span.start.line, d.diagnostic.code)
+        for d in check_project(source, threads=1).diagnostics
+    ] == [(4, 'unresolved-command')]
+
+
 def test_local_conditions_do_not_become_namespace_requirements(project: Path) -> None:
     source = project / 'main.tcl'
     source.write_text(
