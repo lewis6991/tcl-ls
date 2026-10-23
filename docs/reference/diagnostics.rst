@@ -9,7 +9,8 @@ Severity And Source
 
 All diagnostics default to ``error``, except resolution diagnostics,
 possible value constraint failures, and environment conflicts (``warning``),
-and ``unreachable-code`` (``hint``). Project rules and source comments can
+and ``unreachable-code`` (``hint``). Metadata chooses ``hint`` or ``information``
+for ``missing-variable``. Project rules and source comments can
 change severity or disable diagnostics for files or commands;
 see :ref:`diagnostic-configuration`.
 
@@ -88,6 +89,13 @@ Resolution Diagnostics
 
 ``unresolved-variable``
    A procedure-scoped variable reference could not be resolved confidently.
+
+``missing-variable``
+   Metadata requests a diagnostic for a referenced variable that is known to be
+   missing before the command runs. ``incr``, ``append``, and ``lappend`` use a
+   hint: ``Variable is first created here.`` These commands still create the
+   variable. The check reports nothing when existence is unknown, including
+   external globals and variable links. A later binding does not hide the hint.
 
 ``ambiguous-variable``
    A procedure-scoped variable reference matched multiple bindings.

@@ -43,6 +43,11 @@ meta module Tcl {
     # all the value arguments. The result of this command is the new value stored
     # in variable varName.
     meta command append {varName args} {
+        ref 1 {
+            if-missing {
+                hint "Variable is first created here."
+            }
+        }
         bind 1
     }
 
@@ -775,7 +780,13 @@ meta module Tcl {
     # of the variable must be an integer. If increment is supplied then its value
     # (which must be an integer) is added to the value of variable varName;
     # otherwise 1 is added to varName.
+    # If varName does not exist, its initial value is 0.
     meta command incr {varName {increment 1}} {
+        ref 1 {
+            if-missing {
+                hint "Variable is first created here."
+            }
+        }
         bind 1
     }
 
@@ -1148,6 +1159,11 @@ meta module Tcl {
     # between elements. If varName does not exist, it is created as a list with
     # elements given by the value arguments.
     meta command lappend {varName args} {
+        ref 1 {
+            if-missing {
+                hint "Variable is first created here."
+            }
+        }
         bind 1
     }
 

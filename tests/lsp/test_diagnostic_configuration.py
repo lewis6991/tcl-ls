@@ -12,6 +12,43 @@ def _open_diagnostics(server: LanguageServer, path: Path) -> list[tuple[str, str
     return sorted((item.code, item.severity) for item in diagnostics)
 
 
+@pytest.mark.parametrize('severity', ['default', 'information', 'error', 'off'])
+def test_creation_hints_use_the_same_rules_in_the_editor_and_checker(
+    tmp_path: Path, severity: str
+) -> None:
+    (tmp_path / 'tcllsrc.tcl').write_text(f'diagnostic missing-variable {severity}\n')
+    source = tmp_path / 'main.tcl'
+    source.write_text(
+        'proc example {} {\n'
+        '    incr count\n'
+        '    # tcl-ls: diagnostic missing-variable off\n'
+        '    lappend items value\n'
+        '}\n'
+    )
+    expected = (
+        []
+        if severity == 'off'
+        else [('missing-variable', 'hint' if severity == 'default' else severity)]
+    )
+    server = LanguageServer()
+    try:
+        assert _open_diagnostics(server, source) == expected
+        report = check_project(source, threads=1)
+        assert [(d.diagnostic.code, d.diagnostic.severity) for d in report.diagnostics] == expected
+
+        # A cached procedure body must move its diagnostic after a leading edit.
+        moved = '\n' + source.read_text()
+        diagnostics = server.change_document(source.as_uri(), moved, 2)
+        assert [(d.code, d.severity) for d in diagnostics] == expected
+        if diagnostics:
+            assert diagnostics[0].span.start.line == 2
+
+        changed = moved.replace('    incr count', '    set count 0; incr count')
+        assert server.change_document(source.as_uri(), changed, 3) == ()
+    finally:
+        server.shutdown()
+
+
 @pytest.mark.parametrize('threads', [1, 2])
 def test_project_diagnostic_rules_agree_in_editor_and_checker(tmp_path: Path, threads: int) -> None:
     (tmp_path / 'tcllsrc.tcl').write_text(

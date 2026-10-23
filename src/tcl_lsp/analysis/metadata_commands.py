@@ -77,8 +77,15 @@ class MetadataBind:
 
 
 @dataclass(frozen=True, slots=True)
+class MetadataMissingDiagnostic:
+    severity: Literal['hint', 'information']
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
 class MetadataRef:
     selector: MetadataSelector
+    if_missing: MetadataMissingDiagnostic | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1053,9 +1060,44 @@ def _parse_bind_annotation(command: Command, command_name: str) -> MetadataBind:
 def _parse_ref_annotation(command: Command, command_name: str) -> MetadataRef:
     words = _annotation_words(command, command_name)
     selector, consumed = _parse_selector_tokens(words[1:], command_name=command_name)
-    if consumed != len(words) - 1:
-        raise RuntimeError(f'Ref annotations for `{command_name}` must be `ref selector`.')
-    return MetadataRef(selector=selector)
+    if consumed == len(words) - 1:
+        return MetadataRef(selector=selector)
+    if consumed != len(words) - 2:
+        raise RuntimeError(
+            f'Ref annotations for `{command_name}` must be `ref selector` or '
+            '`ref selector {if-missing {hint|information message}}`.'
+        )
+    conditions = _ref_block_commands(command.words[-1], command_name)
+    if len(conditions) != 1:
+        raise RuntimeError(f'Ref blocks for `{command_name}` must contain one `if-missing` block.')
+    condition = conditions[0]
+    condition_words = _annotation_words(condition, command_name)
+    if len(condition_words) != 2 or condition_words[0] != 'if-missing':
+        raise RuntimeError(f'Ref blocks for `{command_name}` must contain one `if-missing` block.')
+    actions = _ref_block_commands(condition.words[1], command_name)
+    if len(actions) != 1:
+        raise RuntimeError(f'If-missing blocks for `{command_name}` need one diagnostic action.')
+    action = _annotation_words(actions[0], command_name)
+    if len(action) != 2 or action[0] not in {'hint', 'information'} or not action[1].strip():
+        raise RuntimeError(
+            f'If-missing actions for `{command_name}` must be `hint message` or '
+            '`information message`, with a nonempty static message.'
+        )
+    return MetadataRef(
+        selector=selector,
+        if_missing=MetadataMissingDiagnostic(
+            cast(Literal['hint', 'information'], action[0]), action[1]
+        ),
+    )
+
+
+def _ref_block_commands(word: Word, command_name: str) -> tuple[Command, ...]:
+    if not isinstance(word, BracedWord) or word.expanded:
+        raise RuntimeError(f'Ref and if-missing bodies for `{command_name}` must be braced blocks.')
+    parsed = Parser().parse_document(f'metadata:{command_name}', word.raw_text[1:-1])
+    if parsed.diagnostics:
+        raise RuntimeError(f'Invalid ref or if-missing block for `{command_name}`.')
+    return parsed.script.commands
 
 
 def parse_call_value(words: list[str] | tuple[str, ...], *, command_name: str) -> MetadataCall:

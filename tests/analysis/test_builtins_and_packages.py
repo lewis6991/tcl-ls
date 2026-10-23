@@ -729,7 +729,10 @@ def test_analysis_tracks_additional_builtin_variable_writers_and_outputs(parser:
         'hex',
     }
     assert set(variable_resolutions.values()) == {'resolved'}
-    assert analysis.diagnostics == ()
+    assert [(d.code, d.severity, d.span.start.line) for d in analysis.diagnostics] == [
+        ('missing-variable', 'hint', 1),
+        ('missing-variable', 'hint', 2),
+    ]
 
 
 def test_analysis_tracks_regexp_and_regsub_output_variables(parser: Parser) -> None:

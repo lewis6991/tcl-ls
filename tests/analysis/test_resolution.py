@@ -304,7 +304,13 @@ def test_analysis_global_links_proc_references_to_global_bindings(parser: Parser
         for resolution in analysis.resolutions
         if resolution.reference.kind == 'variable' and resolution.reference.name == 'shared'
     ]
-    assert len(shared_resolutions) == 4
+    assert [resolution.reference.span.start.line for resolution in shared_resolutions] == [
+        0,
+        2,
+        3,
+        4,
+        6,
+    ]
     assert all(resolution.uncertainty.state == 'resolved' for resolution in shared_resolutions)
     assert analysis.diagnostics == ()
 
@@ -349,7 +355,11 @@ def test_analysis_variable_links_proc_references_to_namespace_bindings(parser: P
         for resolution in analysis.resolutions
         if resolution.reference.kind == 'variable' and resolution.reference.name == 'counter'
     ]
-    assert len(counter_resolutions) == 2
+    assert [resolution.reference.span.start.line for resolution in counter_resolutions] == [
+        3,
+        4,
+        5,
+    ]
     assert all(resolution.uncertainty.state == 'resolved' for resolution in counter_resolutions)
     assert analysis.diagnostics == ()
 

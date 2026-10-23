@@ -19,6 +19,7 @@ class UnresolvedVariableChecker(DiagnosticChecker):
             if (
                 resolved_variable.resolution.uncertainty.state != 'unresolved'
                 or variable_reference.procedure_symbol_id is None
+                or variable_reference.allow_missing
             ):
                 continue
             yield self.emit(

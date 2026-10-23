@@ -299,6 +299,10 @@ meta module Tcl {
         #
         # Record references to variable names selected from runtime arguments.
         # Selectors start at 1 after the matched command prefix.
+        # Use `ref selector` for a plain reference. An optional braced block
+        # contains `if-missing {hint message}` or `if-missing {information message}`.
+        # The check uses the state before the command runs. Declare creation
+        # separately with `bind`; the check does not change plain references.
         #
         # **Selector forms**
         #
@@ -311,8 +315,14 @@ meta module Tcl {
         #
         # ```tcl
         # ref 3
+        # ref 1 {if-missing {hint "Variable is first created here."}}
         # ```
-        command ref {<selector>}
+        command ref variants {
+            form {<selector>}
+            form {<selector> <body>} {
+                enter meta-ref-body body last
+            }
+        }
 
         # Syntax: a selector, optionally followed by `namespace` and an absolute name.
         #
@@ -553,6 +563,21 @@ meta module Tcl {
                 enter meta-command-body body last
             }
         }
+    }
+
+    meta language meta-ref-body {
+        # Check whether the selected variable is missing before the command runs.
+        # The body contains one hint or information action with a static message.
+        command if-missing {<body>} {
+            enter meta-if-missing-body body 1
+        }
+    }
+
+    meta language meta-if-missing-body {
+        # Report a hint when the referenced variable is known to be missing.
+        command hint {message}
+        # Report information when the referenced variable is known to be missing.
+        command information {message}
     }
 
     meta language meta-procedure-body {

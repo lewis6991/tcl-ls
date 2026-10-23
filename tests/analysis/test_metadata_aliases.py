@@ -53,6 +53,7 @@ def test_aliases_keep_subcommand_checks_and_variable_bindings(
     _, analysis = analyze_path(parser, source, metadata_paths=(tmp_path,))
 
     assert sorted(d.code for d in analysis.diagnostics) == [
+        'missing-variable',
         'unknown-subcommand',
         'wrong-argument-count',
     ]

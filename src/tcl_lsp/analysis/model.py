@@ -216,6 +216,7 @@ class VariableReference:
     span: Span
     exact_values: tuple[str, ...] = ()
     type_info: TypeInfo | None = None
+    allow_missing: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,7 +268,7 @@ class ResolvedReference:
 
 @dataclass(frozen=True, slots=True)
 class ValueCheck:
-    """A candidate diagnostic, emitted only if its owner resolves to a builtin."""
+    """A candidate diagnostic, emitted only if its owner resolves to metadata."""
 
     command_span: Span
     command_name: str

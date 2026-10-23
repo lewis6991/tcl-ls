@@ -4,6 +4,7 @@ from collections.abc import Iterable
 from typing import ClassVar, override
 
 from tcl_lsp.analysis.builtins import BuiltinCommand
+from tcl_lsp.analysis.embedded_languages import ContextualCommand
 from tcl_lsp.common import Diagnostic
 
 from .base import AnalysisDiagnosticSeverity, DiagnosticChecker, DiagnosticContext
@@ -19,7 +20,7 @@ class ValueConstraintChecker(DiagnosticChecker):
         owners = {
             call.span: target.name
             for call, target in resolved_command_calls(context)
-            if isinstance(target, BuiltinCommand)
+            if isinstance(target, (BuiltinCommand, ContextualCommand))
         }
         for check in context.facts.value_checks:
             if owners.get(check.command_span) == check.command_name:

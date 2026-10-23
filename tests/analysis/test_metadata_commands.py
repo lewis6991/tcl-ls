@@ -27,6 +27,33 @@ from tcl_lsp.cache import clear_cache_group
 from tcl_lsp.metadata_paths import MetadataRevision, bundled_metadata_dir, create_metadata_registry
 
 
+@pytest.mark.parametrize(
+    'annotation',
+    [
+        'ref 1 missing hint',
+        'ref 1 {}',
+        'ref 1 {otherwise {hint "Missing."}}',
+        'ref 1 {if-missing {}}',
+        'ref 1 {if-missing {warning "Missing."}}',
+        'ref 1 {if-missing {hint}}',
+        'ref 1 {if-missing {hint ""}}',
+        'ref 1 {if-missing {hint "   "}}',
+        'ref 1 {if-missing {hint "Missing." extra}}',
+        'ref 1 {if-missing {hint $message}}',
+        'ref 1 {if-missing {hint "Missing."; information "Missing."}}',
+        'ref 1 {if-missing {hint "Missing."}; if-missing {hint "Missing."}}',
+        'ref 1 {if-missing "hint Missing"}',
+        'ref 1 "if-missing {hint Missing}"',
+    ],
+)
+def test_metadata_rejects_invalid_missing_variable_blocks(tmp_path: Path, annotation: str) -> None:
+    metadata_path = tmp_path / 'custom.meta.tcl'
+    metadata_path.write_text(f'meta command example {{name}} {{{annotation}}}\n')
+
+    with pytest.raises(RuntimeError):
+        load_metadata_commands(metadata_path)
+
+
 def test_core_metadata_supports_option_aware_selectors() -> None:
     metadata_path = bundled_metadata_dir() / Path('tcl8.6/tcl.meta.tcl')
     regexp_command = next(

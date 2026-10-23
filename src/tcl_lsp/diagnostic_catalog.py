@@ -17,6 +17,7 @@ DIAGNOSTIC_DESCRIPTIONS: dict[str, str] = {
     'malformed-switch': 'A switch command has invalid structure.',
     'malformed-variable': 'A variable substitution is incomplete or malformed.',
     'missing-option-value': 'An option needs a value.',
+    'missing-variable': 'A referenced variable is missing before the command runs.',
     'unknown-option': 'An option is not declared for this command.',
     'unknown-subcommand': 'A subcommand is not declared for this command.',
     'unmatched-brace': 'A braced word has no closing brace.',

@@ -15,6 +15,7 @@ from tcl_lsp.analysis.annotations import (
 from tcl_lsp.analysis.arity import proc_parameter_arity
 from tcl_lsp.analysis.builtins import (
     annotated_metadata_commands_for_packages,
+    builtin_commands,
     builtin_commands_for_packages,
     registry_for_packages,
 )
@@ -2042,12 +2043,58 @@ class _FactCollector:
                 continue
 
             for selected_word in selected_words:
-                if annotation.selector.list_mode:
-                    self._record_list_reference_word(selected_word, context)
-                    continue
-                self._record_simple_reference_word(selected_word, context)
+                self._collect_metadata_reference(
+                    command, selected_word, context, annotation, command_name=metadata_command.name
+                )
 
         return handled
+
+    def _collect_metadata_reference(
+        self,
+        command: Command,
+        word: Word,
+        context: _ExtractionContext,
+        annotation: MetadataRef,
+        *,
+        command_name: str,
+    ) -> None:
+        if annotation.if_missing is None:
+            if annotation.selector.list_mode:
+                self._record_list_reference_word(word, context)
+            else:
+                self._record_simple_reference_word(word, context)
+            return
+
+        if annotation.selector.list_mode:
+            targets = tuple(
+                (item.text, item.span)
+                for item in self._static_list_items(word)
+                if is_simple_name(item.text)
+            )
+        else:
+            name = self._simple_variable_name(word)
+            targets = () if name is None else ((name, word.span),)
+        for name, span in targets:
+            self._record_variable_reference(
+                name=name, span=span, context=context, allow_missing=True
+            )
+            # All annotations see the incoming state, including when bind
+            # appears before ref. Resolution also checks the command owner
+            # before it reports this candidate diagnostic.
+            if context.flow_state.reachable and context.flow_state.existence(name) is False:
+                self._facts.value_checks.append(
+                    ValueCheck(
+                        command.span,
+                        command_name,
+                        Diagnostic(
+                            code='missing-variable',
+                            severity=annotation.if_missing.severity,
+                            message=annotation.if_missing.message,
+                            span=span,
+                            source='analysis',
+                        ),
+                    ),
+                )
 
     def _collect_forwarded_call(
         self,
@@ -2419,6 +2466,8 @@ class _FactCollector:
             flow_links=flow.links,
             flow_unknown_links=flow.unknown_links,
             flow_reachable=flow.reachable,
+            existence=tuple(sorted(flow.existence_by_name.items())),
+            unknown_existence=flow.unknown_existence,
             guarded_values=flow.global_requirements(),
             imports=tuple(
                 (item.namespace, item.kind, item.imported_name, item.target_name)
@@ -3369,6 +3418,7 @@ class _FactCollector:
             values, namespace=proc_decl.namespace, guarded_values_by_name=values
         )
         for parameter in proc_decl.parameters:
+            flow = flow.with_existence(parameter.name, True)
             if parameter.type_info:
                 flow = flow.with_type(parameter.name, parameter.type_info).with_exact_values(
                     parameter.name, literal_values(parameter.type_info.resolved)
@@ -3589,7 +3639,18 @@ class _FactCollector:
             if not values:
                 return VariableEffects(None)
             names.update(values)
-        return VariableEffects(frozenset(names))
+        # A command without metadata may create caller variables through
+        # upvar or uplevel. Do not infer that those variables are still absent.
+        commands = builtin_commands(
+            metadata_registry=registry_for_packages(
+                context.metadata_registry, self._required_packages
+            )
+        )
+        known = matched is not None or any(
+            candidate in commands
+            for candidate in command_lookup_names(static_name, context.namespace)
+        )
+        return VariableEffects(frozenset(names), unknown_existence=not known)
 
     def _script_effects(
         self, script: LoweredScript, context: _ExtractionContext
@@ -3640,6 +3701,7 @@ class _FactCollector:
             not context.flow_state.procedure
             and not context.flow_state.exact_values_by_name
             and not context.flow_state.types_by_name
+            and not context.flow_state.existence_by_name
         ):
             return context
         effects = (
@@ -3688,6 +3750,8 @@ class _FactCollector:
         name: str,
         span: Span,
         context: _ExtractionContext,
+        *,
+        allow_missing: bool = False,
     ) -> None:
         name = normalize_variable_name(name)
         exact_values = context.flow_state.exact_values(name)
@@ -3702,6 +3766,7 @@ class _FactCollector:
                 uri=context.uri,
                 exact_values=exact_values,
                 type_info=type_info,
+                allow_missing=allow_missing,
             )
             return
 
@@ -3720,6 +3785,7 @@ class _FactCollector:
                 uri=context.uri,
                 exact_values=exact_values,
                 type_info=type_info,
+                allow_missing=allow_missing,
             )
             return
 
@@ -3732,6 +3798,7 @@ class _FactCollector:
             uri=context.uri,
             exact_values=exact_values,
             type_info=type_info,
+            allow_missing=allow_missing,
         )
 
     def _record_variable_binding(
@@ -3804,6 +3871,7 @@ class _FactCollector:
         uri: str,
         exact_values: tuple[str, ...] = (),
         type_info: TypeInfo | None = None,
+        allow_missing: bool = False,
     ) -> None:
         self._facts.variable_references.append(
             VariableReference(
@@ -3815,6 +3883,7 @@ class _FactCollector:
                 span=span,
                 exact_values=exact_values,
                 type_info=type_info,
+                allow_missing=allow_missing,
             )
         )
 

@@ -59,6 +59,8 @@ class BodyInputs:
     flow_links: tuple[tuple[str, str | None], ...]
     flow_unknown_links: bool
     flow_reachable: bool
+    existence: tuple[tuple[str, bool | None], ...]
+    unknown_existence: bool
     guarded_values: tuple[tuple[str, tuple[str, ...]], ...]
     imports: tuple[tuple[str, CommandImportKind, str | None, str], ...]
 

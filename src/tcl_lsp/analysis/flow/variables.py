@@ -47,6 +47,10 @@ class VariableFlowState:
     # Namespace values established by control-flow conditions. These become
     # requirements of procedures defined on the guarded path, not constants.
     guarded_values_by_name: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # True means present, False means missing, and None means unknown.
+    # Unlisted locals are missing only in a frame with no unknown effects.
+    existence_by_name: dict[str, bool | None] = field(default_factory=dict)
+    unknown_existence: bool = False
 
     @classmethod
     def empty(cls, *, namespace: str = '::', procedure: bool = True) -> VariableFlowState:
@@ -60,11 +64,15 @@ class VariableFlowState:
                 types_by_name={},
                 literal_sources_by_name={},
                 guarded_values_by_name={},
+                existence_by_name={},
+                unknown_existence=True,
             )
             if self.exact_values_by_name
             or self.types_by_name
             or self.literal_sources_by_name
             or self.guarded_values_by_name
+            or self.existence_by_name
+            or not self.unknown_existence
             else self
         )
 
@@ -95,6 +103,13 @@ class VariableFlowState:
             joined_links[name] = (
                 target if all(name in other and other[name] == target for other in links) else None
             )
+        existence: dict[str, bool | None] = {}
+        for state in states:
+            for name in (*state.existence_by_name, *state.exact_values_by_name):
+                value = first._existence_for_key(name)
+                existence[name] = (
+                    value if all(s._existence_for_key(name) == value for s in states) else None
+                )
         return replace(
             first,
             exact_values_by_name={
@@ -108,6 +123,8 @@ class VariableFlowState:
             },
             links=tuple(joined_links.items()),
             unknown_links=any(state.unknown_links for state in states),
+            existence_by_name=existence,
+            unknown_existence=any(state.unknown_existence for state in states),
             types_by_name={
                 name: _joined_type(name, states)
                 for name in dict.fromkeys(name for state in states for name in state.types_by_name)
@@ -192,6 +209,8 @@ class VariableFlowState:
                 state,
                 exact_values_by_name=requirements,
                 guarded_values_by_name=requirements,
+                existence_by_name=self.existence_by_name,
+                unknown_existence=self.unknown_existence,
             )
         return replace(
             state,
@@ -202,6 +221,27 @@ class VariableFlowState:
     def exact_values(self, name: str) -> tuple[str, ...]:
         key = self._variable_key(name)
         return () if key is None else self.exact_values_by_name.get(key, ())
+
+    def existence(self, name: str) -> bool | None:
+        key = self._variable_key(name)
+        return None if key is None else self._existence_for_key(key)
+
+    def _existence_for_key(self, key: str) -> bool | None:
+        if key in self.existence_by_name:
+            return self.existence_by_name[key]
+        if key in self.exact_values_by_name:
+            return True
+        # A new procedure frame has no other locals. Namespace variables may
+        # have been set by a caller or by code outside the analysed document.
+        if self.procedure and not key.startswith('::') and not self.unknown_existence:
+            return False
+        return None
+
+    def with_existence(self, name: str, exists: bool | None) -> VariableFlowState:
+        key = self._variable_key(name)
+        if key is None:
+            return self.cleared()
+        return replace(self, existence_by_name=self.existence_by_name | {key: exists})
 
     def type_info(self, name: str) -> TypeInfo | None:
         key = self._variable_key(name)
@@ -247,6 +287,7 @@ class VariableFlowState:
                 for name, permitted in self.guarded_values_by_name.items()
                 if name != key or (values and all(value in permitted for value in values))
             },
+            existence_by_name=self.existence_by_name | {key: True},
         )
 
     def without_names(self, names: tuple[str, ...]) -> VariableFlowState:
@@ -275,6 +316,8 @@ class VariableFlowState:
                 for name, values in self.guarded_values_by_name.items()
                 if name not in keys
             },
+            existence_by_name=self.existence_by_name
+            | dict.fromkeys((key for key in keys if key is not None), None),
         )
 
     def merged(self, domains: dict[str, tuple[str, ...]]) -> VariableFlowState:
@@ -307,6 +350,7 @@ class VariableEffects:
 
     writes: frozenset[str] | None = frozenset()
     changes_links: bool = False
+    unknown_existence: bool = False
 
     @classmethod
     def unknown(cls) -> VariableEffects:
@@ -316,11 +360,14 @@ class VariableEffects:
         return VariableEffects(
             None if self.writes is None or other.writes is None else self.writes | other.writes,
             self.changes_links or other.changes_links,
+            self.unknown_existence or other.unknown_existence,
         )
 
     def invalidate(self, state: VariableFlowState) -> VariableFlowState:
         if self.changes_links:
             state = state.invalidated()
+        if self.unknown_existence:
+            state = replace(state, existence_by_name={}, unknown_existence=True)
         return state.cleared() if self.writes is None else state.without_names(tuple(self.writes))
 
 
@@ -519,7 +566,11 @@ def state_with_unset_command(
     command: Command,
 ) -> VariableFlowState:
     names: list[str] = []
+    missing: list[str] = []
     for word in unset_target_words(command):
+        values = exact_word_values(word, state)
+        if len(values) == 1 and is_simple_name(values[0]):
+            missing.append(values[0])
         target_name = _simple_var_name(word)
         if target_name is not None:
             if target_name not in names:
@@ -531,7 +582,10 @@ def state_with_unset_command(
         for dynamic_name in dynamic_names:
             if dynamic_name not in names:
                 names.append(dynamic_name)
-    return state.without_names(tuple(names))
+    state = state.without_names(tuple(names))
+    for name in missing:
+        state = state.with_existence(name, False)
+    return state
 
 
 def unset_target_words(command: Command) -> tuple[Word, ...]:

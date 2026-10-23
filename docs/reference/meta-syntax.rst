@@ -432,6 +432,11 @@ The third makes ``--`` end option parsing.
    bind selector
    bind selector kind
    ref selector
+   ref selector {
+       if-missing {
+           hint "Variable is first created here."
+       }
+   }
 
 ``bind`` records variable bindings from selected arguments or list elements.
 Its optional ``kind`` identifies the binding behavior and must be one of:
@@ -443,6 +448,33 @@ Its optional ``kind`` identifies the binding behavior and must be one of:
 ``ref`` records variable references. A command can use both annotations, as
 ``my variable`` does in the :ref:`embedded-language example
 <metadata-languages>`.
+
+The optional ``if-missing`` block reports ``missing-variable`` when the selected
+variable is known to be missing before the command runs. It contains one action:
+``hint message`` or ``information message``. The message must be static and
+nonempty. Both blocks must use braces. This check does not change the behavior
+of plain ``ref selector``.
+
+Use ``bind`` separately to describe a command that creates the variable. All
+``ref`` checks use the incoming state, even if ``bind`` appears first:
+
+.. code-block:: tcl
+
+   meta command incr {varName {increment 1}} {
+       ref 1 {
+           if-missing {
+               hint "Variable is first created here."
+           }
+       }
+       bind 1
+   }
+
+A later assignment does not hide this hint. An earlier assignment or a procedure
+parameter prevents it. If a branch, dynamic code, or an unknown variable link
+makes existence uncertain, the check reports nothing. Namespace and global
+variables can come from outside the document, so their initial state is unknown.
+An explicit ``unset`` can establish that they are missing. Array references
+check the array variable; individual elements are not checked.
 
 .. code-block:: tcl
 

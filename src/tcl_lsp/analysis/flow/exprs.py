@@ -13,6 +13,7 @@ from tcl_lsp.analysis.value_constraints import (
     union_nodes,
     validation_guard,
 )
+from tcl_lsp.parser import Parser, word_static_text
 from tcl_lsp.parser.expr import (
     Expr,
     ExprAtom,
@@ -126,6 +127,19 @@ class _ExprAnalyzer:
 
         match expr:
             case ExprCommandSubstitution(script_text):
+                name = _existence_guard(script_text)
+                if name is not None:
+                    exists = state.existence(name)
+                    return (
+                        replace(
+                            state.with_existence(name, True),
+                            reachable=state.reachable and exists is not False,
+                        ),
+                        replace(
+                            state.with_existence(name, False),
+                            reachable=state.reachable and exists is not True,
+                        ),
+                    )
                 # Only the strict, side-effect-free validation form is a guard.
                 guard = validation_guard(script_text)
                 if guard is None:
@@ -419,6 +433,21 @@ def _state_without_exact_value(
 def _append_unique_values(values: list[str], new_values: tuple[str, ...]) -> None:
     for value in new_values:
         _append_unique_value(values, value)
+
+
+def _existence_guard(text: str) -> str | None:
+    if not text.lstrip().startswith(('info', '::info')):
+        return None
+    parsed = Parser().parse_document('existence-guard', text)
+    if parsed.diagnostics or len(parsed.script.commands) != 1:
+        return None
+    words = parsed.script.commands[0].words
+    if len(words) != 3 or word_static_text(words[0]) not in {'info', '::info'}:
+        return None
+    if word_static_text(words[1]) != 'exists':
+        return None
+    name = word_static_text(words[2])
+    return name if name and not words[2].expanded and is_simple_name(name) else None
 
 
 def _append_unique_value(values: list[str], new_value: str) -> None:
