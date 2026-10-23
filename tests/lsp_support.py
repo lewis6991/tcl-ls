@@ -10,6 +10,10 @@ from pygls.protocol.json_rpc import RPCMessage
 from tcl_lsp.lsp import LanguageServer
 
 
+def wait_for_project_diagnostics(server: LanguageServer) -> None:
+    assert server._project_scan_worker.wait(timeout=5)  # pyright: ignore[reportPrivateUsage]
+
+
 class _CaptureWriter:
     def __init__(self, stream: BinaryIO) -> None:
         self._stream = stream

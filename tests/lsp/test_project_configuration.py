@@ -22,9 +22,10 @@ def test_config_commands_have_editor_help_and_stay_local_to_config(
         'library-path other-libs\n'
         'module ExampleTool when {$::tool eq "example"}\n'
         'diagnostic unresolved-variable hint -path vendor\n'
+        'exclude .venv\n'
     )
     source = tmp_path / 'main.tcl'
-    source.write_text('lib-path somewhere\nmodule ExampleTool when {1}\n')
+    source.write_text('lib-path somewhere\nmodule ExampleTool when {1}\nexclude .venv\n')
     service = LanguageService()
     try:
         assert service.open_document(config.as_uri(), config.read_text(), 1) == ()
@@ -35,6 +36,7 @@ def test_config_commands_have_editor_help_and_stay_local_to_config(
             (2, 'library-path'),
             (3, 'module'),
             (4, 'diagnostic'),
+            (5, 'exclude'),
         ]:
             hover = service.hover(config.as_uri(), line, 2)
             assert hover is not None and name in hover.contents
@@ -68,7 +70,7 @@ def test_config_commands_have_editor_help_and_stay_local_to_config(
         assert [item.label for item in completions.items] == ['lib-path']
 
         diagnostics = service.open_document(source.as_uri(), source.read_text(), 1)
-        assert [d.code for d in diagnostics] == ['unresolved-command', 'unresolved-command']
+        assert [d.code for d in diagnostics] == ['unresolved-command'] * 3
         snapshot = service.server.analysis_snapshot()
         completions = completion_items(
             snapshot.documents,

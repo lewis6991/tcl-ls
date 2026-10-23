@@ -389,7 +389,7 @@ def _summarize_block(block: DeclarationBlock, *, config: bool) -> MetadataFileSu
             if (
                 config
                 and module_name is None
-                and command_name in {'lib-path', 'library-path', 'module', 'diagnostic'}
+                and command_name in {'lib-path', 'library-path', 'exclude', 'module', 'diagnostic'}
             ):
                 continue
             if command_name != 'meta' or len(command.words) < 2:

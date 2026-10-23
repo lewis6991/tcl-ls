@@ -9,6 +9,7 @@ For example:
 
    source .tcl-ls/tools.meta.tcl
    lib-path ../vendor/tcllib
+   exclude .venv
 
 Discovery And Syntax
 --------------------
@@ -36,6 +37,7 @@ Config files accept these commands:
 * ``source path`` evaluates another Tcl metadata or config file.
 * ``lib-path path`` searches a directory for ``pkgIndex.tcl`` files to resolve
   external packages. ``library-path`` is a synonym.
+* ``exclude path`` skips a file or directory during source and package discovery.
 * ``meta`` declares metadata directly; see :ref:`project-metadata`.
 * ``diagnostic code level ?-path pattern?`` controls diagnostics.
 * ``module name`` selects a metadata module for all covered source files.
@@ -154,6 +156,26 @@ Metadata can also be declared directly in the config:
 Here, the included declarations belong to ``ExampleTool`` unless they declare
 their own module. See :ref:`metadata-composition` for module and include rules,
 and :doc:`../meta` for writing or generating metadata.
+
+Discovery Exclusions
+--------------------
+
+Use ``exclude`` to keep generated files or unrelated tools out of project scans:
+
+.. code-block:: tcl
+
+   exclude .venv
+   exclude generated
+
+Paths are literal file or directory names, without wildcards. Relative paths
+start in the declaring file's directory. Excluding a directory also excludes
+its descendants, and the scan skips that directory entirely. Exclusions from
+user, parent, child, and sourced configs accumulate.
+
+These settings apply to the language server's project reference and unused
+procedure scans, package-index discovery, and checker directory targets.
+Files opened in the editor or passed directly to the checker are still analyzed.
+Explicit ``source`` dependencies and metadata includes are still loaded.
 
 .. _diagnostic-configuration:
 

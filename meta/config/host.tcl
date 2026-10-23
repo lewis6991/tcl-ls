@@ -151,7 +151,7 @@ namespace eval ::tcl_lsp {
 rename ::source ::tcl_lsp::rc::native_source
 interp alias {} ::source {} ::tcl_lsp::rc::source
 interp alias {} ::meta {} ::tcl_lsp::rc::meta
-foreach name {lib-path library-path module diagnostic} {
+foreach name {lib-path library-path exclude module diagnostic} {
     interp alias {} ::$name {} ::tcl_lsp::rc::register $name
 }
 trace add execution ::file enter ::tcl_lsp::rc::file_probe

@@ -97,6 +97,7 @@ class WorkspaceRebuilder:
         reuse_documents: Mapping[str, ManagedDocument] | None = None,
         include_diagnostics: bool = True,
         reference_query: ReferenceQuery | None = None,
+        facts_only: bool = False,
     ) -> None:
         self._progress = progress
         self._should_cancel = should_cancel
@@ -104,6 +105,7 @@ class WorkspaceRebuilder:
         self._reuse_documents = reuse_documents or {}
         self._include_diagnostics = include_diagnostics
         self._reference_query = reference_query
+        self._facts_only = facts_only
 
     def rebuild(
         self,
@@ -140,14 +142,20 @@ class WorkspaceRebuilder:
             total_snapshots = len(snapshots)
             for index, (uri, (text, version)) in enumerate(snapshots.items(), start=1):
                 self._raise_if_cancelled()
+                previous = self._reuse_documents.get(uri)
+                if previous is None and version == 0 and load_cached_document is not None:
+                    previous = load_cached_document(uri, None)
                 document = self._build_document(
                     parser=parser,
                     extractor=extractor,
                     uri=uri,
                     text=text,
                     version=version,
-                    previous=self._reuse_documents.get(uri),
+                    previous=previous,
                 )
+                if version == 0 and cache_document is not None:
+                    # Retain completed files even if a later edit cancels the scan.
+                    cache_document(document)
                 documents[uri] = document
                 workspace_index.update(uri, document.facts)
                 self._discover_package_roots(
@@ -392,7 +400,12 @@ class WorkspaceRebuilder:
                 continue
             scanned_package_roots.add(resolved_root)
             workspace_index.register_lazy_package_indexes(
-                discover_lazy_package_indexes(resolved_root),
+                discover_lazy_package_indexes(
+                    resolved_root,
+                    context=self._metadata_registry.context_for(resolved_root)
+                    if self._metadata_registry is not None
+                    else None,
+                ),
                 load_package_index=load_package_index,
             )
 
@@ -503,6 +516,8 @@ class WorkspaceRebuilder:
         start_percentage: int,
         end_percentage: int,
     ) -> None:
+        if self._facts_only:
+            return
         selected_documents = [documents[uri] for uri in document_uris if uri in documents]
         query = self._reference_query
         if query is not None:

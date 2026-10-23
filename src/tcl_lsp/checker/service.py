@@ -23,11 +23,13 @@ from tcl_lsp.project.config import (
     configured_library_paths,
     configured_metadata_paths,
 )
+from tcl_lsp.project.context import ConfigContext
 from tcl_lsp.project.declarations import MetadataPath
 from tcl_lsp.project.indexing import (
     PackageIndexCatalog,
     apply_package_index_catalog,
     build_package_index_catalog,
+    discover_package_index_paths,
     prepare_dependencies,
 )
 from tcl_lsp.project.paths import (
@@ -161,7 +163,7 @@ def _run_check(
     )
     worker_count = _worker_count(threads)
     started = time.monotonic()
-    units = _discover_analysis_units(target)
+    units = _discover_analysis_units(target, context=context)
     if not units:
         raise ValueError(f'No Tcl sources found under {path.expanduser()}')
 
@@ -171,6 +173,7 @@ def _run_check(
         target,
         parser=parser,
         library_paths=active_library_paths,
+        context=context,
     )
 
     source_count = sum(len(unit.source_paths) for unit in units)
@@ -304,33 +307,41 @@ def _prepare_documents(
     )
 
 
-def _discover_analysis_units(target: Path) -> tuple[_AnalysisUnit, ...]:
+def _discover_analysis_units(
+    target: Path, *, context: ConfigContext | None = None
+) -> tuple[_AnalysisUnit, ...]:
     if target.is_file():
         resolved_target = target.resolve(strict=False)
         package_root = _nearest_package_workspace_root(resolved_target)
         if package_root is not None:
             source_paths = tuple(
-                path.resolve(strict=False) for path in discover_tcl_sources(package_root)
+                path.resolve(strict=False)
+                for path in discover_tcl_sources(package_root, context=context)
             )
+            if resolved_target not in source_paths:
+                source_paths = (*source_paths, resolved_target)
             unit_root = package_root
         else:
             source_paths = (resolved_target,)
             unit_root = resolved_target
         return (_AnalysisUnit(root=unit_root, source_paths=source_paths),)
 
-    workspace_roots = _workspace_roots_under(target)
+    workspace_roots = _workspace_roots_under(target, context=context)
     if workspace_roots:
         return tuple(
             _AnalysisUnit(
                 root=workspace_root,
                 source_paths=tuple(
-                    path.resolve(strict=False) for path in discover_tcl_sources(workspace_root)
+                    path.resolve(strict=False)
+                    for path in discover_tcl_sources(workspace_root, context=context)
                 ),
             )
             for workspace_root in workspace_roots
         )
 
-    source_paths = tuple(path.resolve(strict=False) for path in discover_tcl_sources(target))
+    source_paths = tuple(
+        path.resolve(strict=False) for path in discover_tcl_sources(target, context=context)
+    )
     units_by_root: dict[Path, list[Path]] = {}
     for source_path in source_paths:
         unit_root = _analysis_unit_root(source_path, target)
@@ -359,14 +370,16 @@ def _nearest_package_workspace_root(source_path: Path) -> Path | None:
     return None
 
 
-def _workspace_roots_under(target: Path) -> tuple[Path, ...]:
+def _workspace_roots_under(
+    target: Path, *, context: ConfigContext | None = None
+) -> tuple[Path, ...]:
     if not target.is_dir():
         return ()
     return tuple(
         sorted(
             {
                 pkg_index_path.parent.resolve(strict=False)
-                for pkg_index_path in target.rglob('pkgIndex.tcl')
+                for pkg_index_path in discover_package_index_paths(target, context=context)
             }
         )
     )

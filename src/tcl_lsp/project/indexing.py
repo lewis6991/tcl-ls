@@ -17,7 +17,13 @@ from tcl_lsp.analysis.resolver import Resolver
 from tcl_lsp.analysis.types import CallTypes
 from tcl_lsp.metadata_paths import DEFAULT_METADATA_REGISTRY, MetadataRegistry
 from tcl_lsp.parser import Parser, word_static_text
-from tcl_lsp.project.paths import candidate_package_roots, read_source_file, source_id_to_path
+from tcl_lsp.project.context import ConfigContext
+from tcl_lsp.project.paths import (
+    candidate_package_roots,
+    read_source_file,
+    source_id_to_path,
+    walk_project,
+)
 
 type PackageIndexCatalog = tuple[tuple[str, tuple[PackageIndexEntry, ...]], ...]
 type DocumentDescription = tuple[str, Path | None, DocumentFacts]
@@ -33,11 +39,12 @@ def build_package_index_catalog(
     *,
     parser: Parser,
     library_paths: Sequence[Path] = (),
+    context: ConfigContext | None = None,
 ) -> PackageIndexCatalog:
     seen_paths: set[Path] = set()
     catalog_entries: list[tuple[str, tuple[PackageIndexEntry, ...]]] = []
     for root in _package_index_scan_roots(target, library_paths=library_paths):
-        for pkg_index_path in discover_package_index_paths(root):
+        for pkg_index_path in discover_package_index_paths(root, context=context):
             if pkg_index_path in seen_paths:
                 continue
             seen_paths.add(pkg_index_path)
@@ -60,15 +67,25 @@ def apply_package_index_catalog(
 
 def discover_package_index_paths(
     package_root: Path,
+    *,
+    context: ConfigContext | None = None,
 ) -> tuple[Path, ...]:
-    return tuple(sorted(path.resolve(strict=False) for path in package_root.rglob('pkgIndex.tcl')))
+    return tuple(
+        sorted(
+            (directory / 'pkgIndex.tcl').resolve(strict=False)
+            for directory, _, files in walk_project(package_root, context=context)
+            if 'pkgIndex.tcl' in files
+        )
+    )
 
 
 def discover_lazy_package_indexes(
     package_root: Path,
+    *,
+    context: ConfigContext | None = None,
 ) -> tuple[LazyPackageIndex, ...]:
     package_indexes: list[LazyPackageIndex] = []
-    for pkg_index_path in discover_package_index_paths(package_root):
+    for pkg_index_path in discover_package_index_paths(package_root, context=context):
         try:
             text = read_source_file(pkg_index_path)
         except OSError:

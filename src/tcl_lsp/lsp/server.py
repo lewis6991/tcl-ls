@@ -15,6 +15,7 @@ from pygls.workspace.position_codec import PositionCodec
 
 from tcl_lsp import __version__
 from tcl_lsp.analysis import FactExtractor, Resolver, WorkspaceIndex
+from tcl_lsp.analysis.diagnostics.unused_proc import used_procedure_ids
 from tcl_lsp.common import Diagnostic, lsp_range
 from tcl_lsp.lsp.diagnostics import lsp_diagnostic
 from tcl_lsp.lsp.document_changes import DocumentChangeWorker
@@ -29,6 +30,7 @@ from tcl_lsp.lsp.features.rename import prepare_rename, rename
 from tcl_lsp.lsp.features.signature_help import signature_help
 from tcl_lsp.lsp.features.symbols import reference_command_names
 from tcl_lsp.lsp.features.workspace_symbols import workspace_symbols
+from tcl_lsp.lsp.project_scan import ProjectScanWorker
 from tcl_lsp.lsp.semantic_tokens import (
     SEMANTIC_TOKEN_MODIFIERS,
     SEMANTIC_TOKEN_TYPES,
@@ -96,8 +98,11 @@ class _PreparedWorkspace:
     result: RebuildResult
     disk_revision: FileRevision
     reference_query: ReferenceQuery | None = None
+    facts_only: bool = False
 
     def covers_reference_query(self, query: ReferenceQuery | None) -> bool:
+        if self.facts_only:
+            return False
         previous_query = self.reference_query
         if previous_query is None or previous_query == query:
             return True
@@ -145,6 +150,8 @@ class LanguageServer(PyglsLanguageServer):
     _preparation_lock: threading.RLock
     _prepared: _PreparedWorkspace | None
     _prepared_references: _PreparedWorkspace | None
+    _project_scan_worker: ProjectScanWorker
+    _unused_proc_candidates: dict[str, tuple[Diagnostic, ...]]
     _configuration_revision: FileRevision
     _disk_revision: FileRevision
     _state_lock: threading.RLock
@@ -178,6 +185,7 @@ class LanguageServer(PyglsLanguageServer):
             resolver=resolver,
             metadata_registry=metadata_registry,
         )
+        self._project_scan_worker = ProjectScanWorker(self._scan_project_diagnostics)
         self._change_worker = DocumentChangeWorker(
             apply_change=self._queued_change_document,
             current_document_version=self._current_document_version,
@@ -200,9 +208,11 @@ class LanguageServer(PyglsLanguageServer):
         self.__dict__.pop('open_document', None)
         cast(_TclLanguageServerProtocol, self.protocol).reset_runtime_state()
         self._initialize_analysis_state()
+        self._project_scan_worker = ProjectScanWorker(self._scan_project_diagnostics)
         self._change_worker.start()
 
     def shutdown(self) -> None:
+        self._project_scan_worker.stop()
         self._change_worker.stop()
         with self._toolkit_lock:
             self._extractor.close()
@@ -216,6 +226,7 @@ class LanguageServer(PyglsLanguageServer):
         *,
         progress: IndexingProgressCallback | None = None,
     ) -> tuple[Diagnostic, ...]:
+        self._project_scan_worker.invalidate()
         self._change_worker.invalidate()
         self._load_documents(((uri, text, version),), progress=progress)
         document = self.analysis_snapshot().documents.get(uri)
@@ -224,11 +235,13 @@ class LanguageServer(PyglsLanguageServer):
         return document.analysis.diagnostics
 
     def change_document(self, uri: str, text: str, version: int) -> tuple[Diagnostic, ...]:
+        self._project_scan_worker.invalidate()
         self._change_worker.invalidate()
         diagnostics = self._change_document(uri, text, version)
         return () if diagnostics is None else diagnostics
 
     def schedule_document_change(self, uri: str, version: int) -> None:
+        self._project_scan_worker.invalidate()
         self._change_worker.schedule(uri, version)
 
     def _change_document(
@@ -263,6 +276,7 @@ class LanguageServer(PyglsLanguageServer):
         )
 
     def close_document(self, uri: str) -> None:
+        self._project_scan_worker.invalidate()
         with self._preparation_lock:
             with self._state_lock:
                 self._semantic_token_results_by_uri.pop(uri, None)
@@ -319,47 +333,63 @@ class LanguageServer(PyglsLanguageServer):
         # Callers need not be dependencies of the requested document. Load the
         # workspace on demand, without adding these files to the open documents.
         with self._preparation_lock:
-            with self._state_lock:
-                open_documents = {
-                    open_uri: self.documents[open_uri]
-                    for open_uri in self._open_document_uris
-                    if open_uri in self.documents
-                }
-            pending: dict[str, tuple[str, int]] = {}
-            for open_uri, document in open_documents.items():
-                try:
-                    state = self._workspace_document_state(open_uri)
-                except RuntimeError:
-                    state = None
-                pending[open_uri] = (
-                    state if state is not None else (document.text, document.version)
-                )
-            for root in self._reference_roots(uri):
-                for path in discover_tcl_sources(root):
-                    source_uri = path.as_uri()
-                    if source_uri in pending:
-                        continue
-                    try:
-                        pending[source_uri] = (read_source_file(path), 0)
-                    except OSError:
-                        continue
-            pending_documents = tuple(
-                (source_uri, text, version) for source_uri, (text, version) in pending.items()
-            )
+            pending_documents = self._project_source_documents((uri,))
             query = (
                 ReferenceQuery(uri, position.line, position.character)
                 if position is not None
                 else None
             )
-            prepared = self._prepare_documents(
-                pending_documents, for_references=True, reference_query=query
-            )
+            prepared = self._prepare_project_documents(pending_documents, reference_query=query)
             if prepared is None:
                 return self.analysis_snapshot()
             result = prepared.result
             return AnalysisSnapshot(
                 result.documents, result.workspace_index, result.metadata_registry
             )
+
+    def _project_source_documents(
+        self, uris: tuple[str, ...], *, should_cancel: Callable[[], bool] | None = None
+    ) -> tuple[tuple[str, str, int], ...]:
+        with self._state_lock:
+            open_documents = {
+                uri: self.documents[uri]
+                for uri in self._open_document_uris
+                if uri in self.documents
+            }
+            cached = self._prepared_references
+        pending: dict[str, tuple[str, int]] = {}
+        for uri, document in open_documents.items():
+            try:
+                state = self._workspace_document_state(uri)
+            except RuntimeError:
+                state = None
+            pending[uri] = state if state is not None else (document.text, document.version)
+        revisions = (
+            {path: (mtime, size) for path, mtime, size in cached.disk_revision}
+            if cached is not None
+            else {}
+        )
+        roots = dict.fromkeys(root for uri in uris for root in self._reference_roots(uri))
+        for root in roots:
+            for path in discover_tcl_sources(root, context=self._config_context(root)):
+                if should_cancel is not None and should_cancel():
+                    return ()
+                uri = path.as_uri()
+                if uri in pending:
+                    continue
+                try:
+                    stat = path.stat()
+                    previous = cached.result.documents.get(uri) if cached is not None else None
+                    text = (
+                        previous.text
+                        if previous is not None
+                        and revisions.get(path) == (stat.st_mtime_ns, stat.st_size)
+                        else read_source_file(path)
+                    )
+                    pending[uri] = (text, 0)
+                except OSError:
+                    continue
+        return tuple((uri, text, version) for uri, (text, version) in sorted(pending.items()))
 
     def _reference_roots(self, uri: str) -> tuple[Path, ...]:
         try:
@@ -715,6 +745,7 @@ class LanguageServer(PyglsLanguageServer):
 
         self._prepared = None
         self._prepared_references = None
+        self._unused_proc_candidates = {}
         self._configuration_revision = ()
         self._disk_revision = ()
         self._metadata_registry = resolved_metadata_registry
@@ -797,8 +828,6 @@ class LanguageServer(PyglsLanguageServer):
         *,
         progress: IndexingProgressCallback | None = None,
         should_cancel: Callable[[], bool] | None = None,
-        for_references: bool = False,
-        reference_query: ReferenceQuery | None = None,
     ) -> _PreparedWorkspace | None:
         # One bounded result serves completion, tokens, and the next diagnostics
         # update. References retain a separate workspace result across edits.
@@ -809,27 +838,15 @@ class LanguageServer(PyglsLanguageServer):
             snapshot, registry, settings_changed = self._pending_document_build_snapshot(
                 pending_documents
             )
-            cached = self._prepared_references if for_references else self._prepared
+            cached = self._prepared
             if (
                 cached is not None
-                and (for_references or cached.snapshot.workspace_index is snapshot.workspace_index)
+                and cached.snapshot.workspace_index is snapshot.workspace_index
                 and cached.pending_documents == pending_documents
                 and cached.snapshot.configuration_revision == snapshot.configuration_revision
                 and cached.result.metadata_registry == registry
                 and revision_is_current(cached.disk_revision)
             ):
-                if for_references and not cached.covers_reference_query(reference_query):
-                    result = WorkspaceRebuilder(
-                        should_cancel=should_cancel,
-                        include_diagnostics=False,
-                        reference_query=reference_query,
-                    ).reanalyze(cached.result)
-                    if result is None:
-                        return None
-                    cached = replace(cached, result=result, reference_query=reference_query)
-                    with self._state_lock:
-                        if self._workspace_index is snapshot.workspace_index:
-                            self._prepared_references = cached
                 return cached
             dependencies_changed = not revision_is_current(self._disk_revision)
             metadata_changed = registry != self._metadata_registry
@@ -837,30 +854,14 @@ class LanguageServer(PyglsLanguageServer):
                 self._clear_cached_disk_documents()
             if progress is not None:
                 progress('Rebuilding workspace index', 10)
-            reusable_documents: dict[str, ManagedDocument] = {}
-            if for_references:
-                # Keep workspace parsing across ordinary editor updates. Only
-                # reuse facts extracted with the same metadata and settings.
-                if (
-                    cached is not None
-                    and cached.snapshot.configuration_revision == snapshot.configuration_revision
-                    and cached.result.metadata_registry == registry
-                ):
-                    reusable_documents.update(cached.result.documents)
-                if not settings_changed and not metadata_changed:
-                    reusable_documents.update(snapshot.documents)
             rebuilder = WorkspaceRebuilder(
                 progress=progress,
                 should_cancel=should_cancel,
                 metadata_registry=registry,
-                reuse_documents=reusable_documents,
-                include_diagnostics=not for_references,
-                reference_query=reference_query,
             )
             build = (
                 rebuilder.incremental_rebuild
-                if not for_references
-                and not settings_changed
+                if not settings_changed
                 and not dependencies_changed
                 and (not metadata_changed or not snapshot.documents)
                 else rebuilder.rebuild
@@ -878,15 +879,100 @@ class LanguageServer(PyglsLanguageServer):
                 pending_documents,
                 result,
                 result.disk_revision(snapshot.open_document_uris),
-                reference_query,
             )
             with self._state_lock:
                 if self._workspace_index is snapshot.workspace_index:
-                    if for_references:
-                        self._prepared_references = prepared
-                    else:
-                        self._prepared = prepared
+                    self._prepared = prepared
             return prepared
+
+    def _prepare_project_documents(
+        self,
+        pending_documents: tuple[tuple[str, str, int], ...],
+        *,
+        reference_query: ReferenceQuery | None = None,
+        facts_only: bool = False,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> _PreparedWorkspace | None:
+        # The background scan owns its parser and extractor. Do not hold the
+        # preparation lock while it runs: editor requests must remain usable.
+        if should_cancel is not None and should_cancel():
+            return None
+        snapshot, registry, settings_changed = self._pending_document_build_snapshot(
+            pending_documents
+        )
+        with self._state_lock:
+            cached = self._prepared_references
+        compatible = (
+            cached is not None
+            and cached.snapshot.configuration_revision == snapshot.configuration_revision
+            and cached.result.metadata_registry == registry
+        )
+        rebuilder = WorkspaceRebuilder(
+            should_cancel=should_cancel,
+            metadata_registry=registry,
+            include_diagnostics=False,
+            reference_query=reference_query,
+            facts_only=facts_only,
+        )
+        if (
+            compatible
+            and cached is not None
+            and cached.pending_documents == pending_documents
+            and revision_is_current(cached.disk_revision)
+        ):
+            if facts_only or cached.covers_reference_query(reference_query):
+                return cached
+            result = rebuilder.reanalyze(cached.result)
+        else:
+            reusable = dict(cached.result.documents) if compatible and cached is not None else {}
+            if not settings_changed and registry == self._metadata_registry:
+                reusable.update(snapshot.documents)
+            rebuilder = WorkspaceRebuilder(
+                should_cancel=should_cancel,
+                metadata_registry=registry,
+                reuse_documents=reusable,
+                include_diagnostics=False,
+                reference_query=reference_query,
+                facts_only=facts_only,
+            )
+            with self._state_lock:
+                open_uris = set(self._open_document_uris)
+
+            def cache_disk_document(document: ManagedDocument) -> None:
+                if document.uri not in open_uris and (should_cancel is None or not should_cancel()):
+                    self._remember_disk_document(document)
+
+            result = rebuilder.rebuild(
+                snapshot,
+                pending_documents,
+                load_cached_document=(
+                    self._cached_disk_document
+                    if not settings_changed and registry == self._metadata_registry
+                    else None
+                ),
+                cache_document=(
+                    cache_disk_document
+                    if not settings_changed and registry == self._metadata_registry
+                    else None
+                ),
+            )
+        if result is None or (should_cancel is not None and should_cancel()):
+            return None
+        prepared = _PreparedWorkspace(
+            snapshot,
+            pending_documents,
+            result,
+            result.disk_revision(tuple(self._open_document_uris)),
+            reference_query,
+            facts_only,
+        )
+        with self._state_lock:
+            if (
+                self._workspace_index is snapshot.workspace_index
+                and self._prepared_references is cached
+            ):
+                self._prepared_references = prepared
+        return prepared
 
     def _load_documents(
         self,
@@ -937,30 +1023,112 @@ class LanguageServer(PyglsLanguageServer):
                 return False
             if should_cancel is not None and should_cancel():
                 return False
+            previous_documents = self.documents
             with self._toolkit_lock:
                 self._set_metadata_registry(rebuild_result.metadata_registry)
             self._prepared = None
             self._configuration_revision = snapshot.configuration_revision
             self._disk_revision = rebuild_result.disk_revision(snapshot.open_document_uris)
-            self.documents = rebuild_result.documents
+            self._unused_proc_candidates = {
+                uri: candidates
+                for uri, document in rebuild_result.documents.items()
+                if uri in snapshot.open_document_uris
+                if (
+                    candidates := tuple(
+                        d for d in document.analysis.diagnostics if d.code == 'unused-proc'
+                    )
+                )
+            }
+            # A dependency index cannot establish that a procedure is unused.
+            # Keep the configured candidates until the project scan is ready.
+            self.documents = {
+                uri: replace(
+                    document,
+                    analysis=replace(
+                        document.analysis,
+                        diagnostics=tuple(
+                            d for d in document.analysis.diagnostics if d.code != 'unused-proc'
+                        ),
+                    ),
+                )
+                if uri in self._unused_proc_candidates
+                else document
+                for uri, document in rebuild_result.documents.items()
+            }
             self._workspace_index = rebuild_result.workspace_index
             self._scanned_package_roots = rebuild_result.scanned_package_roots
             self._open_document_uris = set(snapshot.open_document_uris)
             self._metadata_paths_by_uri = dict(snapshot.metadata_paths_by_uri)
             self._library_paths_by_uri = dict(snapshot.library_paths_by_uri)
+            for uri in self._open_document_uris:
+                previous = previous_documents.get(uri)
+                current = self.documents[uri]
+                if (
+                    previous is not None
+                    and previous.version == current.version
+                    and previous.analysis.diagnostics != current.analysis.diagnostics
+                ):
+                    self._publish_document_diagnostics(uri, current.analysis.diagnostics)
+        if self._unused_proc_candidates:
+            self._project_scan_worker.schedule()
         return True
+
+    def _scan_project_diagnostics(self, should_cancel: Callable[[], bool]) -> None:
+        with self._state_lock:
+            candidates = dict(self._unused_proc_candidates)
+            workspace_index = self._workspace_index
+        if not candidates or should_cancel():
+            return
+        pending = self._project_source_documents(tuple(candidates), should_cancel=should_cancel)
+        prepared = self._prepare_project_documents(
+            pending, facts_only=True, should_cancel=should_cancel
+        )
+        if prepared is None or should_cancel():
+            return
+        used = used_procedure_ids(prepared.result.workspace_index)
+        with self._state_lock:
+            if self._workspace_index is not workspace_index or should_cancel():
+                return
+            for uri, diagnostics in candidates.items():
+                document = self.documents.get(uri)
+                if document is None or uri not in self._open_document_uris:
+                    continue
+                unused_spans = {
+                    proc.name_span
+                    for proc in document.facts.procedures
+                    if proc.symbol_id not in used
+                }
+                confirmed = tuple(d for d in diagnostics if d.span in unused_spans)
+                updated = (
+                    tuple(d for d in document.analysis.diagnostics if d.code != 'unused-proc')
+                    + confirmed
+                )
+                if updated == document.analysis.diagnostics:
+                    continue
+                self.documents[uri] = replace(
+                    document, analysis=replace(document.analysis, diagnostics=updated)
+                )
+                self._publish_document_diagnostics(uri, updated)
 
     def _publish_document_diagnostics(
         self,
         uri: str,
         diagnostics: tuple[Diagnostic, ...],
     ) -> None:
-        self.text_document_publish_diagnostics(
-            types.PublishDiagnosticsParams(
-                uri=uri,
-                diagnostics=[lsp_diagnostic(diagnostic) for diagnostic in diagnostics],
+        with self._state_lock:
+            document = self.documents.get(uri)
+            if document is not None and uri in self._open_document_uris:
+                # A scan can finish between a document update and publication.
+                # Merge only its hints; preserve the caller's other diagnostics.
+                diagnostics = tuple(d for d in diagnostics if d.code != 'unused-proc') + tuple(
+                    d for d in document.analysis.diagnostics if d.code == 'unused-proc'
+                )
+            self.text_document_publish_diagnostics(
+                types.PublishDiagnosticsParams(
+                    uri=uri,
+                    diagnostics=[lsp_diagnostic(diagnostic) for diagnostic in diagnostics],
+                )
             )
-        )
 
     def _set_metadata_registry(self, metadata_registry: MetadataRegistry) -> None:
         if metadata_registry == self._metadata_registry:

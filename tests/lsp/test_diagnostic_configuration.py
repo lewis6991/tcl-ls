@@ -5,6 +5,7 @@ import pytest
 from tcl_lsp.checker import check_project, main
 from tcl_lsp.lsp import LanguageServer
 from tcl_lsp.lsp.features.navigation import definition
+from tests.lsp_support import wait_for_project_diagnostics
 
 
 def _open_diagnostics(server: LanguageServer, path: Path) -> list[tuple[str, str]]:
@@ -31,7 +32,11 @@ def test_unused_private_procedures_agree_in_editor_and_checker(
     )
     server = LanguageServer()
     try:
-        assert _open_diagnostics(server, source) == expected
+        assert _open_diagnostics(server, source) == []
+        wait_for_project_diagnostics(server)
+        assert [
+            (d.code, d.severity) for d in server.documents[source.as_uri()].analysis.diagnostics
+        ] == expected
         assert [
             (d.diagnostic.code, d.diagnostic.severity)
             for d in check_project(source, threads=1).diagnostics
@@ -39,6 +44,9 @@ def test_unused_private_procedures_agree_in_editor_and_checker(
 
         moved = '\n' + source.read_text()
         diagnostics = server.change_document(source.as_uri(), moved, 2)
+        assert diagnostics == ()
+        wait_for_project_diagnostics(server)
+        diagnostics = server.documents[source.as_uri()].analysis.diagnostics
         assert [(d.code, d.severity) for d in diagnostics] == expected
         if diagnostics:
             assert diagnostics[0].span.start.line == 3
@@ -63,6 +71,7 @@ def test_private_procedure_hints_follow_calls_in_a_loaded_file(tmp_path: Path) -
 
         changed = text.replace('::app::_helper\n', '')
         assert server.change_document(source.as_uri(), changed, 2) == ()
+        wait_for_project_diagnostics(server)
         assert [d.code for d in server.documents[helper.as_uri()].analysis.diagnostics] == [
             'unused-proc'
         ]

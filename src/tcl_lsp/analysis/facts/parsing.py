@@ -162,12 +162,14 @@ def _consume_static_command_substitution(
     return None
 
 
-def split_tcl_list(text: str, start_position: Position, *, strict: bool = False) -> list[ListItem]:
+def split_tcl_list(
+    text: str, start_position: Position, *, strict: bool = False, max_items: int | None = None
+) -> list[ListItem]:
     items: list[ListItem] = []
     index = 0
     position = start_position
 
-    while index < len(text):
+    while index < len(text) and (max_items is None or len(items) < max_items):
         while index < len(text):
             if text[index].isspace():
                 position = position.advance(text[index])

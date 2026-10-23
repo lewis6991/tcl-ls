@@ -276,6 +276,21 @@ class ValueCheck:
 
 
 @dataclass(frozen=True, slots=True)
+class ProcedureUse:
+    name: str
+    namespace: str
+    procedure_symbol_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ProcedureUses:
+    """Unresolved calls, literal callbacks, and renames in one document."""
+
+    calls: tuple[ProcedureUse, ...]
+    references: tuple[ProcedureUse, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class DocumentFacts:
     uri: str
     parse_result: ParseResult | None
@@ -307,6 +322,21 @@ class DocumentFacts:
     diagnostic_rules: tuple[DiagnosticRule, ...] = ()
     # Recognized and incomplete source directives, including while typing.
     directive_comments: tuple[Span, ...] = ()
+    _procedure_uses: ProcedureUses | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+
+    @property
+    def procedure_uses(self) -> ProcedureUses:
+        cached = self._procedure_uses
+        if cached is None:
+            from tcl_lsp.analysis.procedure_uses import collect_procedure_uses
+
+            cached = collect_procedure_uses(self)
+            # Cache immutable, unresolved names only. Replacing facts starts a
+            # fresh cache; shared snapshots may safely compute the same value.
+            object.__setattr__(self, '_procedure_uses', cached)
+        return cached
 
 
 @dataclass(frozen=True, slots=True)

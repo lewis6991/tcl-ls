@@ -71,6 +71,10 @@ Analysis reuse follows these boundaries:
 * One pending workspace result serves completion, highlighting, and diagnostics.
   Reuse requires matching text, versions, configuration, metadata, and dependency
   state. Cancelled or superseded builds cannot replace published analysis.
+* Each document's facts lazily cache possible procedure uses, including literal
+  callback names. Project unused-procedure scans reuse these names for unchanged
+  files, but resolve them against the current index on every scan. Replacing a
+  document's facts starts a fresh cache. Resolved targets are never cached here.
 
 Dependency preparation always starts from file-local facts. This prevents
 removed package requirements from remaining active through dependency cycles.

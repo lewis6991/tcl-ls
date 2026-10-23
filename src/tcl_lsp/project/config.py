@@ -38,6 +38,7 @@ class ProjectConfig:
     diagnostic_rules: tuple[DiagnosticRule, ...] = ()
     diagnostics: tuple[Diagnostic, ...] = ()
     declarations: DeclarationGroup | None = None
+    excluded_paths: tuple[Path, ...] = ()
 
 
 def is_config_file(path: Path | None) -> bool:
@@ -86,6 +87,19 @@ def configured_library_paths(
         for library_path in load_config_paths(config_path, context=context).library_paths:
             library_paths.setdefault(library_path, None)
     return tuple(library_paths)
+
+
+def configured_excluded_paths(
+    path: Path, *, context: ConfigContext | None = None
+) -> tuple[Path, ...]:
+    context = context or config_context(path)
+    return tuple(
+        dict.fromkeys(
+            excluded
+            for config_path in config_files(path)
+            for excluded in load_config_paths(config_path, context=context).excluded_paths
+        )
+    )
 
 
 def config_files(path: Path, *, include_user: bool = True) -> tuple[Path, ...]:
@@ -188,6 +202,7 @@ def parse_config(
 def _config_from_declarations(declarations: DeclarationGroup, config_path: Path) -> ProjectConfig:
     has_metadata = False
     library_paths: dict[Path, None] = {}
+    excluded_paths: dict[Path, None] = {}
     module_rules: list[ModuleRule] = []
     diagnostic_rules: list[DiagnosticRule] = []
     diagnostics = [
@@ -228,8 +243,9 @@ def _config_from_declarations(declarations: DeclarationGroup, config_path: Path)
             elif isinstance(entry, ModuleRule):
                 module_rules.append(entry)
             else:
-                _, path = entry
-                library_paths.setdefault(path, None)
+                name, path = entry
+                paths = excluded_paths if name == 'exclude' else library_paths
+                paths.setdefault(path, None)
     return ProjectConfig(
         metadata_paths=(config_path,) if has_metadata else (),
         library_paths=tuple(library_paths),
@@ -237,6 +253,7 @@ def _config_from_declarations(declarations: DeclarationGroup, config_path: Path)
         diagnostic_rules=tuple(diagnostic_rules),
         diagnostics=tuple(sorted(diagnostics, key=lambda diagnostic: diagnostic.span.start.offset)),
         declarations=declarations,
+        excluded_paths=tuple(excluded_paths),
     )
 
 
@@ -261,7 +278,7 @@ def _parse_config_command(
         if condition is None:
             raise RuntimeError(f'Invalid module condition for `{name}`.')
         return ModuleRule(name, condition)
-    if command_name not in _LIBRARY_PATH_COMMANDS:
+    if command_name not in {*_LIBRARY_PATH_COMMANDS, 'exclude'}:
         raise RuntimeError(f'Unsupported `{_CONFIG_FILE_NAME}` command `{command_name}`.')
     if len(values) != 1:
         raise RuntimeError(
@@ -271,12 +288,15 @@ def _parse_config_command(
         raise RuntimeError(
             f'`{_CONFIG_FILE_NAME}` command `{command_name}` requires a static path.'
         )
+    if command_name == 'exclude' and not values[0]:
+        raise RuntimeError('`exclude` requires a non-empty path.')
     return command_name, (directory / values[0]).resolve(strict=False)
 
 
 __all__ = [
     'config_files',
     'configured_diagnostic_rules',
+    'configured_excluded_paths',
     'configured_library_paths',
     'configured_metadata_paths',
     'configured_module_rules',

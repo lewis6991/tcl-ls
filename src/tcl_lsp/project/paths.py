@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from os import walk
 from os.path import normcase
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import unquote, urlparse
+
+if TYPE_CHECKING:
+    from tcl_lsp.project.context import ConfigContext
 
 DEFAULT_SOURCE_PATTERNS = ('*.tcl', '*.tm', '*.test')
 type FileRevision = tuple[tuple[Path, int, int], ...]
@@ -29,6 +33,8 @@ def revision_is_current(revision: FileRevision) -> bool:
 def discover_tcl_sources(
     path: Path,
     patterns: tuple[str, ...] = DEFAULT_SOURCE_PATTERNS,
+    *,
+    context: ConfigContext | None = None,
 ) -> tuple[Path, ...]:
     if path.is_file():
         return (path,)
@@ -38,13 +44,60 @@ def discover_tcl_sources(
         # Walk once for the common extensions, rather than once per pattern.
         return tuple(
             sorted(
-                Path(directory) / name
-                for directory, directories, files in walk(path)
+                directory / name
+                for directory, directories, files in walk_project(path, context=context)
                 for name in (*directories, *files)
                 if normcase(name).endswith(('.tcl', '.tm', '.test'))
             )
         )
-    return tuple(sorted({candidate for pattern in patterns for candidate in path.rglob(pattern)}))
+    allowed = {
+        directory / name
+        for directory, directories, files in walk_project(path, context=context)
+        for name in (*directories, *files)
+    }
+    return tuple(
+        sorted(
+            {
+                candidate
+                for pattern in patterns
+                for candidate in path.rglob(pattern)
+                if candidate in allowed
+            }
+        )
+    )
+
+
+def walk_project(
+    path: Path, *, context: ConfigContext | None = None
+) -> Iterator[tuple[Path, list[str], list[str]]]:
+    # Import here because config discovery also uses candidate_package_roots.
+    from tcl_lsp.project.config import config_context, configured_excluded_paths
+
+    context = context or config_context(path)
+    excluded = configured_excluded_paths(path, context=context)
+    resolved_root = path.resolve(strict=False)
+    if _is_excluded(resolved_root, excluded):
+        return
+    scopes = {path: excluded}
+    for directory, directories, files in walk(path):
+        current = Path(directory)
+        excluded = scopes.pop(current)
+        if current != path and 'tcllsrc.tcl' in files:
+            excluded = configured_excluded_paths(current, context=context)
+        resolved = resolved_root / current.relative_to(path)
+
+        if excluded:
+            directories[:] = [
+                name for name in directories if not _is_excluded(resolved / name, excluded)
+            ]
+            files = [name for name in files if not _is_excluded(resolved / name, excluded)]
+        for name in directories:
+            scopes[current / name] = excluded
+        yield current, directories, files
+
+
+def _is_excluded(path: Path, excluded: tuple[Path, ...]) -> bool:
+    return any(path.is_relative_to(target) for target in excluded)
 
 
 def candidate_package_roots(path: Path) -> tuple[Path, ...]:
@@ -93,4 +146,5 @@ __all__ = [
     'discover_tcl_sources',
     'read_source_file',
     'source_id_to_path',
+    'walk_project',
 ]

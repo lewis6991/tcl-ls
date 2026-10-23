@@ -30,6 +30,20 @@ meta module TclLSConfig {
     meta command lib-path {path}
     meta alias library-path lib-path
 
+    # Syntax: one positional path.
+    #
+    # Skip this file or directory when discovering sources and package indexes.
+    # Relative paths start in this config file's directory.
+    # A directory excludes all its descendants. Paths are literal, without globs.
+    # Explicitly opened files and source dependencies are still analyzed.
+    #
+    # **Example**
+    #
+    # ```tcl
+    # exclude .venv
+    # ```
+    meta command exclude {path}
+
     # Syntax: a module name, optionally followed by `when` and a braced expression.
     #
     # Without `when`, activate the module throughout this config's source scope.

@@ -122,12 +122,20 @@ Resolution Diagnostics
    names are excluded. Calls, renames, and literal callback names count as
    uses; a self-recursive call alone does not.
 
-   Uses are checked across indexed files, including open files and loaded
-   dependencies, with Tcl namespace resolution. Same-named procedures in
-   different namespaces remain separate.
-   This does not scan unopened, unrelated project files or infer computed
-   command names. A literal callback name counts as a possible use even when
-   the receiving command's implementation is unknown.
+   In the editor, uses are checked across the same project files as Find
+   References, including unopened ``.tcl``, ``.tm``, and ``.test`` files.
+   Project roots follow the workspace folders, project configuration, or Tcl
+   package roots. The scan runs in the background and shares parsed files with
+   Find References. Other diagnostics remain available while unused procedure
+   hints wait for the scan. After a completed scan, ordinary edits reuse the
+   text and parsed facts for unchanged project files. Metadata or configuration
+   changes can require a rebuild.
+
+   Tcl namespace resolution keeps same-named procedures in different namespaces
+   separate. The check does not infer computed command names. A literal
+   callback name counts as a possible use even when the receiving command's
+   implementation is unknown. For the batch checker, pass the project directory
+   to include callers outside a single file's dependencies.
 
 Command And Metadata Diagnostics
 --------------------------------
