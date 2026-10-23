@@ -922,7 +922,32 @@ def test_language_server_hover_formats_dynamic_binding_sets_as_code_block(
         line=2,
         character=source_text.splitlines()[2].index('$v') + 1,
     )
-    assert hover_value == '```tcl\nset mode\nset run_limit\nset engines\n```'
+    assert hover_value == (
+        '```tcl\nset mode\nset run_limit\nset engines\n```\n\nScope: local to `::run`'
+    )
+
+
+def test_language_server_hover_keeps_a_string_preview_inside_its_code_block(
+    server: LanguageServer,
+) -> None:
+    source_text = (
+        'proc show {suffix} {\n'
+        '    set message {Hello\n\n```\nWorld}\n'
+        '    append message $suffix\n'
+        '    puts $message\n'
+        '}\n'
+    )
+    open_server_document(server, source_text)
+
+    hover_value = hover_markdown_value(
+        server,
+        line=6,
+        character=source_text.splitlines()[6].index('$message') + 1,
+    )
+    assert hover_value == (
+        'set message\n\nValue at definition:\n'
+        '````text\nHello\n\n```\nWorld\n````\n\nScope: local to `::show`'
+    )
 
 
 @pytest.mark.parametrize(

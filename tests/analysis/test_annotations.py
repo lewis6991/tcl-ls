@@ -93,9 +93,9 @@ proc use {state} {
     ]
     assert all(ref.type_info and ref.type_info.expression.text == 'State' for ref in references)
     hovers = {hover.span.start.line: hover.contents for hover in snapshot.analysis.hovers}
-    assert hovers[5] == 'set copy: State = "enabled"'
-    assert hovers[7] == 'set copy: State = "disabled"'
-    assert hovers[9] == 'set copy: State'
+    assert hovers[5] == 'set copy: State = "enabled"\n\nScope: local to `::use`'
+    assert hovers[7] == 'set copy: State = "disabled"\n\nScope: local to `::use`'
+    assert hovers[9] == 'set copy: State\n\nScope: local to `::use`'
     assert snapshot.analysis.diagnostics == ()
 
 
@@ -245,7 +245,9 @@ proc read_state {} {return enabled}
     ]
     assert all(ref.type_info and ref.type_info.expression.text == 'State' for ref in references[:3])
     assert references[-1].type_info is None
-    assert 'set copy: State = "enabled"' in [hover.contents for hover in snapshot.analysis.hovers]
+    assert 'set copy: State = "enabled"\n\nScope: local to `::use`' in [
+        hover.contents for hover in snapshot.analysis.hovers
+    ]
     assert snapshot.analysis.diagnostics == ()
 
 

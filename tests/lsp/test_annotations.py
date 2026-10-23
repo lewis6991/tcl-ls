@@ -308,8 +308,8 @@ proc use {} {
     assert refs['state'].exact_values == ('enabled', 'disabled')
     assert refs['count'].type_info and refs['count'].type_info.expression.text == 'integer'
     hovers = [hover.contents for hover in server.documents[uri].analysis.hovers]
-    assert 'lassign state: State' in hovers
-    assert 'lassign count: integer' in hovers
+    assert 'lassign state: State\n\nScope: local to `::use`' in hovers
+    assert 'lassign count: integer\n\nScope: local to `::use`' in hovers
 
 
 def test_open_unrelated_file_does_not_supply_return_types(

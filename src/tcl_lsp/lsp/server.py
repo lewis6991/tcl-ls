@@ -1267,8 +1267,12 @@ def hover_request(server: LanguageServer, params: types.HoverParams) -> types.Ho
             if not separator
             else f'```tcl\n{command_name}\n```\n\n{remainder}'
         )
-    elif '\n' in hover_info.contents and not separator:
-        contents = f'```tcl\n{hover_info.contents}\n```'
+    elif '\n' in signature:
+        contents = (
+            f'```tcl\n{signature}\n```'
+            if not separator
+            else f'```tcl\n{signature}\n```\n\n{remainder}'
+        )
 
     return types.Hover(
         contents=types.MarkupContent(

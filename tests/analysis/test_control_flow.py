@@ -204,7 +204,9 @@ def test_analysis_narrows_literal_regexp_switch_branch_domains(parser: Parser) -
         hover.span.start.offset: hover.contents for hover in snapshot.analysis.hovers
     }
     inner_switch_offset = source.index('switch $mode {', source.index('"gamma" {')) + len('switch ')
-    assert hover_by_offset[inner_switch_offset] == 'parameter mode: "alpha" | "beta" | "gamma"'
+    assert hover_by_offset[inner_switch_offset] == (
+        'parameter mode: "alpha" | "beta" | "gamma"\n\nScope: local to `::run`'
+    )
 
 
 def test_analysis_tracks_switch_assignment_domains(parser: Parser) -> None:
@@ -237,11 +239,13 @@ def test_analysis_tracks_switch_assignment_domains(parser: Parser) -> None:
     assert (
         hover_by_offset[binding_offset]
         == 'set mapped_mode: "target_alpha" | "target_beta" | "direct_alpha" | "direct_beta"'
+        '\n\nScope: local to `::run`'
     )
     mapped_mode_offset = source.rindex('$mapped_mode')
     assert (
         hover_by_offset[mapped_mode_offset]
         == 'set mapped_mode: "target_alpha" | "target_beta" | "direct_alpha" | "direct_beta"'
+        '\n\nScope: local to `::run`'
     )
 
 
@@ -401,7 +405,7 @@ def test_analysis_infers_dynamic_set_targets_from_foreach_domains(parser: Parser
             matching_hovers,
             key=lambda hover: hover.span.end.offset - hover.span.start.offset,
         ).contents
-        == 'set mode\nset run_limit\nset engines'
+        == 'set mode\nset run_limit\nset engines\n\nScope: local to `::run`'
     )
 
 
@@ -528,9 +532,9 @@ def test_analysis_shows_branch_narrowed_values_in_variable_hovers(parser: Parser
     elseif_offset = line_offsets[5] + source_lines[5].index('$kind')
     else_offset = line_offsets[7] + source_lines[7].index('$kind')
 
-    assert hover_by_offset[then_offset] == 'foreach kind: "prove"'
-    assert hover_by_offset[elseif_offset] == 'foreach kind: "lint"'
-    assert hover_by_offset[else_offset] == 'foreach kind: "scan"'
+    assert hover_by_offset[then_offset] == 'foreach kind: "prove"\n\nScope: local to `::run`'
+    assert hover_by_offset[elseif_offset] == 'foreach kind: "lint"\n\nScope: local to `::run`'
+    assert hover_by_offset[else_offset] == 'foreach kind: "scan"\n\nScope: local to `::run`'
 
 
 def test_analysis_tracks_expr_ternary_assignment_domains(parser: Parser) -> None:
@@ -556,9 +560,9 @@ def test_analysis_tracks_expr_ternary_assignment_domains(parser: Parser) -> None
         hover.span.start.offset: hover.contents for hover in snapshot.analysis.hovers
     }
     binding_offset = source.index('bg_opt')
-    assert hover_by_offset[binding_offset] == 'set bg_opt: "a" | "b"'
+    assert hover_by_offset[binding_offset] == 'set bg_opt: "a" | "b"\n\nScope: local to `::run`'
     bg_opt_offset = source.index('$bg_opt')
-    assert hover_by_offset[bg_opt_offset] == 'set bg_opt: "a" | "b"'
+    assert hover_by_offset[bg_opt_offset] == 'set bg_opt: "a" | "b"\n\nScope: local to `::run`'
 
 
 def test_analysis_narrows_expr_ternary_assignment_domains_from_exact_conditions(
@@ -577,9 +581,9 @@ def test_analysis_narrows_expr_ternary_assignment_domains_from_exact_conditions(
         hover.span.start.offset: hover.contents for hover in snapshot.analysis.hovers
     }
     binding_offset = source.index('bg_opt')
-    assert hover_by_offset[binding_offset] == 'set bg_opt: "a"'
+    assert hover_by_offset[binding_offset] == 'set bg_opt: "a"\n\nScope: local to `::run`'
     bg_opt_offset = source.index('$bg_opt')
-    assert hover_by_offset[bg_opt_offset] == 'set bg_opt: "a"'
+    assert hover_by_offset[bg_opt_offset] == 'set bg_opt: "a"\n\nScope: local to `::run`'
 
 
 def test_analysis_tracks_dict_for_bodies(parser: Parser) -> None:

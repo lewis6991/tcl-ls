@@ -43,6 +43,11 @@ definition is available, definition and declaration can point to metadata alone.
 Use :doc:`annotations` to add parameter types, return types, and descriptions
 to procedure hover, completion, and signature help.
 
+Variable hover shows the fully qualified name of a namespace variable or the
+owning procedure of a local variable. Links made with ``global`` or ``variable``
+show their namespace target. Hover also shows known types and values. When the
+current value is unknown, a value recorded at the definition is shown separately.
+
 Diagnostics And Semantic Tokens
 -------------------------------
 

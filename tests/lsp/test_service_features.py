@@ -254,7 +254,9 @@ def test_language_service_definition_resolves_global_variable_links(
 
     hover = service.hover(MAIN_URI, 4, 11)
     assert hover is not None
-    assert hover.contents == 'set shared'
+    assert hover.contents == (
+        'set shared\n\nValue at definition:\n```text\n0\n```\n\nScope: `::shared`'
+    )
 
 
 def test_language_service_definition_resolves_namespace_variable_links(
@@ -280,7 +282,7 @@ def test_language_service_definition_resolves_namespace_variable_links(
 
     hover = service.hover(MAIN_URI, 4, 16)
     assert hover is not None
-    assert hover.contents == 'variable counter'
+    assert hover.contents == 'variable counter\n\nScope: `::app::counter`'
 
 
 def test_language_service_definition_resolves_variable_alias_sites(
@@ -306,13 +308,92 @@ def test_language_service_definition_resolves_variable_alias_sites(
 
     alias_hover = service.hover(MAIN_URI, 4, 18)
     assert alias_hover is not None
-    assert alias_hover.contents == 'variable counter'
+    assert alias_hover.contents == 'variable counter\n\nScope: `::app::counter`'
 
     namespace_write_definition_locations = service.definition(MAIN_URI, 2, 38)
     assert len(namespace_write_definition_locations) == 1
     assert namespace_write_definition_locations[0].uri == MAIN_URI
     assert namespace_write_definition_locations[0].range.start.line == 1
     assert namespace_write_definition_locations[0].range.start.character == 13
+
+
+def test_variable_hover_shows_the_target_of_namespace_and_global_links(
+    service: LanguageService,
+) -> None:
+    source_text = """set shared global
+namespace eval state {
+    variable count 0
+}
+namespace eval app {
+    variable count 1
+    proc run {} {
+        global shared
+        variable ::state::count
+        puts $shared
+        puts $count
+        puts $::state::count
+    }
+}
+"""
+    assert service.open_document(MAIN_URI, source_text, 1) == ()
+
+    for statement, token, target in (
+        ('set shared global', 'shared', '::shared'),
+        ('variable count 0', 'count', '::state::count'),
+        ('variable count 1', 'count', '::app::count'),
+        ('global shared', 'shared', '::shared'),
+        ('variable ::state::count', '::state::count', '::state::count'),
+        ('puts $shared', '$shared', '::shared'),
+        ('puts $count', '$count', '::state::count'),
+        ('puts $::state::count', '$::state::count', '::state::count'),
+    ):
+        line = next(
+            i for i, text in enumerate(source_text.splitlines()) if text.strip() == statement
+        )
+        hover = service.hover(MAIN_URI, line, source_text.splitlines()[line].index(token) + 1)
+        assert hover is not None
+        assert f'Scope: `{target}`' in hover.contents
+        assert 'local to' not in hover.contents
+
+
+def test_variable_hover_shows_the_owning_procedure_for_locals_and_parameters(
+    service: LanguageService,
+) -> None:
+    source_text = """namespace eval app {
+    variable value shared
+    proc run {value} {
+        set result $value
+        puts $result
+    }
+    proc other {} {
+        set value local
+        puts $value
+    }
+}
+"""
+    assert service.open_document(MAIN_URI, source_text, 1) == ()
+
+    for statement, token, owner in (
+        ('proc run {value} {', 'value', '::app::run'),
+        ('set result $value', 'result', '::app::run'),
+        ('set result $value', '$value', '::app::run'),
+        ('puts $result', '$result', '::app::run'),
+        ('set value local', 'value', '::app::other'),
+        ('puts $value', '$value', '::app::other'),
+    ):
+        line = next(
+            i for i, text in enumerate(source_text.splitlines()) if text.strip() == statement
+        )
+        hover = service.hover(MAIN_URI, line, source_text.splitlines()[line].index(token) + 1)
+        assert hover is not None
+        assert f'Scope: local to `{owner}`' in hover.contents
+
+    edited = source_text.replace('proc run', 'proc renamed')
+    service.change_document(MAIN_URI, edited, 2)
+    line = edited.splitlines().index('        puts $result')
+    hover = service.hover(MAIN_URI, line, edited.splitlines()[line].index('$result') + 1)
+    assert hover is not None
+    assert 'Scope: local to `::app::renamed`' in hover.contents
 
 
 def test_language_service_definition_resolves_dynamic_set_targets_from_foreach_domains(
@@ -338,11 +419,13 @@ def test_language_service_definition_resolves_dynamic_set_targets_from_foreach_d
 
     hover = service.hover(MAIN_URI, 4, target_character)
     assert hover is not None
-    assert hover.contents == 'set engines'
+    assert hover.contents == 'set engines\n\nScope: local to `::run`'
 
     binding_hover = service.hover(MAIN_URI, 2, source_text.splitlines()[2].index('$v') + 1)
     assert binding_hover is not None
-    assert binding_hover.contents == 'set mode\nset run_limit\nset engines'
+    assert binding_hover.contents == (
+        'set mode\nset run_limit\nset engines\n\nScope: local to `::run`'
+    )
 
 
 def test_language_service_definition_resolves_dynamic_set_targets_from_variable_backed_foreach_domains(
@@ -370,7 +453,7 @@ def test_language_service_definition_resolves_dynamic_set_targets_from_variable_
 
     hover = service.hover(MAIN_URI, 6, target_character)
     assert hover is not None
-    assert hover.contents == 'set engines'
+    assert hover.contents == 'set engines\n\nScope: local to `::run`'
 
 
 def test_language_service_preserves_switch_branch_list_body_positions_after_continuations(
@@ -441,15 +524,70 @@ def test_language_service_hover_shows_branch_narrowed_values(
 
     then_hover = service.hover(MAIN_URI, 3, source_text.splitlines()[3].index('$kind') + 1)
     assert then_hover is not None
-    assert then_hover.contents == 'foreach kind: "prove"'
+    assert then_hover.contents == 'foreach kind: "prove"\n\nScope: local to `::run`'
 
     elseif_hover = service.hover(MAIN_URI, 5, source_text.splitlines()[5].index('$kind') + 1)
     assert elseif_hover is not None
-    assert elseif_hover.contents == 'foreach kind: "lint"'
+    assert elseif_hover.contents == 'foreach kind: "lint"\n\nScope: local to `::run`'
 
     else_hover = service.hover(MAIN_URI, 7, source_text.splitlines()[7].index('$kind') + 1)
     assert else_hover is not None
-    assert else_hover.contents == 'foreach kind: "scan"'
+    assert else_hover.contents == 'foreach kind: "scan"\n\nScope: local to `::run`'
+
+
+def test_language_service_hover_previews_a_string_when_its_current_value_is_unknown(
+    service: LanguageService,
+) -> None:
+    source_text = (
+        'proc setup {args} {\n'
+        '    set post_named_arg {\n'
+        '        set args [lrange $args 2 end]\n'
+        '        incr named_args_count\n'
+        '    }\n'
+        '    while {[llength $args] > 0} {\n'
+        '        eval $post_named_arg\n'
+        '    }\n'
+        '}\n'
+    )
+    assert service.open_document(MAIN_URI, source_text, 1) == ()
+
+    hover = service.hover(MAIN_URI, 6, source_text.splitlines()[6].index('$post_named_arg') + 1)
+    assert hover is not None
+    assert hover.contents == (
+        'set post_named_arg\n\nValue at definition:\n```text\n'
+        '\n        set args [lrange $args 2 end]\n        incr named_args_count\n    \n```'
+        '\n\nScope: local to `::setup`'
+    )
+
+
+def test_language_service_hover_distinguishes_an_assignment_from_a_known_current_value(
+    service: LanguageService,
+) -> None:
+    source_text = (
+        'proc greet {suffix} {\n'
+        '    set message {Hello}\n'
+        '    puts $message\n'
+        '    append message $suffix\n'
+        '    puts $message\n'
+        '    set message {Goodbye}\n'
+        '    puts $message\n'
+        '}\n'
+    )
+    assert service.open_document(MAIN_URI, source_text, 1) == ()
+
+    before = service.hover(MAIN_URI, 2, source_text.splitlines()[2].index('$message') + 1)
+    assert before is not None
+    assert before.contents == 'set message: "Hello"\n\nScope: local to `::greet`'
+
+    changed = service.hover(MAIN_URI, 4, source_text.splitlines()[4].index('$message') + 1)
+    assert changed is not None
+    assert changed.contents == (
+        'set message\n\nValue at definition:\n```text\nHello\n```\n\nScope: local to `::greet`'
+    )
+
+    replaced = service.hover(MAIN_URI, 6, source_text.splitlines()[6].index('$message') + 1)
+    assert replaced is not None
+    assert replaced.contents == 'set message: "Goodbye"\n\nScope: local to `::greet`'
 
 
 def test_language_service_narrows_literal_regexp_switch_branch_domains(
@@ -479,7 +617,9 @@ def test_language_service_narrows_literal_regexp_switch_branch_domains(
     inner_switch_character = source_text.splitlines()[inner_switch_line].index('$mode') + 1
     hover = service.hover(MAIN_URI, inner_switch_line, inner_switch_character)
     assert hover is not None
-    assert hover.contents == 'parameter mode: "alpha" | "beta" | "gamma"'
+    assert hover.contents == (
+        'parameter mode: "alpha" | "beta" | "gamma"\n\nScope: local to `::run`'
+    )
 
 
 def test_language_service_hover_shows_switch_assignment_domains(
@@ -514,6 +654,7 @@ def test_language_service_hover_shows_switch_assignment_domains(
     assert (
         binding_hover.contents
         == 'set mapped_mode: "target_alpha" | "target_beta" | "direct_alpha" | "direct_beta"'
+        '\n\nScope: local to `::run`'
     )
 
     reference_line = source_text.splitlines().index('            puts $mapped_mode')
@@ -523,6 +664,7 @@ def test_language_service_hover_shows_switch_assignment_domains(
     assert (
         reference_hover.contents
         == 'set mapped_mode: "target_alpha" | "target_beta" | "direct_alpha" | "direct_beta"'
+        '\n\nScope: local to `::run`'
     )
 
 
@@ -541,11 +683,11 @@ def test_language_service_hover_shows_expr_ternary_assignment_domains(
 
     hover = service.hover(MAIN_URI, 3, source_text.splitlines()[3].index('$bg_opt') + 1)
     assert hover is not None
-    assert hover.contents == 'set bg_opt: "a" | "b"'
+    assert hover.contents == 'set bg_opt: "a" | "b"\n\nScope: local to `::run`'
 
     binding_hover = service.hover(MAIN_URI, 2, source_text.splitlines()[2].index('bg_opt') + 1)
     assert binding_hover is not None
-    assert binding_hover.contents == 'set bg_opt: "a" | "b"'
+    assert binding_hover.contents == 'set bg_opt: "a" | "b"\n\nScope: local to `::run`'
 
 
 def test_language_service_rename_updates_proc_declaration_and_calls(
@@ -979,7 +1121,7 @@ def test_language_service_resolves_references_inside_braced_if_conditions(
 
     hover = service.hover(MAIN_URI, 2, 9)
     assert hover is not None
-    assert hover.contents == 'parameter flag'
+    assert hover.contents == 'parameter flag\n\nScope: local to `::run`'
 
     definition_locations = service.definition(MAIN_URI, 2, 18)
     assert len(definition_locations) == 1

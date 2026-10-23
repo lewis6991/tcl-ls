@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, replace
+from re import findall
 
 from tcl_lsp.analysis.annotations import procedure_documentation, procedure_signature
 from tcl_lsp.analysis.builtins import (
@@ -521,7 +522,14 @@ class Resolver:
         for binding in sorted(bindings, key=lambda item: item.span.start.offset):
             first_binding_by_symbol.setdefault(binding.symbol_id, binding)
 
+        procedure_names = {proc.symbol_id: proc.qualified_name for proc in facts.procedures}
         for binding in first_binding_by_symbol.values():
+            if binding.procedure_symbol_id is None:
+                scope_detail = f'`{qualify_name(binding.name, binding.namespace)}`'
+            elif procedure_name := procedure_names.get(binding.procedure_symbol_id):
+                scope_detail = f'local to `{procedure_name}`'
+            else:
+                scope_detail = 'local'
             definitions.append(
                 DefinitionTarget(
                     symbol_id=binding.symbol_id,
@@ -532,6 +540,7 @@ class Resolver:
                     detail=f'{binding.kind} {binding.name}',
                     exact_values=binding.exact_values,
                     type_info=binding.type_info,
+                    scope_detail=scope_detail,
                 )
             )
 
@@ -581,15 +590,25 @@ class Resolver:
                 )
                 continue
 
+            scope_detail = group[0].scope_detail
+            common_scope = all(definition.scope_detail == scope_detail for definition in group)
             details = tuple(
-                dict.fromkeys(_definition_hover_detail(definition) for definition in group)
+                dict.fromkeys(
+                    _definition_hover_detail(definition, include_scope=not common_scope)
+                    for definition in group
+                )
             )
+            contents = (
+                '\n\n'.join(details)
+                if any('\n\n' in detail for detail in details)
+                else '\n'.join(details)
+            )
+            if common_scope and scope_detail:
+                contents += f'\n\nScope: {scope_detail}'
             hovers.append(
                 HoverInfo(
                     span=group[0].span,
-                    contents='\n\n'.join(details)
-                    if any('\n\n' in detail for detail in details)
-                    else '\n'.join(details),
+                    contents=contents,
                 )
             )
         return hovers
@@ -1049,11 +1068,7 @@ class Resolver:
             if definition is not None:
                 hover = HoverInfo(
                     span=variable_reference.span,
-                    contents=_variable_hover_detail(
-                        definition.detail,
-                        variable_reference.exact_values,
-                        variable_reference.type_info,
-                    ),
+                    contents=_variable_reference_hover_detail(definition, variable_reference),
                 )
         state = 'resolved' if len(symbol_ids) == 1 else 'ambiguous'
         reason = (
@@ -1179,27 +1194,55 @@ def _command_reference(command_call: CommandCall) -> ReferenceSite:
     )
 
 
+def _variable_reference_hover_detail(
+    definition: DefinitionTarget, reference: VariableReference
+) -> str:
+    detail = _variable_hover_detail(
+        definition.detail,
+        reference.exact_values,
+        reference.type_info,
+    )
+    if not reference.exact_values and definition.exact_values:
+        previews: list[str] = []
+        for value in definition.exact_values:
+            fence = '`' * max(3, 1 + max(map(len, findall(r'`+', value)), default=0))
+            previews.append(f'{fence}text\n{value}\n{fence}')
+        detail += '\n\nValue at definition:\n' + '\n\n'.join(previews)
+    if definition.scope_detail:
+        detail += f'\n\nScope: {definition.scope_detail}'
+    return detail
+
+
 def _variable_hover_detail(
-    detail: str, exact_values: tuple[str, ...], type_info: TypeInfo | None = None
+    detail: str,
+    exact_values: tuple[str, ...],
+    type_info: TypeInfo | None = None,
+    *,
+    scope_detail: str | None = None,
 ) -> str:
     if type_info:
         detail = f'{detail}: {type_info.expression.text}'
         if exact_values and exact_values != literal_values(type_info.resolved):
             detail += ' = ' + ' | '.join(f'"{value}"' for value in exact_values)
-        return detail
-    if not exact_values:
-        return detail
+    elif exact_values:
+        rendered_values = ' | '.join(f'"{value}"' for value in exact_values)
+        detail = f'{detail}: {rendered_values}'
+    if scope_detail:
+        detail += f'\n\nScope: {scope_detail}'
+    return detail
 
-    rendered_values = ' | '.join(f'"{value}"' for value in exact_values)
-    return f'{detail}: {rendered_values}'
 
-
-def _definition_hover_detail(definition: DefinitionTarget) -> str:
+def _definition_hover_detail(definition: DefinitionTarget, *, include_scope: bool = True) -> str:
     if definition.visibility is not None:
         return _hover_with_visibility(definition.detail, definition.visibility)
     if definition.kind != 'variable':
         return definition.detail
-    return _variable_hover_detail(definition.detail, definition.exact_values, definition.type_info)
+    return _variable_hover_detail(
+        definition.detail,
+        definition.exact_values,
+        definition.type_info,
+        scope_detail=definition.scope_detail if include_scope else None,
+    )
 
 
 def _metadata_var_binding(

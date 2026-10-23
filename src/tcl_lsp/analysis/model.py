@@ -256,6 +256,7 @@ class DefinitionTarget:
     exact_values: tuple[str, ...] = ()
     visibility: CommandVisibility | None = None
     type_info: TypeInfo | None = None
+    scope_detail: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
