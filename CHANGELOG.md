@@ -4,6 +4,59 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## [1.0.0](https://github.com/lewis6991/tcl-ls/compare/v0.2.1...v1.0.0) (2026-10-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* **meta:** Procedure fields and package annotations require braced key/value lists. Use parameter parser hooks instead of Tepam format names.
+
+### Features
+
+* add command visibility metadata ([4d9cf3e](https://github.com/lewis6991/tcl-ls/commit/4d9cf3e9634d5bf0c74363aa1523445051fdc902))
+* add comment type annotations ([bbf21f7](https://github.com/lewis6991/tcl-ls/commit/bbf21f7c2fc11b692ec5b8c3fe6d8574e03136c0))
+* add diagnostic suppression actions ([b8902e0](https://github.com/lewis6991/tcl-ls/commit/b8902e010ee1c42ca56db8ae0042fcf4633d2e67))
+* check Tcl value constraints ([98e096f](https://github.com/lewis6991/tcl-ls/commit/98e096feb9e6b8015a9b8bbbe5cc4d323c33f501))
+* compose project config and metadata ([f8ed34f](https://github.com/lewis6991/tcl-ls/commit/f8ed34f29f8e9836c4c4e6adbfcebb76bf852734))
+* detect changed Tcl command shapes ([20386cc](https://github.com/lewis6991/tcl-ls/commit/20386cc674177502e77f9fd40dd5fc3f9c1ffee7))
+* extend workspace metadata analysis ([2a4c6f5](https://github.com/lewis6991/tcl-ls/commit/2a4c6f5e83c486a8051b0be96144849eacd824c8))
+* hint on unused variables and private procs ([da74a1b](https://github.com/lewis6991/tcl-ls/commit/da74a1bb58d09452c256df4739b95f409c921177))
+* **meta:** add Tcl parameter parser hooks ([1f79598](https://github.com/lewis6991/tcl-ls/commit/1f795982b832de996967a26b50c3e32169ceb87a))
+* **meta:** hint when a variable is first created ([07a6729](https://github.com/lewis6991/tcl-ls/commit/07a672976b63cd4db0106fc158d2ab9d18885d90))
+* model tool commands in Tcl metadata ([a87233b](https://github.com/lewis6991/tcl-ls/commit/a87233b5f8aeb39ab2964744198845753cc78363))
+* scan project callers for unused procs ([1944e18](https://github.com/lewis6991/tcl-ls/commit/1944e18c046cb9e2411ab0cf9f86a027cc5be49a))
+* select modules from static query guards ([df2c7e7](https://github.com/lewis6991/tcl-ls/commit/df2c7e776995b446da74364adad98b02ededfa38))
+* show variable scope and definition values ([83202a6](https://github.com/lewis6991/tcl-ls/commit/83202a6e5104534c58d78f44370fa66226249a2b))
+* support Python 3.12 ([9983faa](https://github.com/lewis6991/tcl-ls/commit/9983faa5b4d7f05f142664c5633216f2237a5a46))
+* support static Tcl command renames ([b1c521e](https://github.com/lewis6991/tcl-ls/commit/b1c521eb9fcf7383ec98702e395dbdb36f7ac01f))
+* support static Tcl command renames ([4c23304](https://github.com/lewis6991/tcl-ls/commit/4c233045e2aa50706e36afa68e515528c7943c6c))
+* unify metadata module selection ([19910f6](https://github.com/lewis6991/tcl-ls/commit/19910f6e5d8236d8b8b1ff3be3ea0b92ba45f71a))
+
+
+### Bug Fixes
+
+* apply package metadata before body analysis ([d23df31](https://github.com/lewis6991/tcl-ls/commit/d23df311ce4744f2d11586e036055f9078325498))
+* explain invalid expression diagnostics ([e006483](https://github.com/lewis6991/tcl-ls/commit/e0064836ee8bf03cc27ea8956b8bb02e9ebcd8d4))
+* find references across the workspace ([f2f4f39](https://github.com/lewis6991/tcl-ls/commit/f2f4f398a0417ba45fb0cbdcdcafbe800518d893))
+* handle tcl-ls interrupts cleanly ([c0bd1dd](https://github.com/lewis6991/tcl-ls/commit/c0bd1dd0c0ed1693ac292a43265b7dc81488b87d))
+* keep metadata environments in scope ([0284d01](https://github.com/lewis6991/tcl-ls/commit/0284d0169d95ae58f1d08f3e65f73b2b35019945))
+* navigate variable writes to first binding ([abc675a](https://github.com/lewis6991/tcl-ls/commit/abc675a79577c2fbd1dd0e9f80af1ed39f3e1343))
+* split bare words at continuations ([a6a2da4](https://github.com/lewis6991/tcl-ls/commit/a6a2da445212cf2526be749a7ace6901a4e85ee5))
+
+
+### Performance Improvements
+
+* reuse checker syntax and package contexts ([a6e678e](https://github.com/lewis6991/tcl-ls/commit/a6e678e5253a78b39c4d8a648c823f78e9c0b901))
+* reuse document analysis work ([aaab33f](https://github.com/lewis6991/tcl-ls/commit/aaab33f6432dac0001837c8bad92e8c05891f6d4))
+* reuse procedure bodies across edits ([0af1d21](https://github.com/lewis6991/tcl-ls/commit/0af1d21b21388d9fb798988765bf2800ba78fd84))
+* share analysis across editor requests ([3bec640](https://github.com/lewis6991/tcl-ls/commit/3bec640c8b5c36e921074aaba8f7c99c601bbcdd))
+* share parser source locations ([6949c4d](https://github.com/lewis6991/tcl-ls/commit/6949c4d1bc59b5352932d5ce3c57b94085d88df7))
+
+
+### Documentation
+
+* explain metadata parser hooks ([b4010e6](https://github.com/lewis6991/tcl-ls/commit/b4010e6945bde00c467daf4c599497012aba2372))
+
 ## [0.2.1](https://github.com/lewis6991/tcl-ls/compare/v0.2.0...v0.2.1) (2026-06-05)
 
 
