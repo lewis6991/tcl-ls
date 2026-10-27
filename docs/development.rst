@@ -4,6 +4,10 @@ Development
 Run commands from the repository root. The Python tools use ``uv``.
 Analysis and metadata plugin tests also require ``tclsh`` on ``PATH``.
 
+The package supports Python 3.12 or newer. CI runs the full test suite on
+Python 3.12 and 3.15, the oldest and newest supported versions. Release
+builds use Python 3.15.
+
 Setup And Checks
 ----------------
 

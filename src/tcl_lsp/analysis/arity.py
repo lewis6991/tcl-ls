@@ -62,7 +62,7 @@ def _signature_items_arity(items: tuple[str, ...]) -> CommandArity | None:
                 return None
 
             group_arity = _optional_group_arity(items[index + 1 : group_end])
-            if group_arity is None:
+            if group_arity is None or group_arity.max_args is None:
                 return None
 
             max_args += group_arity.max_args

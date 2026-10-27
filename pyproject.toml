@@ -20,6 +20,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Topic :: Software Development",
     "Topic :: Software Development :: Quality Assurance",
     "Typing :: Typed",
@@ -42,13 +43,13 @@ tcl-meta = "tcl_lsp.meta:main"
 
 [dependency-groups]
 dev = [
-    "basedpyright>=1.37.4",
-    "furo>=2024.8.6",
-    "myst-parser>=5.0.0",
-    "pyinstaller>=6.19.0",
-    "pytest>=9.0.0",
-    "ruff>=0.15.5",
-    "sphinx>=8.2.3",
+    "basedpyright",
+    "furo",
+    "myst-parser",
+    "pyinstaller",
+    "pytest",
+    "ruff",
+    "sphinx",
 ]
 
 [build-system]

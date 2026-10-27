@@ -1222,10 +1222,10 @@ def _parse_procedure_annotation(
         message = '; '.join(diagnostic.message for diagnostic in parse_result.diagnostics)
         raise RuntimeError(f'Invalid procedure annotation for `{command_name}`: {message}')
 
-    member_name_selector: MetadataSelector | None | object = _MISSING
-    member_name_literal: str | None | object = _MISSING
-    parameter_selector: MetadataSelector | None | object = _MISSING
-    parameter_literal: str | None | object = _MISSING
+    member_name_selector: MetadataSelector | object | None = _MISSING
+    member_name_literal: str | object | None = _MISSING
+    parameter_selector: MetadataSelector | object | None = _MISSING
+    parameter_literal: str | object | None = _MISSING
     body_selector: MetadataSelector | None = None
     body_context: str | None = None
     parameter_plugin: MetadataPlugin | None = None

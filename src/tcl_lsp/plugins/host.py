@@ -503,10 +503,10 @@ def _parse_plugin_procedure_effect(
         message = '; '.join(diagnostic.message for diagnostic in parse_result.diagnostics)
         raise RuntimeError(f'Invalid procedure plugin effect: {message}')
 
-    member_name_selector: MetadataSelector | None | object = _MISSING
-    member_name_literal: str | None | object = _MISSING
-    parameter_selector: MetadataSelector | None | object = _MISSING
-    parameter_literal: str | None | object = _MISSING
+    member_name_selector: MetadataSelector | object | None = _MISSING
+    member_name_literal: str | object | None = _MISSING
+    parameter_selector: MetadataSelector | object | None = _MISSING
+    parameter_literal: str | object | None = _MISSING
     parameter_items: tuple[ListItem, ...] | None = None
     parameter_source_selector: MetadataSelector | None = None
     body_selector: MetadataSelector | None = None
