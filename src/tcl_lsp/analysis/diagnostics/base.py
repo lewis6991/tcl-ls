@@ -21,6 +21,7 @@ from tcl_lsp.metadata_paths import MetadataRegistry
 type CommandCallKey = tuple[str, int, int, int, int]
 type ResolvedCommandTarget = BuiltinCommand | ContextualCommand | ProcDecl
 type AnalysisDiagnosticSeverity = Literal['error', 'warning', 'hint']
+type OptionIssueState = Literal['unknown-option', 'missing-option-value']
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +46,8 @@ class DiagnosticContext:
     command_resolutions: tuple[ResolvedCommand, ...]
     variable_resolutions: tuple[ResolvedVariable, ...]
     usage_index: WorkspaceIndex | None = None
+    resolved_calls: tuple[tuple[CommandCall, ResolvedCommandTarget], ...] = ()
+    option_issues: tuple[tuple[CommandCall, OptionIssueState, str, Span], ...] = ()
 
 
 class DiagnosticChecker(ABC):

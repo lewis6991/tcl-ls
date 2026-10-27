@@ -12,7 +12,7 @@ from tcl_lsp.analysis.metadata_commands import MetadataOption, scan_command_opti
 from tcl_lsp.common import Diagnostic
 
 from .base import AnalysisDiagnosticSeverity, DiagnosticChecker, DiagnosticContext
-from .helpers import builtin_shared_option_specs, resolved_command_calls
+from .helpers import builtin_shared_option_specs
 
 _REGEX_COMMANDS = frozenset({'regexp', 'regsub'})
 _REGEXP_VALIDATE_SCRIPT = """
@@ -35,7 +35,7 @@ class InvalidRegexChecker(DiagnosticChecker):
 
     @override
     def check(self, context: DiagnosticContext) -> Iterable[Diagnostic]:
-        for command_call, command_target in resolved_command_calls(context):
+        for command_call, command_target in context.resolved_calls:
             if not isinstance(command_target, BuiltinCommand):
                 continue
             if command_target.name not in _REGEX_COMMANDS:

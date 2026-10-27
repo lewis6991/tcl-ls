@@ -6,7 +6,7 @@ from typing import ClassVar, override
 from tcl_lsp.common import Diagnostic
 
 from .base import AnalysisDiagnosticSeverity, DiagnosticChecker, DiagnosticContext
-from .helpers import command_subcommand_issue, resolved_command_calls
+from .helpers import command_subcommand_issue
 
 
 class UnknownSubcommandChecker(DiagnosticChecker):
@@ -15,7 +15,7 @@ class UnknownSubcommandChecker(DiagnosticChecker):
 
     @override
     def check(self, context: DiagnosticContext) -> Iterable[Diagnostic]:
-        for command_call, command_target in resolved_command_calls(context):
+        for command_call, command_target in context.resolved_calls:
             issue = command_subcommand_issue(command_call, command_target)
             if issue is None:
                 continue

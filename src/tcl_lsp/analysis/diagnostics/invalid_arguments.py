@@ -7,7 +7,7 @@ from tcl_lsp.analysis.model import ProcDecl
 from tcl_lsp.common import Diagnostic
 
 from .base import AnalysisDiagnosticSeverity, DiagnosticChecker, DiagnosticContext
-from .helpers import command_target_structured_matches, resolved_command_calls
+from .helpers import command_target_structured_matches
 
 
 class InvalidArgumentsChecker(DiagnosticChecker):
@@ -16,7 +16,7 @@ class InvalidArgumentsChecker(DiagnosticChecker):
 
     @override
     def check(self, context: DiagnosticContext) -> Iterable[Diagnostic]:
-        for command_call, command_target in resolved_command_calls(context):
+        for command_call, command_target in context.resolved_calls:
             if isinstance(command_target, ProcDecl):
                 continue
 

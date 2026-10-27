@@ -8,7 +8,6 @@ from tcl_lsp.analysis.model import ProcDecl
 from tcl_lsp.common import Diagnostic
 
 from .base import AnalysisDiagnosticSeverity, DiagnosticChecker, DiagnosticContext
-from .helpers import resolved_command_calls
 
 
 class IncompatibleEnvironmentChecker(DiagnosticChecker):
@@ -17,7 +16,7 @@ class IncompatibleEnvironmentChecker(DiagnosticChecker):
 
     @override
     def check(self, context: DiagnosticContext) -> Iterable[Diagnostic]:
-        for call, target in resolved_command_calls(context):
+        for call, target in context.resolved_calls:
             if not isinstance(target, ProcDecl) or not target.global_requirements:
                 continue
             known = dict(call.global_values)

@@ -15,6 +15,19 @@ def test_analysis_reports_unknown_builtin_option(parser: Parser) -> None:
     assert diagnostic.span.start.character == 7
 
 
+def test_analysis_keeps_unknown_and_missing_option_issues_separate(parser: Parser) -> None:
+    snapshot = _analyze(
+        parser,
+        'file:///mixed_options.tcl',
+        'regexp -bogus pat text\nregexp -start\nregexp -- -bogus text\nreturn -code\n',
+    )
+
+    assert [
+        (diagnostic.code, diagnostic.span.start.line, diagnostic.span.start.character)
+        for diagnostic in snapshot.analysis.diagnostics
+    ] == [('unknown-option', 0, 7), ('missing-option-value', 1, 7)]
+
+
 def test_analysis_reports_unknown_exec_option(parser: Parser) -> None:
     snapshot = _analyze(parser, 'file:///exec_option.tcl', 'exec -bogus echo hi\n')
     analysis = snapshot.analysis

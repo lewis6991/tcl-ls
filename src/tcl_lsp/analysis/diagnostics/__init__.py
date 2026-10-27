@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import replace
 from typing import Final
 
 from tcl_lsp.common import Diagnostic
@@ -15,6 +16,7 @@ from .base import (
     ResolvedVariable,
 )
 from .duplicate_proc import DuplicateProcChecker
+from .helpers import command_option_issue, resolved_command_calls
 from .incompatible_environment import IncompatibleEnvironmentChecker
 from .invalid_arguments import InvalidArgumentsChecker
 from .invalid_regex import InvalidRegexChecker
@@ -52,6 +54,16 @@ DIAGNOSTIC_CHECKERS: Final[tuple[DiagnosticChecker, ...]] = (
 
 
 def collect_diagnostics(context: DiagnosticContext) -> Iterable[Diagnostic]:
+    resolved_calls = resolved_command_calls(context)
+    context = replace(
+        context,
+        resolved_calls=resolved_calls,
+        option_issues=tuple(
+            (call, *issue)
+            for call, target in resolved_calls
+            if (issue := command_option_issue(call, target)) is not None
+        ),
+    )
     diagnostics = [
         diagnostic for checker in DIAGNOSTIC_CHECKERS for diagnostic in checker.check(context)
     ]

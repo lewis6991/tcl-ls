@@ -8,7 +8,6 @@ from tcl_lsp.analysis.embedded_languages import ContextualCommand
 from tcl_lsp.common import Diagnostic
 
 from .base import AnalysisDiagnosticSeverity, DiagnosticChecker, DiagnosticContext
-from .helpers import resolved_command_calls
 
 
 class ValueConstraintChecker(DiagnosticChecker):
@@ -19,7 +18,7 @@ class ValueConstraintChecker(DiagnosticChecker):
     def check(self, context: DiagnosticContext) -> Iterable[Diagnostic]:
         owners = {
             call.span: target.name
-            for call, target in resolved_command_calls(context)
+            for call, target in context.resolved_calls
             if isinstance(target, (BuiltinCommand, ContextualCommand))
         }
         for check in context.facts.value_checks:

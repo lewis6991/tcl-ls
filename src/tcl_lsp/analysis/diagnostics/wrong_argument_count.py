@@ -12,7 +12,7 @@ from .base import (
     DiagnosticContext,
     ResolvedCommandTarget,
 )
-from .helpers import command_target_arities, resolved_command_calls
+from .helpers import command_target_arities
 
 
 class WrongArgumentCountChecker(DiagnosticChecker):
@@ -21,7 +21,7 @@ class WrongArgumentCountChecker(DiagnosticChecker):
 
     @override
     def check(self, context: DiagnosticContext) -> Iterable[Diagnostic]:
-        for command_call, command_target in resolved_command_calls(context):
+        for command_call, command_target in context.resolved_calls:
             message = _command_argument_message(command_call, command_target)
             if message is None:
                 continue

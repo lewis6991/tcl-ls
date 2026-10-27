@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal, Protocol
+from typing import Protocol
 
 from tcl_lsp.analysis.arity import metadata_signature_arity
 from tcl_lsp.analysis.builtins import BuiltinCommand
@@ -18,9 +18,7 @@ from tcl_lsp.analysis.signature_matching import (
 )
 from tcl_lsp.common import Span
 
-from .base import CommandCallKey, DiagnosticContext, ResolvedCommandTarget
-
-type OptionIssueState = Literal['unknown-option', 'missing-option-value']
+from .base import CommandCallKey, DiagnosticContext, OptionIssueState, ResolvedCommandTarget
 
 
 class SharedCommandOverload(Protocol):
