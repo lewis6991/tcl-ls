@@ -1345,6 +1345,7 @@ class _FactCollector:
         command_name: str,
         prefix_word_count: int,
         procedure: MetadataProcedure,
+        owner_name: str | None = None,
     ) -> None:
         argument_words = command.words[prefix_word_count:]
         procedure_name, selection_span = self._procedure_name(
@@ -1382,14 +1383,23 @@ class _FactCollector:
             if self._embedded_script_text(body_word) is None:
                 return
 
-        qualified_name = qualify_name(procedure_name, context.namespace)
+        qualified_name = (
+            qualify_name(procedure_name, context.namespace)
+            if owner_name is None
+            else self._embedded_procedure_qualified_name(
+                owner_name=owner_name,
+                command_name=command_name,
+                procedure=procedure,
+                procedure_name=procedure_name,
+            )
+        )
         proc_id = proc_symbol_id(context.uri, qualified_name, selection_span.start.offset)
         proc_decl = ProcDecl(
             symbol_id=proc_id,
             uri=context.uri,
             name=procedure_name,
             qualified_name=qualified_name,
-            namespace=namespace_for_name(qualified_name),
+            namespace=namespace_for_name(qualified_name if owner_name is None else owner_name),
             span=command.span,
             name_span=selection_span,
             parameters=self._parameter_decls_from_items(
@@ -1403,18 +1413,13 @@ class _FactCollector:
             documentation=command_documentation(command),
             body_span=body_span(body_word) if body_word is not None else None,
         )
-        proc_decl = self._annotate_procedure(proc_decl, context)
-        self._facts.procedures.append(proc_decl)
-
-        if body_word is None:
-            return
-
-        body_context = replace(
-            self._procedure_context(proc_decl, context),
-            embedded_language=procedure.body_context,
+        self._collect_declared_procedure(
+            proc_decl,
+            context,
+            body_word=body_word,
+            body_language=procedure.body_context,
+            owner_name=owner_name,
         )
-        self._record_parameter_bindings(proc_decl.parameters, body_context)
-        self._collect_procedure_body(body_word, body_context)
 
     def _collect_plugin_procedure(
         self,
@@ -1511,18 +1516,12 @@ class _FactCollector:
             documentation=command_documentation(command),
             body_span=body_span(body_word) if body_word is not None else None,
         )
-        proc_decl = self._annotate_procedure(proc_decl, context)
-        self._facts.procedures.append(proc_decl)
-
-        if body_word is None:
-            return
-
-        body_context = replace(
-            self._procedure_context(proc_decl, context),
-            embedded_language=procedure.body_context,
+        self._collect_declared_procedure(
+            proc_decl,
+            context,
+            body_word=body_word,
+            body_language=procedure.body_context,
         )
-        self._record_parameter_bindings(proc_decl.parameters, body_context)
-        self._collect_procedure_body(body_word, body_context)
 
     def _collect_plugin_selected_effect(
         self,
@@ -1931,78 +1930,32 @@ class _FactCollector:
         owner_name = context.embedded_owner_name
         if owner_name is None:
             return
-
-        argument_words = command.words[prefix_word_count:]
-        procedure_name, selection_span = self._procedure_name(
+        self._collect_metadata_procedure(
             command,
+            context,
             metadata_command=metadata_command,
             command_name=command_name,
             prefix_word_count=prefix_word_count,
-            argument_words=argument_words,
             procedure=procedure,
-        )
-        if procedure_name is None or selection_span is None:
-            return
-
-        parameter_items = self._procedure_parameter_items(
-            command,
-            argument_words,
-            context,
-            metadata_command=metadata_command,
-            procedure=procedure,
-            fallback_start=selection_span.start,
-        )
-        if parameter_items is None:
-            return
-
-        body_word: Word | None = None
-        if procedure.body_selector is not None:
-            body_index = self._procedure_selected_argument_index(
-                argument_words,
-                metadata_command=metadata_command,
-                selector=procedure.body_selector,
-            )
-            if body_index is None:
-                return
-            body_word = argument_words[body_index]
-            if self._embedded_script_text(body_word) is None:
-                return
-
-        qualified_name = self._embedded_procedure_qualified_name(
             owner_name=owner_name,
-            command_name=command_name,
-            procedure=procedure,
-            procedure_name=procedure_name,
         )
-        proc_id = proc_symbol_id(context.uri, qualified_name, selection_span.start.offset)
-        proc_decl = ProcDecl(
-            symbol_id=proc_id,
-            uri=context.uri,
-            name=procedure_name,
-            qualified_name=qualified_name,
-            namespace=namespace_for_name(owner_name),
-            span=command.span,
-            name_span=selection_span,
-            parameters=self._parameter_decls_from_items(
-                parameter_items,
-                uri=context.uri,
-                proc_symbol_id=proc_id,
-            ),
-            arity=None
-            if procedure.parameter_plugin is not None
-            else proc_parameter_arity(parameter_items),
-            documentation=command_documentation(command),
-            body_span=body_span(body_word) if body_word is not None else None,
-        )
+
+    def _collect_declared_procedure(
+        self,
+        proc_decl: ProcDecl,
+        context: _ExtractionContext,
+        *,
+        body_word: Word | None,
+        body_language: str | None,
+        owner_name: str | None = None,
+    ) -> None:
         proc_decl = self._annotate_procedure(proc_decl, context)
         self._facts.procedures.append(proc_decl)
-
         if body_word is None:
             return
-
         body_context = replace(
             self._procedure_context(proc_decl, context),
-            embedded_language=procedure.body_context,
+            embedded_language=body_language,
             embedded_owner_name=owner_name,
         )
         self._record_parameter_bindings(proc_decl.parameters, body_context)
