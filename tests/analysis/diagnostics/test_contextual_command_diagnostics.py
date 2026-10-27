@@ -682,9 +682,27 @@ def test_analysis_applies_static_enter_to_special_proc_body(
     assert messages == ()
 
 
-def test_analysis_allows_valid_special_enter_for_dynamic_proc_body(
+@pytest.mark.parametrize(
+    ('command', 'shape', 'body_index', 'source_text'),
+    [
+        ('proc', 'name params body', 3, 'proc demo {} [list local x]\n'),
+        ('if', 'test body args', 2, 'proc demo {body} {if 1 $body}\n'),
+        ('try', 'body args', 1, 'proc demo {body} {try $body finally {puts done}}\n'),
+        (
+            'switch',
+            'args',
+            4,
+            'proc demo {value body} {switch -- $value a $body default {puts done}}\n',
+        ),
+    ],
+)
+def test_analysis_allows_valid_special_enter_for_dynamic_bodies(
     parser: Parser,
     tmp_path: Path,
+    command: str,
+    shape: str,
+    body_index: int,
+    source_text: str,
 ) -> None:
     codes, messages = _analyze_with_metadata(
         parser,
@@ -694,12 +712,12 @@ def test_analysis_allows_valid_special_enter_for_dynamic_proc_body(
             '    meta language sample {\n'
             '        command local {name}\n'
             '    }\n'
-            '    meta command proc {name params body} {\n'
-            '        enter sample body 3\n'
+            f'    meta command {command} {{{shape}}} {{\n'
+            f'        enter sample body {body_index}\n'
             '    }\n'
             '}\n'
         ),
-        source_text='proc demo {} [list local x]\n',
+        source_text=source_text,
     )
 
     assert codes == ()

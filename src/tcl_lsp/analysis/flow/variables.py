@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from itertools import product
 
+from tcl_lsp.analysis.facts.command_layout import switch_options
 from tcl_lsp.analysis.facts.parsing import ListItem, is_simple_name, split_tcl_list
 from tcl_lsp.analysis.facts.utils import qualify_name
 from tcl_lsp.analysis.facts.values import resolve_word_source
@@ -385,13 +386,6 @@ class VariableEffects:
 
 
 @dataclass(frozen=True, slots=True)
-class _SwitchCommandOptionState:
-    value_index: int
-    match_mode: str
-    nocase: bool
-
-
-@dataclass(frozen=True, slots=True)
 class _SwitchCommandBranch:
     patterns: tuple[str | None, ...]
     body_text: str
@@ -765,8 +759,8 @@ def _switch_command_layout(command: Command) -> _SwitchCommandLayout | None:
     if len(command.words) < 3:
         return None
 
-    option_state = _scan_switch_command_options(command.words)
-    if option_state is None or option_state.value_index + 1 >= len(command.words):
+    option_state = switch_options(command.words)
+    if option_state.issue is not None or option_state.value_index + 1 >= len(command.words):
         return None
 
     branch_words = command.words[option_state.value_index + 1 :]
@@ -783,48 +777,6 @@ def _switch_command_layout(command: Command) -> _SwitchCommandLayout | None:
         option_state.nocase,
         branches,
     )
-
-
-def _scan_switch_command_options(words: tuple[Word, ...]) -> _SwitchCommandOptionState | None:
-    index = 1
-    match_mode = 'exact'
-    nocase = False
-
-    while index < len(words):
-        option = word_static_text(words[index])
-        if option is None:
-            break
-        if option == '--':
-            index += 1
-            break
-        if option == '-exact':
-            match_mode = 'exact'
-            index += 1
-            continue
-        if option == '-glob':
-            match_mode = 'glob'
-            index += 1
-            continue
-        if option == '-regexp':
-            match_mode = 'regexp'
-            index += 1
-            continue
-        if option == '-nocase':
-            nocase = True
-            index += 1
-            continue
-        if option in {'-matchvar', '-indexvar'}:
-            if index + 1 >= len(words):
-                return None
-            index += 2
-            continue
-        if option.startswith('-'):
-            return None
-        break
-
-    if index >= len(words):
-        return None
-    return _SwitchCommandOptionState(index, match_mode, nocase)
 
 
 def _switch_command_branches_from_list_word(word: Word) -> tuple[_SwitchCommandBranch, ...]:

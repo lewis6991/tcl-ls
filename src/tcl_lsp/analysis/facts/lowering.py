@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from threading import RLock
 
+from tcl_lsp.analysis.facts.command_layout import CommandLayouts
 from tcl_lsp.analysis.facts.locations import SourceRelocation
 from tcl_lsp.analysis.facts.parsing import (
     ConditionVariableSubstitution,
@@ -201,8 +202,9 @@ def collect_parse_result_lexical_spans(
     *,
     parser: Parser,
     cache: VersionCache[tuple[str, bool], _LexicalBody] | None = None,
+    layouts: CommandLayouts | None = None,
 ) -> tuple[tuple[Span, ...], tuple[Span, ...], tuple[Span, ...]]:
-    collector = _LexicalCollector(parser, parse_result.source_id, cache=cache)
+    collector = _LexicalCollector(parser, parse_result.source_id, cache=cache, layouts=layouts)
     collector.collect_parse_result(parse_result)
     return (
         tuple(collector.comment_spans),
@@ -216,8 +218,9 @@ def _script_lexical_spans(
     *,
     parser: Parser,
     source_id: str,
+    layouts: CommandLayouts,
 ) -> tuple[tuple[Span, ...], tuple[Span, ...]]:
-    collector = _LexicalCollector(parser, source_id)
+    collector = _LexicalCollector(parser, source_id, layouts=layouts)
     collector.collect_script(script, collect_comments=False)
     return tuple(collector.string_spans), tuple(collector.operator_spans)
 
@@ -229,10 +232,12 @@ class _LexicalCollector:
         source_id: str,
         *,
         cache: VersionCache[tuple[str, bool], _LexicalBody] | None = None,
+        layouts: CommandLayouts | None = None,
     ) -> None:
         self._parser = parser
         self._source_id = source_id
         self._cache = cache
+        self._layouts = CommandLayouts() if layouts is None else layouts
         self._visited: set[tuple[str, Position, bool]] = set()
         self.comment_spans: list[Span] = []
         self.string_spans: list[Span] = []
@@ -267,7 +272,9 @@ class _LexicalCollector:
             if body is None:
                 # Collect independently of the caller's visited bodies, so a
                 # cached result contains every span in this text block.
-                collector = _LexicalCollector(self._parser, self._source_id, cache=self._cache)
+                collector = _LexicalCollector(
+                    self._parser, self._source_id, cache=self._cache, layouts=self._layouts
+                )
                 parsed = self._parser.parse_embedded_script(self._source_id, text, start)
                 if collect_comments:
                     collector.collect_parse_result(parsed)
@@ -329,66 +336,28 @@ class _LexicalCollector:
             self._collect_script_word(words[2] if len(words) > 2 else None)
 
     def _collect_if_bodies(self, words: tuple[Word, ...]) -> None:
-        index = 1
-        while index < len(words):
-            if index > 1:
-                keyword = word_static_text(words[index])
-                if keyword == 'elseif':
-                    index += 1
-                elif keyword == 'else':
-                    self._collect_script_word(words[index + 1] if index + 1 < len(words) else None)
-                    return
-                else:
-                    return
-            body_index = index + 1
-            if body_index < len(words) and word_static_text(words[body_index]) == 'then':
-                body_index += 1
-            if body_index >= len(words):
-                return
-            self._collect_script_word(words[body_index])
-            index = body_index + 1
+        layout = self._layouts.if_layout(words)
+        for _, body_index in layout.clauses:
+            if body_index is not None:
+                self._collect_script_word(words[body_index])
+        if layout.else_body_index is not None:
+            self._collect_script_word(words[layout.else_body_index])
 
     def _collect_try_bodies(self, words: tuple[Word, ...]) -> None:
         self._collect_script_word(words[1] if len(words) > 1 else None)
-        index = 2
-        while index < len(words):
-            if words[index].expanded:
-                return
-            clause_name = word_static_text(words[index])
-            if clause_name == 'finally':
-                self._collect_script_word(
-                    words[index + 1]
-                    if index + 1 < len(words) and not words[index + 1].expanded
-                    else None
-                )
-                return
-            if clause_name not in {'on', 'trap'} or index + 3 >= len(words):
-                return
-            if any(words[offset].expanded for offset in range(index, index + 4)):
-                return
-            self._collect_script_word(words[index + 3])
-            index += 4
+        layout = self._layouts.try_layout(words)
+        for body_index in layout.handler_body_indices:
+            self._collect_script_word(words[body_index])
+        if layout.finally_body_index is not None:
+            self._collect_script_word(words[layout.finally_body_index])
 
     def _collect_switch_bodies(self, words: tuple[Word, ...]) -> None:
         if len(words) < 3:
             return
-        value_index = 1
-        while value_index < len(words):
-            option = word_static_text(words[value_index])
-            if option is None:
-                break
-            if option == '--':
-                value_index += 1
-                break
-            if option in {'-exact', '-glob', '-nocase', '-regexp'}:
-                value_index += 1
-                continue
-            if option in {'-matchvar', '-indexvar'} and value_index + 1 < len(words):
-                value_index += 2
-                continue
-            if option.startswith('-') and option != '-':
-                return
-            break
+        options = self._layouts.switch_options(words)
+        if options.issue is not None:
+            return
+        value_index = options.value_index
         branches = words[value_index + 1 :]
         if len(branches) == 1:
             word = branches[0]
@@ -459,14 +428,6 @@ class _SwitchLayout:
     regexp_binding_words: tuple[Word, ...]
 
 
-@dataclass(frozen=True, slots=True)
-class _SwitchOptionState:
-    value_index: int
-    match_mode: str
-    nocase: bool
-    regexp_binding_words: tuple[Word, ...]
-
-
 class _BodyParser(Parser):
     """Parse each body once for one document version, including its tokens."""
 
@@ -519,6 +480,7 @@ class DocumentSyntax:
         previous: DocumentSyntax | None = None,
     ) -> None:
         self.parse_result = parse_result
+        self.command_layouts = CommandLayouts()
         self.parser = _BodyParser(parser, parse_result.source_id)
         self._lexical_bodies: VersionCache[tuple[str, bool], _LexicalBody] = (
             VersionCache() if previous is None else previous._lexical_bodies.fork()
@@ -534,7 +496,10 @@ class DocumentSyntax:
         with self._lock:
             if self._lexical_spans is None:
                 comments, strings, operators = collect_parse_result_lexical_spans(
-                    self.parse_result, parser=self.parser, cache=self._lexical_bodies
+                    self.parse_result,
+                    parser=self.parser,
+                    cache=self._lexical_bodies,
+                    layouts=self.command_layouts,
                 )
                 # Independently cached blocks can overlap (for example a switch
                 # branch list and its bodies). Each span needs one token only.
@@ -580,7 +545,10 @@ class DocumentSyntax:
             lowerer = _Lowerer(syntax=self, collect_lexical_spans=collect_lexical_spans)
             strings, operators = (
                 _script_lexical_spans(
-                    script, parser=self.parser, source_id=self.parse_result.source_id
+                    script,
+                    parser=self.parser,
+                    source_id=self.parse_result.source_id,
+                    layouts=self.command_layouts,
                 )
                 if collect_lexical_spans
                 else ((), ())
@@ -741,76 +709,31 @@ class _Lowerer:
         command_name: str | None,
         word_references: tuple[LoweredWordReferences, ...],
     ) -> LoweredCommand:
+        layout = self._syntax.command_layouts.if_layout(command.words)
         clauses: list[LoweredIfClause] = []
-        else_body: LoweredScriptBody | None = None
-
-        index = 1
-        while index < len(command.words):
-            clause_kind = 'if'
-            clause_span = command.span
-            if clauses:
-                keyword_word = command.words[index]
-                keyword = word_static_text(keyword_word)
-                if keyword == 'elseif':
-                    clause_kind = 'elseif'
-                    clause_span = keyword_word.span
-                    index += 1
-                elif keyword == 'else':
-                    clause_span = keyword_word.span
-                    if index + 1 >= len(command.words):
-                        self._emit_analysis_diagnostic(
-                            code='malformed-if',
-                            message='Malformed `if` command; `else` requires a body.',
-                            span=clause_span,
-                        )
-                        break
-                    else_body = self._lower_script_word(
-                        command.words[index + 1] if index + 1 < len(command.words) else None,
-                        word_index=index + 1,
-                    )
-                    if index + 2 < len(command.words):
-                        self._emit_analysis_diagnostic(
-                            code='malformed-if',
-                            message='Malformed `if` command; trailing words after `else` body.',
-                            span=command.words[index + 2].span,
-                        )
-                    break
-                elif keyword is not None:
-                    self._emit_analysis_diagnostic(
-                        code='malformed-if',
-                        message=(
-                            f'Malformed `if` command; expected `elseif` or `else`, got `{keyword}`.'
-                        ),
-                        span=keyword_word.span,
-                    )
-                    break
-                else:
-                    break
-
+        for condition_index, body_index in layout.clauses:
             condition = self._lower_condition_word(
-                command.words[index] if index < len(command.words) else None
+                command.words[condition_index] if condition_index < len(command.words) else None
             )
-            body_index = self._if_body_index(command.words, index + 1)
             if body_index is None:
-                if clause_kind == 'elseif':
-                    self._emit_analysis_diagnostic(
-                        code='malformed-if',
-                        message='Malformed `if` command; `elseif` requires a test and body.',
-                        span=clause_span,
-                    )
                 break
-
             clauses.append(
                 LoweredIfClause(
                     condition=condition,
-                    body=self._lower_script_word(
-                        command.words[body_index],
-                        word_index=body_index,
-                    ),
+                    body=self._lower_script_word(command.words[body_index], word_index=body_index),
                 )
             )
-            index = body_index + 1
-
+        else_index = layout.else_body_index
+        else_body = (
+            self._lower_script_word(command.words[else_index], word_index=else_index)
+            if else_index is not None
+            else None
+        )
+        if layout.issue is not None:
+            index, message = layout.issue
+            self._emit_analysis_diagnostic(
+                code='malformed-if', message=message, span=command.words[index].span
+            )
         return LoweredIfCommand(
             command=command,
             command_name=command_name,
@@ -841,52 +764,28 @@ class _Lowerer:
         command_name: str | None,
         word_references: tuple[LoweredWordReferences, ...],
     ) -> LoweredCommand:
-        handlers: list[LoweredTryHandler] = []
-        finally_body: LoweredScriptBody | None = None
-
-        index = 2
-        while index < len(command.words):
-            clause_word = command.words[index]
-            if clause_word.expanded:
-                break
-
-            clause_name = word_static_text(clause_word)
-            if clause_name == 'finally':
-                body_word = (
-                    command.words[index + 1]
-                    if index + 1 < len(command.words) and not command.words[index + 1].expanded
-                    else None
-                )
-                finally_body = self._lower_script_word(body_word, word_index=index + 1)
-                break
-
-            if clause_name not in {'on', 'trap'}:
-                break
-            if index + 3 >= len(command.words):
-                break
-            if any(command.words[offset].expanded for offset in range(index, index + 4)):
-                break
-
-            handlers.append(
-                LoweredTryHandler(
-                    binding_word=command.words[index + 2],
-                    body=self._lower_script_word(
-                        command.words[index + 3],
-                        word_index=index + 3,
-                    ),
-                )
+        layout = self._syntax.command_layouts.try_layout(command.words)
+        handlers = tuple(
+            LoweredTryHandler(
+                binding_word=command.words[body_index - 1],
+                body=self._lower_script_word(command.words[body_index], word_index=body_index),
             )
-            index += 4
-
-        body_word = (
-            command.words[1] if len(command.words) > 1 and not command.words[1].expanded else None
+            for body_index in layout.handler_body_indices
+        )
+        finally_index = layout.finally_body_index
+        finally_body = (
+            self._lower_script_word(command.words[finally_index], word_index=finally_index)
+            if finally_index is not None
+            else None
         )
         return LoweredTryCommand(
             command=command,
             command_name=command_name,
             word_references=word_references,
-            body=self._lower_script_word(body_word, word_index=1),
-            handlers=tuple(handlers),
+            body=self._lower_script_word(
+                command.words[1] if len(command.words) > 1 else None, word_index=1
+            ),
+            handlers=handlers,
             finally_body=finally_body,
         )
 
@@ -1045,13 +944,6 @@ class _Lowerer:
             return ()
         return tuple(split_tcl_list(static_text, word.content_span.start))
 
-    def _if_body_index(self, words: tuple[Word, ...], index: int) -> int | None:
-        if index < len(words) and word_static_text(words[index]) == 'then':
-            index += 1
-        if index >= len(words):
-            return None
-        return index
-
     def _switch_layout(self, words: tuple[Word, ...]) -> _SwitchLayout | None:
         if len(words) < 3:
             if len(words) >= 1:
@@ -1062,8 +954,12 @@ class _Lowerer:
                 )
             return None
 
-        option_state = self._scan_switch_options(words)
-        if option_state is None:
+        option_state = self._syntax.command_layouts.switch_options(words)
+        if option_state.issue is not None:
+            index, message = option_state.issue
+            self._emit_analysis_diagnostic(
+                code='malformed-switch', message=message, span=words[index].span
+            )
             return None
         if option_state.value_index >= len(words):
             self._emit_analysis_diagnostic(
@@ -1163,63 +1059,6 @@ class _Lowerer:
                 bodies.append(lowered_body)
             pending_patterns = []
         return tuple(branch_patterns), tuple(bodies)
-
-    def _scan_switch_options(self, words: tuple[Word, ...]) -> _SwitchOptionState | None:
-        index = 1
-        regexp_binding_words: list[Word] = []
-        match_mode = 'exact'
-        nocase = False
-
-        while index < len(words):
-            option = word_static_text(words[index])
-            if option is None:
-                break
-            if option == '--':
-                index += 1
-                break
-            if option == '-exact':
-                match_mode = 'exact'
-                index += 1
-                continue
-            if option == '-glob':
-                match_mode = 'glob'
-                index += 1
-                continue
-            if option == '-nocase':
-                nocase = True
-                index += 1
-                continue
-            if option == '-regexp':
-                match_mode = 'regexp'
-                index += 1
-                continue
-            if option in {'-matchvar', '-indexvar'}:
-                if index + 1 >= len(words):
-                    self._emit_analysis_diagnostic(
-                        code='malformed-switch',
-                        message=f'Malformed `switch` command; `{option}` requires a value.',
-                        span=words[index].span,
-                    )
-                    return None
-                if match_mode == 'regexp':
-                    regexp_binding_words.append(words[index + 1])
-                index += 2
-                continue
-            if option.startswith('-') and option != '-':
-                self._emit_analysis_diagnostic(
-                    code='malformed-switch',
-                    message=f'Malformed `switch` command; unknown option `{option}`.',
-                    span=words[index].span,
-                )
-                return None
-            break
-
-        return _SwitchOptionState(
-            value_index=index,
-            match_mode=match_mode,
-            nocase=nocase,
-            regexp_binding_words=tuple(regexp_binding_words),
-        )
 
     def _emit_analysis_diagnostic(self, *, code: str, message: str, span: Span) -> None:
         self.diagnostics.append(

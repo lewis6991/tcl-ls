@@ -72,6 +72,31 @@ last 1
         server.shutdown()
 
 
+def test_control_command_edits_refresh_body_locations(tmp_path: Path) -> None:
+    uri = (tmp_path / 'main.tcl').as_uri()
+    text = """proc run {kind} {
+    if {$kind eq "a"} {puts yes} else {puts no}
+    try {puts try} on error {message opts} {puts $message} finally {puts done}
+    switch -- $kind a {puts a} default {puts other}
+}
+run a
+"""
+    server = new_server()
+    try:
+        server.open_document(uri, text, 1)
+        variants = (
+            text.replace('{puts yes}', 'then {puts yes} elseif {0} {puts never}'),
+            text.replace('finally', 'on ok {result opts} {puts $result} finally'),
+            text.replace('switch --', 'switch -regexp -matchvar match --'),
+            text,
+        )
+        for version, edited in enumerate(variants, start=2):
+            server.change_document(uri, edited, version)
+            assert_fresh_analysis(server, uri, edited)
+    finally:
+        server.shutdown()
+
+
 def test_annotation_edits_refresh_cached_parameter_and_variable_types(tmp_path: Path) -> None:
     uri = (tmp_path / 'main.tcl').as_uri()
     text = """# @alias State "enabled"|"disabled"

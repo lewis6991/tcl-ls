@@ -767,74 +767,23 @@ class _FactCollector:
         if isinstance(command, LoweredForCommand):
             return frozenset({1, 3, 4})
         if isinstance(command, LoweredIfCommand):
-            return self._if_body_word_indices(command.command.words)
+            return self._syntax.command_layouts.if_layout(command.command.words).body_word_indices()
         if isinstance(command, LoweredCatchCommand):
             return frozenset({1})
         if isinstance(command, LoweredTryCommand):
-            return self._try_body_word_indices(command.command.words)
+            return self._syntax.command_layouts.try_layout(
+                command.command.words
+            ).body_word_indices()
         if isinstance(command, LoweredSwitchCommand):
             return self._switch_body_word_indices(command.command.words)
         if isinstance(command, LoweredWhileCommand):
             return frozenset({2})
         return frozenset()
 
-    def _if_body_word_indices(self, words: tuple[Word, ...]) -> frozenset[int]:
-        body_indices: set[int] = set()
-        index = 1
-        saw_clause = False
-        while index < len(words):
-            if saw_clause:
-                keyword = word_static_text(words[index])
-                if keyword == 'elseif':
-                    index += 1
-                elif keyword == 'else':
-                    if index + 1 < len(words):
-                        body_indices.add(index + 1)
-                    break
-                else:
-                    break
-
-            body_index = self._if_body_word_index(words, index + 1)
-            if body_index is None:
-                break
-            body_indices.add(body_index)
-            index = body_index + 1
-            saw_clause = True
-        return frozenset(body_indices)
-
-    def _if_body_word_index(self, words: tuple[Word, ...], index: int) -> int | None:
-        if index < len(words) and word_static_text(words[index]) == 'then':
-            index += 1
-        if index >= len(words):
-            return None
-        return index
-
-    def _try_body_word_indices(self, words: tuple[Word, ...]) -> frozenset[int]:
-        body_indices: set[int] = {1}
-        index = 2
-        while index < len(words):
-            clause_word = words[index]
-            if clause_word.expanded:
-                break
-
-            clause_name = word_static_text(clause_word)
-            if clause_name == 'finally':
-                if index + 1 < len(words):
-                    body_indices.add(index + 1)
-                break
-
-            if clause_name not in {'on', 'trap'} or index + 3 >= len(words):
-                break
-            if any(words[offset].expanded for offset in range(index, index + 4)):
-                break
-
-            body_indices.add(index + 3)
-            index += 4
-        return frozenset(body_indices)
-
     def _switch_body_word_indices(self, words: tuple[Word, ...]) -> frozenset[int]:
-        value_index = self._switch_value_word_index(words)
-        if value_index is None or value_index + 2 >= len(words):
+        options = self._syntax.command_layouts.switch_options(words)
+        value_index = options.value_index
+        if options.issue is not None or value_index + 2 >= len(words):
             return frozenset()
 
         branch_start_index = value_index + 1
@@ -845,28 +794,6 @@ class _FactCollector:
         return frozenset(
             branch_start_index + index + 1 for index in range(0, branch_word_count - 1, 2)
         )
-
-    def _switch_value_word_index(self, words: tuple[Word, ...]) -> int | None:
-        index = 1
-        while index < len(words):
-            option = word_static_text(words[index])
-            if option is None:
-                break
-            if option == '--':
-                index += 1
-                break
-            if option in {'-exact', '-glob', '-nocase', '-regexp'}:
-                index += 1
-                continue
-            if option in {'-matchvar', '-indexvar'}:
-                index += 2
-                continue
-            if option.startswith('-') and option != '-':
-                return None
-            break
-        if index >= len(words):
-            return None
-        return index
 
     def _collect_builtin_handler_command(
         self,
