@@ -1,6 +1,6 @@
 [project]
 name = "tcl-ls"
-version = "1.0.0"
+version = "1.0.1"
 description = "Tcl language server, checker, and metadata toolkit."
 readme = "README.md"
 requires-python = ">=3.12"
