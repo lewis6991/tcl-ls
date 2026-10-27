@@ -28,45 +28,14 @@ def definition(
     line: int,
     character: int,
 ) -> tuple[types.Location, ...]:
-    metadata_registry = metadata_registry.for_source(uri)
-    package_locations = package_definition_locations(
+    return _definition_or_declaration(
         documents_by_uri,
         workspace_index=workspace_index,
-        uri=uri,
-        line=line,
-        character=character,
-    )
-    if package_locations:
-        return package_locations
-
-    command_import_locations = command_import_definition_locations(
-        documents_by_uri,
         metadata_registry=metadata_registry,
         uri=uri,
         line=line,
         character=character,
-    )
-    if command_import_locations:
-        return command_import_locations
-
-    symbol_ids = symbol_ids_at_position(documents_by_uri, uri=uri, line=line, character=character)
-    if not symbol_ids:
-        return ()
-    definitions = definitions_for_symbols(
-        documents_by_uri.values(),
-        metadata_registry=metadata_registry,
-        symbol_ids=symbol_ids,
-    )
-    metadata_locations = _metadata_locations_for_definitions(
-        documents_by_uri,
-        metadata_registry=metadata_registry,
-        definitions=definitions,
-        uri=uri,
-        line=line,
-        character=character,
-    )
-    return deduplicate_locations(
-        [*(definition.location for definition in definitions), *metadata_locations]
+        include_declarations=False,
     )
 
 
@@ -78,6 +47,27 @@ def declaration(
     uri: str,
     line: int,
     character: int,
+) -> tuple[types.Location, ...]:
+    return _definition_or_declaration(
+        documents_by_uri,
+        workspace_index=workspace_index,
+        metadata_registry=metadata_registry,
+        uri=uri,
+        line=line,
+        character=character,
+        include_declarations=True,
+    )
+
+
+def _definition_or_declaration(
+    documents_by_uri: Mapping[str, ManagedDocument],
+    *,
+    workspace_index: WorkspaceIndex,
+    metadata_registry: MetadataRegistry,
+    uri: str,
+    line: int,
+    character: int,
+    include_declarations: bool,
 ) -> tuple[types.Location, ...]:
     metadata_registry = metadata_registry.for_source(uri)
     package_locations = package_definition_locations(
@@ -103,16 +93,19 @@ def declaration(
     symbol_ids = symbol_ids_at_position(documents_by_uri, uri=uri, line=line, character=character)
     if not symbol_ids:
         return ()
-
     definitions = definitions_for_symbols(
         documents_by_uri.values(),
         metadata_registry=metadata_registry,
         symbol_ids=symbol_ids,
     )
-    procedure_locations = _procedure_locations_for_definitions(
-        documents_by_uri,
-        definitions=definitions,
-        implementations_only=False,
+    procedure_locations = (
+        _procedure_locations_for_definitions(
+            documents_by_uri,
+            definitions=definitions,
+            implementations_only=False,
+        )
+        if include_declarations
+        else ()
     )
     metadata_locations = _metadata_locations_for_definitions(
         documents_by_uri,
