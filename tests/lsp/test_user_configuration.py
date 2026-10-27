@@ -1,11 +1,52 @@
+import multiprocessing
+import os
+from concurrent.futures import ProcessPoolExecutor
+from functools import partial
 from pathlib import Path
 
 import pytest
 
 from tcl_lsp.checker import check_project
+from tcl_lsp.checker import service as checker_service
 from tcl_lsp.project.config import config_files
 from tests.lsp_service import LanguageService
 from tests.project_support import write_sample_library_root, write_sample_plugin_bundle
+
+
+@pytest.mark.skipif(
+    'forkserver' not in multiprocessing.get_all_start_methods(),
+    reason='forkserver is not available',
+)
+def test_parallel_checks_use_current_user_settings_after_worker_launcher_starts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executor_factory = partial(
+        ProcessPoolExecutor, mp_context=multiprocessing.get_context('forkserver')
+    )
+    with executor_factory(max_workers=1) as executor:
+        executor.submit(os.getpid).result()
+    monkeypatch.setattr(checker_service, 'ProcessPoolExecutor', executor_factory)
+
+    source = tmp_path / 'main.tcl'
+    source.write_text('user_command\nmissing_command\n')
+    home = tmp_path / 'home'
+    monkeypatch.setenv('HOME', str(home))
+    for config_home, severity in ((tmp_path / 'custom-config', 'hint'), (None, 'error')):
+        if config_home is None:
+            monkeypatch.delenv('XDG_CONFIG_HOME')
+            config_home = home / '.config'
+        else:
+            monkeypatch.setenv('XDG_CONFIG_HOME', str(config_home))
+        config = config_home / 'tcl-ls' / 'tcllsrc.tcl'
+        config.parent.mkdir(parents=True)
+        config.write_text(
+            'meta module Tcl {meta command user_command {}}\n'
+            f'diagnostic unresolved-command {severity}\n'
+        )
+        report = check_project(source, threads=2)
+        assert [(d.diagnostic.code, d.diagnostic.severity) for d in report.diagnostics] == [
+            ('unresolved-command', severity)
+        ]
 
 
 @pytest.mark.parametrize('xdg_home', [None, '', 'relative/config', 'absolute'])

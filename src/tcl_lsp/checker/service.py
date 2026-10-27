@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from collections.abc import Sequence
 from concurrent.futures import ProcessPoolExecutor
@@ -508,8 +509,14 @@ def _initialize_unit_worker(
     metadata_paths: tuple[MetadataPath | str, ...],
     module: str | None = None,
     configuration_roots: tuple[Path, ...] = (),
+    environment: tuple[tuple[str, str | None], ...] = (),
 ) -> None:
     global _worker_document_cache, _worker_package_index_catalog, _worker_resolver
+    for name, value in environment:
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
     metadata_registry = create_metadata_registry(
         metadata_paths, module=module, configuration_roots=configuration_roots
     )
@@ -561,6 +568,7 @@ def _create_unit_executor(
                 tuple(metadata_paths),
                 module,
                 configuration_roots,
+                tuple((name, os.environ.get(name)) for name in ('HOME', 'XDG_CONFIG_HOME')),
             ),
         )
     except NotImplementedError:
