@@ -135,7 +135,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: release-assets-${{ matrix.release_platform }}
+          name: release-assets-${{ inputs.release_channel }}-${{ matrix.release_platform }}
           path: dist/*
 
   publish:
@@ -161,6 +161,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
+          pattern: release-assets-${{ inputs.release_channel }}-*
           path: ${{ runner.temp }}/release-assets
 
       - name: Create or update GitHub release
