@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from tcl_lsp.analysis.facts.parsing import ListItem, is_simple_name, split_tcl_list
 from tcl_lsp.analysis.model import CommandArity
+from tcl_lsp.cache import metadata_lru_cache
 from tcl_lsp.common import Position
 
 _ZERO_POSITION = Position(offset=0, line=0, character=0)
@@ -30,15 +31,21 @@ def proc_parameter_arity(items: tuple[ListItem, ...]) -> CommandArity | None:
     return CommandArity(min_args=min_args, max_args=max_args)
 
 
-def metadata_signature_arity(signature: str) -> CommandArity | None:
+@metadata_lru_cache(maxsize=1024)
+def metadata_signature_items(signature: str) -> tuple[str, ...]:
     text = signature.strip()
     if not text or text == '{}':
-        return CommandArity(min_args=0, max_args=0)
+        return ()
 
     items = tuple(item.text for item in split_tcl_list(text, _ZERO_POSITION))
     if not items or items == ('',):
-        return CommandArity(min_args=0, max_args=0)
-    return _signature_items_arity(items)
+        return ()
+    return items
+
+
+@metadata_lru_cache(maxsize=1024)
+def metadata_signature_arity(signature: str) -> CommandArity | None:
+    return _signature_items_arity(metadata_signature_items(signature))
 
 
 def _signature_items_arity(items: tuple[str, ...]) -> CommandArity | None:

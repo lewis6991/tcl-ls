@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from functools import cache
 from typing import Literal
 
-from tcl_lsp.analysis.facts.parsing import split_tcl_list
+from tcl_lsp.analysis.arity import metadata_signature_items
 from tcl_lsp.analysis.metadata_commands import (
     parse_package_value,
     parse_procedure_parameter_settings,
@@ -14,11 +13,9 @@ from tcl_lsp.analysis.metadata_commands import (
     validate_procedure_selector,
 )
 from tcl_lsp.analysis.model import BINDING_KINDS
-from tcl_lsp.common import Position
 
 type StructuredMatchState = Literal['unstructured', 'exact', 'dynamic', 'reject']
 
-_ZERO_POSITION = Position(offset=0, line=0, character=0)
 _SLOT_DISPLAY_NAMES = {
     'groupedShape': 'shape',
     'nameSettings': 'settings',
@@ -29,7 +26,7 @@ _SLOT_DISPLAY_NAMES = {
 
 
 def display_metadata_signature(signature: str) -> str:
-    items = _signature_items(signature)
+    items = metadata_signature_items(signature)
     if not items or not any(
         _is_literal_token(item) or _slot_name(item) is not None for item in items
     ):
@@ -50,7 +47,7 @@ def display_metadata_usage(signature: str) -> str:
     }
     selector_slots = {'bodySelector', 'ownerSelector', 'procedureSelector'}
     words: list[str] = []
-    for item in _signature_items(signature):
+    for item in metadata_signature_items(signature):
         slot = _slot_name(item)
         text = 'selector' if slot in selector_slots else _display_token(item)
         if slot in grouped_slots:
@@ -62,12 +59,12 @@ def display_metadata_usage(signature: str) -> str:
 def is_structured_metadata_signature(signature: str) -> bool:
     return any(
         _is_literal_token(item) or _slot_name(item) is not None
-        for item in _signature_items(signature)
+        for item in metadata_signature_items(signature)
     )
 
 
 def has_metadata_slots(signature: str) -> bool:
-    return any(_slot_name(item) is not None for item in _signature_items(signature))
+    return any(_slot_name(item) is not None for item in metadata_signature_items(signature))
 
 
 def metadata_signature_match_state(
@@ -77,7 +74,7 @@ def metadata_signature_match_state(
     arg_expanded: tuple[bool, ...],
     arg_grouped: tuple[bool, ...],
 ) -> StructuredMatchState:
-    items = _signature_items(signature)
+    items = metadata_signature_items(signature)
     if not any(_is_literal_token(item) or _slot_name(item) is not None for item in items):
         return 'unstructured'
     return _match_signature_items(
@@ -88,17 +85,6 @@ def metadata_signature_match_state(
         item_index=0,
         arg_index=0,
     )
-
-
-@cache
-def _signature_items(signature: str) -> tuple[str, ...]:
-    text = signature.strip()
-    if not text or text == '{}':
-        return ()
-    items = tuple(item.text for item in split_tcl_list(text, _ZERO_POSITION))
-    if not items or items == ('',):
-        return ()
-    return items
 
 
 def _display_token(token: str) -> str:
