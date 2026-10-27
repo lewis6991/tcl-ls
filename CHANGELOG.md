@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## [1.0.1](https://github.com/lewis6991/tcl-ls/compare/v1.0.0...v1.0.1) (2026-10-27)
+
+
+### Bug Fixes
+
+* **release:** let active publishing finish ([5207b35](https://github.com/lewis6991/tcl-ls/commit/5207b35e404caf86f6873f37e1a3ed0deca7a6b6))
+* **release:** separate channel build artifacts ([2f924bd](https://github.com/lewis6991/tcl-ls/commit/2f924bdd08221bb4c3b0afc451a7a53964688fad))
+
 ## [1.0.0](https://github.com/lewis6991/tcl-ls/compare/v0.2.1...v1.0.0) (2026-10-27)
 
 
